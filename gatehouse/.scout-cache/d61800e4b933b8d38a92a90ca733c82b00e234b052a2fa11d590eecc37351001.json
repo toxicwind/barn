@@ -1,0 +1,1 @@
+{"sourceMtimeMs":1790749576916,"value":{"candidate":{"file":"internal/diagnostics/classifier_test.go","symbol":"Code","confidence":0.9},"code":"[Unsupported parser mode for internal/diagnostics/classifier_test.go: enable --parser tree-sitter to inspect non-JS/TS files]","signature":"","doc":"","imports":[],"importedBy":[],"extractionOk":false}}

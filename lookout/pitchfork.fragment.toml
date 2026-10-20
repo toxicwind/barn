@@ -1,0 +1,30 @@
+# Pitchfork daemon record — lookout (isolated agent-browser display + viewer).
+# Already merged into /home/toxic/estate/pitchfork.toml; this file is the
+# committed record, not a merge source. Owned restart from /home/toxic/estate:
+#   ./bin/pitchfork-restart <agent-display|agent-viewer> --reregister
+#
+# See README.md for the full lane docs. The keeper itself is at
+# ../browserless/keeper/ (its own lane, its own fragment).
+
+[daemons.agent-display]
+# Isolated virtual display for the agent browser.
+port = 5900
+run = "exec Xvnc :99 -geometry 1600x900 -depth 24 -rfbport 5900 -localhost -SecurityTypes VncAuth -rfbauth /home/toxic/.browserless/vncpasswd"
+dir = "."
+mise = false
+retry = true
+ready_cmd = "ss -tln | grep -q 127.0.0.1:5900"
+boot_start = true
+auto = ["start"]
+
+[daemons.agent-viewer]
+# noVNC web viewer. INTERACTIVE (the Architect 2026-09-21); loopback-only.
+# External access: tailnet-only via tailscale serve :8443 (no funnel, no token gate).
+port = 6080
+run = "exec /home/toxic/.local/bin/websockify --web /home/toxic/.browserless/novnc 127.0.0.1:6080 127.0.0.1:5900"
+dir = "."
+mise = false
+retry = true
+ready_cmd = "curl -sf http://127.0.0.1:6080/vnc.html > /dev/null"
+boot_start = true
+auto = ["start"]

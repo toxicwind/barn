@@ -1,0 +1,1 @@
+{"sourceMtimeMs":1790749576897,"value":{"candidate":{"file":"bench/live.go","symbol":"Search","confidence":0.8},"code":"[Unsupported parser mode for bench/live.go: enable --parser tree-sitter to inspect non-JS/TS files]","signature":"","doc":"","imports":[],"importedBy":[],"extractionOk":false}}

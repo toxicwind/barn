@@ -1,0 +1,1 @@
+{"sourceMtimeMs":1790749576917,"value":{"candidate":{"file":"internal/httpapi/search_tools_test.go","symbol":"canonicalSearchController","confidence":0.8},"code":"[Unsupported parser mode for internal/httpapi/search_tools_test.go: enable --parser tree-sitter to inspect non-JS/TS files]","signature":"","doc":"","imports":[],"importedBy":[],"extractionOk":false}}

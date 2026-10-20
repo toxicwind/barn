@@ -1,0 +1,1160 @@
+{
+  "activity_cleanup_interval_min": 60,
+  "activity_max_records": 100000,
+  "activity_max_response_size": 65536,
+  "activity_max_size_mb": 256,
+  "activity_retention_days": 90,
+  "allow_server_add": true,
+  "allow_server_remove": true,
+  "api_key": "REDACTED-use-MCPPROXY_API_KEY-env",
+  "call_tool_timeout": "5m0s",
+  "check_server_repo": true,
+  "code_execution_max_tool_calls": 100,
+  "code_execution_pool_size": 30,
+  "code_execution_timeout_ms": 600000,
+  "data_dir": "/home/toxic/.mcpproxy",
+  "debug_search": false,
+  "disable_management": false,
+  "docker_isolation": {
+    "cpu_limit": "1.0",
+    "default_images": {
+      "bash": "alpine:3.18",
+      "binary": "alpine:3.18",
+      "cargo": "rust:1.75-slim",
+      "composer": "php:8.2-cli-alpine",
+      "gem": "ruby:3.2-alpine",
+      "go": "golang:1.21-alpine",
+      "node": "node:22",
+      "npm": "node:22",
+      "npx": "node:22",
+      "php": "php:8.2-cli-alpine",
+      "pip": "ghcr.io/astral-sh/uv:python3.13-bookworm-slim",
+      "pipx": "ghcr.io/astral-sh/uv:python3.13-bookworm-slim",
+      "python": "ghcr.io/astral-sh/uv:python3.13-bookworm-slim",
+      "python3": "ghcr.io/astral-sh/uv:python3.13-bookworm-slim",
+      "ruby": "ruby:3.2-alpine",
+      "rustc": "rust:1.75-slim",
+      "sh": "alpine:3.18",
+      "uvx": "ghcr.io/astral-sh/uv:python3.13-bookworm-slim",
+      "yarn": "node:22"
+    },
+    "enable_cache_volume": true,
+    "enabled": false,
+    "log_max_files": "3",
+    "log_max_size": "100m",
+    "memory_limit": "512m",
+    "mode": "none",
+    "network_mode": "bridge",
+    "registry": "docker.io",
+    "timeout": "30s"
+  },
+  "docker_recovery": {
+    "enabled": false,
+    "notify_on_failure": false,
+    "notify_on_retry": false,
+    "notify_on_start": false,
+    "notify_on_success": false,
+    "persistent_state": false
+  },
+  "enable_code_execution": true,
+  "enable_prompts": true,
+  "enable_socket": true,
+  "environment": {
+    "allowed_system_vars": [
+      "PATH",
+      "HOME",
+      "TMPDIR",
+      "TEMP",
+      "TMP",
+      "SHELL",
+      "TERM",
+      "LANG",
+      "USER",
+      "USERNAME",
+      "XDG_CONFIG_HOME",
+      "XDG_DATA_HOME",
+      "XDG_CACHE_HOME",
+      "XDG_RUNTIME_DIR",
+      "LC_ALL",
+      "LC_CTYPE",
+      "LC_NUMERIC",
+      "LC_TIME",
+      "LC_COLLATE",
+      "LC_MONETARY",
+      "LC_MESSAGES",
+      "LC_PAPER",
+      "LC_NAME",
+      "LC_ADDRESS",
+      "LC_TELEPHONE",
+      "LC_MEASUREMENT",
+      "LC_IDENTIFICATION",
+      "DOCKER_HOST",
+      "DOCKER_CONTEXT",
+      "DOCKER_CONFIG",
+      "DOCKER_CERT_PATH",
+      "DOCKER_TLS_VERIFY",
+      "NVM_DIR",
+      "ASDF_DIR",
+      "PYENV_ROOT",
+      "VOLTA_HOME",
+      "HOMEBREW_PREFIX",
+      "COLIMA_HOME",
+      "HYPRLAND_INSTANCE_SIGNATURE",
+      "CONTEXT7_API_KEY"
+    ],
+    "custom_vars": {
+      "CONTEXT7_API_KEY": "${CONTEXT7_API_KEY}"
+    },
+    "enhance_path": true,
+    "inherit_system_safe": true
+  },
+  "forward_proxy_env": true,
+  "health_check_interval": "15s",
+  "init_timeout": "2m0s",
+  "instructions": "You are talking to MCPProxy, a smart MCP proxy. Use retrieve_tools to search for tools before assuming a capability is missing. Use describe_tool to fetch full schemas for compact results. Use call_tool_read / call_tool_write / call_tool_destructive with intent to execute. Tool names are in the form serverName:toolName.",
+  "intent_declaration": {
+    "strict_server_validation": true
+  },
+  "listen": "127.0.0.1:25127",
+  "logging": {
+    "compress": true,
+    "enable_console": true,
+    "enable_file": true,
+    "filename": "main.log",
+    "json_format": true,
+    "level": "warn",
+    "max_age": 90,
+    "max_backups": 20,
+    "max_size": 100
+  },
+  "max_result_size_chars": 1000000,
+  "mcpServers": [
+    {
+      "args": [
+        "agent-mcp-gateway"
+      ],
+      "command": "uvx",
+      "created": "2026-07-19T02:33:58.727152085-06:00",
+      "enabled": true,
+      "env": {
+        "GATEWAY_MCP_CONFIG": "/home/toxic/config/.mcp.json"
+      },
+      "health_check_interval": "15s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "name": "agent-mcp-gateway",
+      "oauth": null,
+      "protocol": "stdio",
+      "quarantined": false,
+      "tool_discovery_interval": "2m0s",
+      "updated": "2026-09-20T16:50:00-06:00"
+    },
+    {
+      "args": [
+        "/home/toxic/projects/organized-lattice-v3/adhoc-mcp-servers/mcp-installs/agent-orchestration/node_modules/agent-orchestration/dist/index.js",
+        "serve"
+      ],
+      "command": "node",
+      "created": "2026-07-19T02:33:58.727152165-06:00",
+      "enabled": true,
+      "health_check_interval": "15s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "name": "agent-orchestration",
+      "oauth": null,
+      "protocol": "stdio",
+      "quarantined": false,
+      "tool_discovery_interval": "2m0s",
+      "updated": "2026-09-20T16:50:00-06:00"
+    },
+    {
+      "args": [
+        "arxiv-mcp-server"
+      ],
+      "command": "uvx",
+      "created": "2026-07-20T00:00:00-06:00",
+      "enabled": true,
+      "health_check_interval": "15s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "name": "arxiv",
+      "oauth": null,
+      "protocol": "stdio",
+      "quarantined": false,
+      "tool_discovery_interval": "2m0s",
+      "updated": "2026-09-19T02:32:49.098315414-06:00"
+    },
+    {
+      "args": [
+        "--from",
+        "git+https://github.com/Ray0907/arXiv-mcp.git",
+        "arxiv-mcp"
+      ],
+      "command": "uvx",
+      "created": "2026-07-19T02:33:58.727152195-06:00",
+      "enabled": true,
+      "health_check_interval": "15s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "name": "arxiv-advanced",
+      "oauth": null,
+      "protocol": "stdio",
+      "quarantined": false,
+      "tool_discovery_interval": "2m0s",
+      "updated": "2026-09-19T02:32:49.101487645-06:00"
+    },
+    {
+      "args": [
+        "--root-dir",
+        "/home/toxic"
+      ],
+      "auto_approve_tool_changes": true,
+      "command": "/home/toxic/.cargo/bin/ast-grep-mcp",
+      "created": "2026-07-19T02:33:58.727152235-06:00",
+      "enabled": true,
+      "health_check_interval": "15s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "name": "ast-grep-nnunley",
+      "oauth": null,
+      "protocol": "stdio",
+      "quarantined": false,
+      "tool_discovery_interval": "2m0s",
+      "updated": "2026-09-19T02:32:49.105041648-06:00"
+    },
+    {
+      "auto_approve_tool_changes": true,
+      "command": "/home/toxic/.local/bin/xray-mcp",
+      "created": "2026-07-20T00:00:00-06:00",
+      "enabled": true,
+      "health_check_interval": "15s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "name": "ast-grep-xray",
+      "oauth": null,
+      "protocol": "stdio",
+      "quarantined": false,
+      "tool_discovery_interval": "2m0s",
+      "updated": "2026-09-19T02:32:49.108766149-06:00"
+    },
+    {
+      "created": "2026-07-19T02:33:58.727152275-06:00",
+      "enabled": false,
+      "env": {
+        "LLAMACPP_HOST": "localhost",
+        "LLAMACPP_PORT": "8080",
+        "MODEL_PATH": "/home/toxic/models"
+      },
+      "health_check_interval": "15s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "name": "byte-vision-llamacpp",
+      "oauth": null,
+      "protocol": "http",
+      "quarantined": false,
+      "tool_discovery_interval": "2m0s",
+      "updated": "2026-09-19T02:32:49.132264191-06:00",
+      "url": "http://127.0.0.1:25120/mcp-completion"
+    },
+    {
+      "auto_approve_tool_changes": true,
+      "command": "/home/toxic/.local/bin/codebase-memory-mcp",
+      "created": "2026-07-19T02:33:58.727152305-06:00",
+      "enabled": true,
+      "health_check_interval": "15s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "name": "codebase-memory",
+      "oauth": null,
+      "protocol": "stdio",
+      "quarantined": false,
+      "tool_discovery_interval": "2m0s",
+      "updated": "2026-09-19T02:32:49.151889116-06:00"
+    },
+    {
+      "args": [
+        "mcp"
+      ],
+      "auto_approve_tool_changes": true,
+      "command": "/home/toxic/.local/bin/computer-use-linux",
+      "created": "2026-07-20T00:00:00-06:00",
+      "enabled": true,
+      "health_check_interval": "15s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "name": "computer-use-linux",
+      "oauth": null,
+      "protocol": "stdio",
+      "quarantined": false,
+      "tool_discovery_interval": "2m0s",
+      "updated": "2026-09-19T02:32:49.165710778-06:00"
+    },
+    {
+      "args": [
+        "run",
+        "--directory",
+        "/home/toxic/estate/projects/range/ranch/lasso",
+        "hypruse"
+      ],
+      "auto_approve_tool_changes": true,
+      "command": "uv",
+      "created": "2026-09-30T00:00:00-06:00",
+      "enabled": true,
+      "health_check_interval": "15s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "name": "lasso",
+      "oauth": null,
+      "protocol": "stdio",
+      "quarantined": false,
+      "tool_discovery_interval": "2m0s",
+      "trust_mode": "auto",
+      "updated": "2026-09-30T00:00:00-06:00"
+    },
+    {
+      "args": [
+        "-y",
+        "@upstash/context7-mcp@latest"
+      ],
+      "command": "npx",
+      "created": "2026-07-19T02:33:58.727152345-06:00",
+      "enabled": true,
+      "env": {
+        "CONTEXT7_API_KEY": "${CONTEXT7_API_KEY}"
+      },
+      "health_check_interval": "15s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "name": "context7",
+      "oauth": null,
+      "protocol": "stdio",
+      "quarantined": false,
+      "tool_discovery_interval": "2m0s",
+      "updated": "2026-09-19T02:32:49.178222715-06:00"
+    },
+    {
+      "args": [
+        "/home/toxic/projects/organized-lattice-v3/adhoc-mcp-servers/mcp-installs/desktop-commander/node_modules/@wonderwhy-er/desktop-commander/dist/index.js"
+      ],
+      "command": "node",
+      "created": "2026-07-19T02:33:58.727152375-06:00",
+      "enabled": true,
+      "health_check_interval": "15s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "name": "desktop-commander",
+      "oauth": null,
+      "protocol": "stdio",
+      "quarantined": false,
+      "tool_discovery_interval": "2m0s",
+      "updated": "2026-09-20T16:50:00-06:00"
+    },
+    {
+      "command": "/home/toxic/.local/bin/exa-mcp-server",
+      "created": "2026-09-17T03:30:41.838542569-06:00",
+      "enabled": true,
+      "name": "exa",
+      "oauth": null,
+      "protocol": "stdio",
+      "quarantined": false,
+      "updated": "2026-09-19T02:32:49.18975987-06:00"
+    },
+    {
+      "auto_approve_tool_changes": true,
+      "command": "/home/toxic/.local/bin/ghas-mcp-stdio.sh",
+      "created": "2026-07-19T02:33:58.727152415-06:00",
+      "enabled": true,
+      "health_check_interval": "15s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "name": "ghas",
+      "oauth": null,
+      "protocol": "stdio",
+      "quarantined": false,
+      "tool_discovery_interval": "2m0s",
+      "updated": "2026-09-19T02:32:49.197480576-06:00"
+    },
+    {
+      "created": "2026-07-19T02:33:58.727152455-06:00",
+      "enabled": false,
+      "health_check_interval": "15s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "name": "gibber-crypto",
+      "oauth": null,
+      "protocol": "sse",
+      "quarantined": false,
+      "tool_discovery_interval": "2m0s",
+      "updated": "2026-09-19T02:32:49.205305431-06:00",
+      "url": "http://127.0.0.1:3006/sse"
+    },
+    {
+      "auto_approve_tool_changes": true,
+      "command": "/home/toxic/estate/projects/range/ranch/barn/shep/bin/github-mcp.sh",
+      "created": "2026-09-19T00:28:53.936591-06:00",
+      "enabled": true,
+      "health_check_interval": "15s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "name": "github",
+      "oauth": null,
+      "protocol": "stdio",
+      "quarantined": false,
+      "tool_discovery_interval": "2m0s",
+      "updated": "2026-09-19T02:32:49.320879017-06:00"
+    },
+    {
+      "args": [
+        "-y",
+        "hyprland-ipc"
+      ],
+      "command": "npx",
+      "created": "2026-07-19T02:33:58.727152485-06:00",
+      "enabled": false,
+      "env": {
+        "HYPRLAND_INSTANCE_SIGNATURE": "${HYPRLAND_INSTANCE_SIGNATURE}",
+        "XDG_RUNTIME_DIR": "/run/user/1000"
+      },
+      "health_check_interval": "15s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "name": "hyprland-ipc",
+      "oauth": null,
+      "protocol": "stdio",
+      "quarantined": false,
+      "tool_discovery_interval": "2m0s",
+      "updated": "2026-09-19T02:32:49.20800927-06:00"
+    },
+    {
+      "args": [
+        "run",
+        "/home/toxic/estate/src/mcp/herd.ts"
+      ],
+      "auto_approve_tool_changes": true,
+      "command": "/home/toxic/.bun/bin/bun",
+      "created": "2026-07-19T02:33:58.727152525-06:00",
+      "enabled": true,
+      "health_check_interval": "15s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "name": "herd-test",
+      "oauth": null,
+      "protocol": "stdio",
+      "quarantined": false,
+      "tool_discovery_interval": "2m0s",
+      "updated": "2026-09-19T02:32:49.212615194-06:00"
+    },
+    {
+      "args": [
+        "markitdown-mcp@0.0.1a4"
+      ],
+      "command": "uvx",
+      "created": "2026-07-19T02:33:58.727152555-06:00",
+      "enabled": true,
+      "health_check_interval": "15s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "name": "markitdown",
+      "oauth": null,
+      "protocol": "stdio",
+      "quarantined": false,
+      "tool_discovery_interval": "2m0s",
+      "updated": "2026-09-19T02:32:49.21930026-06:00"
+    },
+    {
+      "args": [
+        "mcp-background-job"
+      ],
+      "command": "uvx",
+      "created": "2026-07-19T02:33:58.727152595-06:00",
+      "enabled": true,
+      "health_check_interval": "15s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "name": "mcp-background-job",
+      "oauth": null,
+      "protocol": "stdio",
+      "quarantined": false,
+      "tool_discovery_interval": "2m0s",
+      "updated": "2026-09-19T02:32:49.222701416-06:00"
+    },
+    {
+      "args": [
+        "run",
+        "--allow-read",
+        "--allow-write",
+        "--allow-run",
+        "--allow-env",
+        "https://raw.githubusercontent.com/RyosukeDTomita/mise-mcp-server/main/mcp-server/main.ts"
+      ],
+      "command": "deno",
+      "created": "2026-07-19T02:33:58.727152625-06:00",
+      "enabled": false,
+      "env": {
+        "PATH": "/home/toxic/.deno/bin:/home/toxic/.local/bin:/home/toxic/.bun/bin:/home/toxic/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
+      },
+      "health_check_interval": "15s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "name": "mise-mcp-server",
+      "oauth": null,
+      "protocol": "stdio",
+      "quarantined": false,
+      "tool_discovery_interval": "2m0s",
+      "updated": "2026-09-19T02:32:49.225455345-06:00"
+    },
+    {
+      "command": "/usr/bin/python3",
+      "args": [
+        "/home/toxic/estate/projects/range/bin/openfang-mcp-shim.py"
+      ],
+      "created": "2026-09-19T02:46:46.338368942-06:00",
+      "enabled": true,
+      "name": "openfang",
+      "oauth": null,
+      "protocol": "stdio",
+      "quarantined": false,
+      "updated": "2026-09-19T02:54:44.643238583-06:00"
+    },
+    {
+      "command": "/home/toxic/.local/bin/patchwork-mcp",
+      "created": "2026-09-07T16:34:53.690485472-06:00",
+      "enabled": true,
+      "name": "patchwork",
+      "oauth": null,
+      "protocol": "stdio",
+      "quarantined": false,
+      "updated": "2026-09-19T02:32:49.228267523-06:00"
+    },
+    {
+      "args": [
+        "prometheus-mcp-server"
+      ],
+      "command": "uvx",
+      "created": "2026-07-19T02:33:58.727152665-06:00",
+      "enabled": true,
+      "env": {
+        "PROMETHEUS_URL": "REDACTED-use-PROMETHEUS_URL-env"
+      },
+      "health_check_interval": "15s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "name": "prometheus",
+      "oauth": null,
+      "protocol": "stdio",
+      "quarantined": false,
+      "tool_discovery_interval": "2m0s",
+      "updated": "2026-09-19T02:32:49.242290332-06:00"
+    },
+    {
+      "args": [
+        "--with",
+        "mcp<2",
+        "qdrant-mcp-server"
+      ],
+      "command": "uvx",
+      "created": "2026-07-19T02:33:58.727152695-06:00",
+      "enabled": true,
+      "env": {
+        "QDRANT_URL": "http://localhost:25133"
+      },
+      "health_check_interval": "15s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "name": "qdrant-mcp",
+      "oauth": null,
+      "protocol": "stdio",
+      "quarantined": false,
+      "tool_discovery_interval": "2m0s",
+      "updated": "2026-09-20T16:50:00-06:00"
+    },
+    {
+      "args": [
+        "redis-mcp-server",
+        "--url",
+        "redis://localhost:25199/0"
+      ],
+      "command": "uvx",
+      "created": "2026-07-19T02:33:58.727152735-06:00",
+      "enabled": true,
+      "health_check_interval": "15s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "name": "redis-mcp",
+      "oauth": null,
+      "protocol": "stdio",
+      "quarantined": false,
+      "tool_discovery_interval": "2m0s",
+      "updated": "2026-09-19T02:32:49.254300418-06:00"
+    },
+    {
+      "args": [
+        "/home/toxic/projects/organized-lattice-v3/adhoc-mcp-servers/mcp-filesystem/run_server.py",
+        "/home/toxic"
+      ],
+      "auto_approve_tool_changes": true,
+      "command": "/home/toxic/projects/organized-lattice-v3/adhoc-mcp-servers/mcp-filesystem/.venv/bin/python",
+      "created": "2026-07-19T02:33:58.727152765-06:00",
+      "enabled": true,
+      "health_check_interval": "15s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "name": "safurrier-filesystem-smart",
+      "oauth": null,
+      "protocol": "stdio",
+      "quarantined": false,
+      "tool_discovery_interval": "2m0s",
+      "updated": "2026-09-20T16:50:00-06:00"
+    },
+    {
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sequential-thinking"
+      ],
+      "command": "npx",
+      "created": "2026-07-19T02:33:58.727152805-06:00",
+      "enabled": true,
+      "health_check_interval": "15s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "name": "sequential-thinking-thin",
+      "oauth": null,
+      "protocol": "stdio",
+      "quarantined": false,
+      "tool_discovery_interval": "2m0s",
+      "updated": "2026-09-19T02:32:49.278585185-06:00"
+    },
+    {
+      "args": [
+        "smarter-faster-better-mcp",
+        "/home/toxic"
+      ],
+      "command": "bunx",
+      "created": "2026-07-19T02:33:58.727152835-06:00",
+      "enabled": true,
+      "env": {
+        "SCOUT_API_KEY": "REDACTED-use-SCOUT_API_KEY-env",
+        "SCOUT_BASE_URL": "REDACTED-use-SCOUT_BASE_URL-env",
+        "SCOUT_MODEL": "local"
+      },
+      "health_check_interval": "15s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "name": "smarter-ast-mcp",
+      "oauth": null,
+      "protocol": "stdio",
+      "quarantined": false,
+      "tool_discovery_interval": "2m0s",
+      "updated": "2026-09-19T02:32:49.284083893-06:00"
+    },
+    {
+      "args": [
+        "--with",
+        "mcp<2",
+        "mcp-server-sqlite",
+        "--db-path",
+        "/home/toxic/ast_matrix.db"
+      ],
+      "auto_approve_tool_changes": true,
+      "command": "uvx",
+      "created": "2026-07-19T02:33:58.727152875-06:00",
+      "enabled": true,
+      "health_check_interval": "15s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "name": "sqlite-mcp",
+      "oauth": null,
+      "protocol": "stdio",
+      "quarantined": false,
+      "tool_discovery_interval": "2m0s",
+      "updated": "2026-09-20T16:50:00-06:00"
+    },
+    {
+      "args": [
+        "/home/toxic/estate/tools/tmux-mcp/server.ts"
+      ],
+      "command": "/home/toxic/.bun/bin/bun",
+      "created": "2026-09-14T14:51:04.584222675-06:00",
+      "enabled": false,
+      "name": "tmux",
+      "oauth": null,
+      "quarantined": false,
+      "updated": "2026-09-20T16:50:00-06:00"
+    },
+    {
+      "args": [
+        "/home/toxic/projects/organized-lattice-v3/adhoc-mcp-servers/mcp-installs/tpc-server/mcp-server.js"
+      ],
+      "auto_approve_tool_changes": true,
+      "command": "node",
+      "created": "2026-07-19T02:33:58.727152915-06:00",
+      "enabled": true,
+      "health_check_interval": "15s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "name": "tpc-thought-ledger",
+      "oauth": null,
+      "protocol": "stdio",
+      "quarantined": false,
+      "tool_discovery_interval": "2m0s",
+      "updated": "2026-09-20T16:50:00-06:00"
+    },
+    {
+      "args": [
+        "vram-mcp"
+      ],
+      "command": "uvx",
+      "created": "2026-07-19T02:33:58.727152945-06:00",
+      "enabled": false,
+      "health_check_interval": "15s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "name": "vram-mcp",
+      "oauth": null,
+      "protocol": "stdio",
+      "quarantined": false,
+      "tool_discovery_interval": "2m0s",
+      "updated": "2026-09-19T02:32:49.310198396-06:00"
+    },
+    {
+      "args": [
+        "websearch-skill",
+        "mcp"
+      ],
+      "command": "uvx",
+      "created": "2026-07-19T02:33:58.727152985-06:00",
+      "enabled": false,
+      "health_check_interval": "15s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "name": "websearch-skill",
+      "oauth": null,
+      "protocol": "stdio",
+      "quarantined": true,
+      "tool_discovery_interval": "2m0s",
+      "updated": "2026-09-19T02:32:49.313450036-06:00"
+    },
+    {
+      "args": [
+        "/home/toxic/estate/tools/websearch-mcp/server.py"
+      ],
+      "command": "python3",
+      "created": "2026-09-20T16:50:00-06:00",
+      "enabled": true,
+      "name": "websearch-mcp",
+      "oauth": null,
+      "protocol": "stdio",
+      "quarantined": false,
+      "updated": "2026-09-20T16:50:00-06:00"
+    },
+    {
+      "name": "rsync",
+      "command": "/home/toxic/.bun/bin/bun",
+      "args": [
+        "/home/toxic/projects/rsync-mcp/src/server.ts"
+      ],
+      "env": {
+        "RSYNC_HOST": "pc",
+        "RSYNC_REMOTE_ROOT": "/home/toxic",
+        "RSYNC_SSH_OPTS": "-o ServerAliveInterval=30 -o ConnectTimeout=10",
+        "RSYNC_LOCAL_ROOT": "/home/toxic",
+        "RSYNC_FLAGS": "-avzP"
+      },
+      "protocol": "stdio",
+      "enabled": true,
+      "health_check_interval": "15s",
+      "tool_discovery_interval": "2m0s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "quarantined": false
+    },
+    {
+      "name": "pd",
+      "command": "/home/toxic/.bun/bin/bun",
+      "args": [
+        "/home/toxic/estate/tools/pd-mcp/src/index.ts"
+      ],
+      "env": {
+        "PD_TOOLS_DIR": "/home/toxic/.pdtm/go/bin",
+        "SHUFFLEDNS_BIN": "/home/toxic/go/bin/shuffledns"
+      },
+      "protocol": "stdio",
+      "enabled": true,
+      "health_check_interval": "15s",
+      "tool_discovery_interval": "2m0s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "quarantined": false
+    },
+    {
+      "name": "huggingface",
+      "url": "https://huggingface.co/mcp",
+      "protocol": "http",
+      "headers": {
+        "Authorization": "Bearer "
+      },
+      "oauth": {
+        "login_url": "https://huggingface.co/mcp?login",
+        "enabled": true
+      },
+      "env": {},
+      "enabled": true,
+      "health_check_interval": "15s",
+      "tool_discovery_interval": "2m0s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "quarantined": false,
+      "auto_approve_tool_changes": true,
+      "trust_mode": "auto"
+    },
+    {
+      "name": "hatch-mcp",
+      "command": "/home/toxic/.bun/bin/bun",
+      "args": [
+        "/home/toxic/estate/tools/hatch-mcp/server.ts"
+      ],
+      "protocol": "stdio",
+      "env": {},
+      "enabled": true,
+      "health_check_interval": "15s",
+      "tool_discovery_interval": "2m0s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "quarantined": false,
+      "auto_approve_tool_changes": true,
+      "trust_mode": "auto"
+    },
+    {
+      "quarantined": false,
+      "name": "wezterm",
+      "protocol": "stdio",
+      "command": "/home/toxic/.bun/bin/bun",
+      "args": [
+        "/home/toxic/projects/wezterm-agent-mcp/build/cli.js"
+      ],
+      "env": {
+        "WEZTERM_UNIX_SOCKET": "/run/user/1000/wezterm/wayland-wayland-1-org.wezfurlong.wezterm"
+      },
+      "oauth": null,
+      "enabled": true,
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "health_check_interval": "15s",
+      "tool_discovery_interval": "2m0s"
+    },
+    {
+      "quarantined": false,
+      "name": "kitty",
+      "protocol": "stdio",
+      "command": "/home/toxic/.bun/bin/bun",
+      "args": [
+        "/home/toxic/projects/kitty-mcp-server/dist/index.js"
+      ],
+      "env": {},
+      "oauth": null,
+      "enabled": true,
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "health_check_interval": "15s",
+      "tool_discovery_interval": "2m0s"
+    },
+    {
+      "name": "browserless",
+      "command": "/home/toxic/.local/share/mise/installs/node/22.12.0/bin/node",
+      "args": [
+        "/home/toxic/estate/ranch/barn/browserless/dist/index.js"
+      ],
+      "env": {
+        "BROWSER_KEEPER_CDP": "http://127.0.0.1:9223"
+      },
+      "protocol": "stdio",
+      "enabled": true,
+      "quarantined": false,
+      "oauth": null,
+      "created": "2026-10-05T14:08:23.556351-06:00",
+      "updated": "2026-10-05T14:08:23.556351-06:00",
+      "health_check_interval": "15s",
+      "tool_discovery_interval": "2m0s",
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      }
+    },
+    {
+      "quarantined": false,
+      "name": "skills-hub",
+      "protocol": "stdio",
+      "command": "/home/toxic/.bun/bin/bun",
+      "args": [
+        "/home/toxic/estate/skills-hub/mcp/server.ts"
+      ],
+      "env": {
+        "SKILLS_HUB_ROOT": "/home/toxic/estate/skills-hub"
+      },
+      "oauth": null,
+      "enabled": true,
+      "isolation": {
+        "enabled": false,
+        "mode": "none"
+      },
+      "health_check_interval": "15s",
+      "tool_discovery_interval": "2m0s"
+    }
+  ],
+  "oauth_expiry_warning_hours": 4,
+  "observability": {
+    "metrics": {
+      "enabled": true
+    },
+    "tracing": {
+      "enabled": true,
+      "endpoint": "localhost:4318",
+      "protocol": "http",
+      "sample_rate": 0.8
+    },
+    "usage_cache_ttl": "1s",
+    "usage_persist_interval": "5s"
+  },
+  "output_sanitisation": {
+    "max_redactions": 500,
+    "response_action": "spotlight",
+    "spotlight_untrusted": true,
+    "strip_classes": [
+      "ansi",
+      "c0c1",
+      "bidi",
+      "zero_width"
+    ],
+    "strip_control_chars": true
+  },
+  "output_validation": {
+    "max_bytes": 20971520,
+    "max_depth": 256,
+    "missing_structured_content": "warn",
+    "mode": "strict"
+  },
+  "quarantine_enabled": true,
+  "read_only_mode": false,
+  "registries": [
+    {
+      "description": "The official Model Context Protocol server registry",
+      "id": "official",
+      "name": "Official MCP Registry",
+      "protocol": "modelcontextprotocol/registry",
+      "provenance": "official",
+      "servers_url": "https://registry.modelcontextprotocol.io/v0.1/servers",
+      "tags": [
+        "verified",
+        "official"
+      ],
+      "url": "https://registry.modelcontextprotocol.io/"
+    },
+    {
+      "description": "Curated @modelcontextprotocol reference servers",
+      "id": "reference",
+      "name": "Reference Servers",
+      "protocol": "builtin/reference",
+      "provenance": "official",
+      "servers_url": "builtin://reference",
+      "tags": [
+        "verified",
+        "official",
+        "reference"
+      ],
+      "url": "https://github.com/modelcontextprotocol/servers"
+    },
+    {
+      "description": "A collection of secure, high-quality MCP servers as docker images",
+      "id": "docker-mcp-catalog",
+      "name": "Docker MCP Catalog",
+      "protocol": "custom/docker",
+      "provenance": "official",
+      "servers_url": "https://hub.docker.com/v2/repositories/mcp/",
+      "tags": [
+        "verified",
+        "official",
+        "reference"
+      ],
+      "url": "https://hub.docker.com/catalogs/mcp"
+    },
+    {
+      "description": "Curated directory of MCP servers",
+      "id": "glama",
+      "name": "Glama MCP Directory",
+      "protocol": "custom/glama",
+      "provenance": "community",
+      "servers_url": "https://glama.ai/api/mcp/servers",
+      "tags": [
+        "community",
+        "curated"
+      ],
+      "url": "https://glama.ai/mcp/"
+    }
+  ],
+  "require_mcp_auth": false,
+  "routing_mode": "retrieve_tools",
+  "security": {
+    "deep_scan": {
+      "enabled": false,
+      "fetch_package_source": false
+    },
+    "integrity_check_interval": "1h0m0s",
+    "integrity_check_on_restart": true,
+    "runtime_read_only": false,
+    "scan_timeout_default": "1m0s"
+  },
+  "sensitive_data_detection": {
+    "categories": {
+      "api_token": true,
+      "auth_token": true,
+      "cloud_credentials": true,
+      "credit_card": true,
+      "database_credential": true,
+      "high_entropy": true,
+      "private_key": true,
+      "sensitive_file": true
+    },
+    "custom_patterns": [
+      {
+        "category": "api_token",
+        "name": "nvidia-nim-key",
+        "regex": "nvapi-[A-Za-z0-9_-]{40,}",
+        "severity": "critical"
+      },
+      {
+        "category": "api_token",
+        "name": "mcp-agent-token",
+        "regex": "mcp_agt_[A-Za-z0-9_-]{32,}",
+        "severity": "critical"
+      }
+    ],
+    "enabled": true,
+    "entropy_threshold": 3.5,
+    "max_payload_size_kb": 8192,
+    "scan_requests": true,
+    "scan_responses": true,
+    "sensitive_keywords": [
+      "nvapi-",
+      "mcp_agt_",
+      "ghp_",
+      "github_pat_",
+      "sk-",
+      "sk-ant-",
+      "xoxb-",
+      "xoxp-",
+      "AKIA",
+      "ASIA",
+      "AIza",
+      "ya29.",
+      "1//0",
+      "r8_",
+      "p8_",
+      "lp_",
+      "lv_"
+    ]
+  },
+  "telemetry": {
+    "anonymous_id": "1c78bf6b-a719-4cef-ad6b-ab7161615d40",
+    "anonymous_id_created_at": "2026-07-19T07:16:38Z",
+    "last_reported_version": "v0.51.0",
+    "last_startup_outcome": "success",
+    "notice_shown": true
+  },
+  "tls": {
+    "enabled": false,
+    "hsts": true,
+    "require_client_cert": false
+  },
+  "tokenizer": {
+    "default_model": "gpt-4o",
+    "enabled": true,
+    "encoding": "o200k_base"
+  },
+  "tool_discovery_interval": "2m0s",
+  "tool_response_limit": 100000,
+  "tool_response_mode": "compact",
+  "tools_limit": 100,
+  "toon_min_savings_pct": 5,
+  "toon_output": "adaptive",
+  "update_check": {
+    "channel": "stable",
+    "enabled": true
+  },
+  "trusted_hosts": [
+    "github-mcp-host.tailc9ac71.ts.net",
+    "localhost",
+    "127.0.0.1"
+  ]
+}

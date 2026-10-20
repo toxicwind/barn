@@ -1,0 +1,1877 @@
+package managed
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/config"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/secret"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/storage"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/transport"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/upstream/core"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/upstream/types"
+
+	"github.com/mark3labs/mcp-go/mcp"
+	"go.uber.org/zap"
+)
+
+// Client wraps a core client with state management, concurrency control, and background recovery
+type Client struct {
+	id string
+	// cfg holds the server configuration as an atomic pointer. SetConfig swaps it
+	// (reconcile add path, off mc.mu) while many readers — including detached
+	// state-change callback goroutines and Connect's unlocked phase — read it
+	// concurrently. An atomic pointer makes every read/write data-race-free and
+	// is lock-free, so it is safe to read whether or not mc.mu is held (the RLock
+	// accessor approach would deadlock the in-lock readers). Access via
+	// GetConfig() / SetConfig() only — never touch the field directly. (MCP-770)
+	cfg          atomic.Pointer[config.ServerConfig]
+	coreClient   *core.Client
+	logger       *zap.Logger
+	StateManager *types.StateManager // Public field for callback access
+
+	// Configuration for creating fresh connections
+	logConfig *config.LogConfig
+	// globalConfig holds the proxy-wide config as an atomic pointer so a config
+	// hot-reload can swap it under the running background loops (health-check
+	// interval re-resolution, spec 074 FR-012) without a lock and without racing
+	// the readers. Mirrors the cfg atomic-pointer rationale above. Access via
+	// GetGlobalConfig() / SetGlobalConfig() only — never touch the field directly.
+	globalConfig atomic.Pointer[config.Config]
+	storage      *storage.BoltDB
+
+	// Connection state protection
+	mu sync.RWMutex
+
+	// ListTools concurrency control
+	listToolsMu         sync.Mutex
+	listToolsInProgress bool
+	listToolsCancel     context.CancelFunc
+	listToolsWaitCh     chan struct{}
+	listToolsLastResult []*config.ToolMetadata
+	listToolsLastErr    error
+
+	// Connect cancellation - allows Disconnect() to cancel an in-flight Connect()
+	// without waiting for mc.mu (which Connect holds during the entire OAuth flow)
+	connectMu     sync.Mutex
+	connectCancel context.CancelFunc
+
+	// Background monitoring
+	stopMonitoring       chan struct{}
+	monitoringWG         sync.WaitGroup
+	monitoringCancelFunc context.CancelFunc
+	monitoringStarted    bool
+
+	// Reconnection protection
+	reconnectMu         sync.Mutex
+	reconnectInProgress bool
+
+	// Tool count caching to reduce upstream ListTools calls
+	toolCountMu   sync.RWMutex
+	toolCount     int
+	toolCountTime time.Time
+
+	// Tool discovery callback for notifications/tools/list_changed handling
+	toolDiscoveryCallback func(ctx context.Context, serverName string) error
+
+	// consecutiveHealthFailures counts back-to-back transient health-check
+	// failures. The state-machine only flips to Error once it reaches
+	// healthCheckFailureThreshold; one success resets it. Hard failures
+	// (connection refused, no such host, unreachable) bypass the counter
+	// and trigger Error immediately. See recordHealthCheckFailure().
+	consecutiveHealthFailures int
+
+	// toolInvoker is the tools/call surface CallTool dispatches through. In
+	// production it is the coreClient; the narrow interface lets tests inject a
+	// fake outcome so the call-path error classification (GH #965) is testable
+	// without a live upstream. When nil it falls back to coreClient
+	// (hand-constructed clients in tests).
+	toolInvoker toolCaller
+
+	// ambiguousProbeInFlight gates the async liveness probe fired after an
+	// ambiguous tools/call cancellation (GH #965) so a burst of canceled calls
+	// results in at most one probe against the upstream.
+	ambiguousProbeInFlight atomic.Bool
+
+	// healthProbe is the liveness surface the background health loop uses. In
+	// production it is the coreClient (a lightweight MCP `ping`, spec 074); the
+	// narrow interface means the health path provably cannot fall back to a
+	// heavyweight tools/list, and tests can inject a fake. When nil the loop
+	// falls back to coreClient (hand-constructed clients in tests).
+	healthProbe livenessProber
+
+	// oauthCallRequired records that this server connected anonymously (no config
+	// OAuth) but a tools/call returned "authorization required" / 401 — the
+	// endpoint enforces OAuth only at call time (e.g. Google's sqladmin MCP). The
+	// runtime reads it via IsOAuthCallRequired() and feeds it into the health
+	// calculator so the UI shows a proactive Sign-in CTA instead of "Ready". A
+	// successful call or a fresh Connect clears it. MCP-2084.
+	oauthCallRequired atomic.Bool
+
+	// connectionEpoch is bumped on every successful connect. It identifies the
+	// current connection generation so detached goroutines (the ambiguous-call
+	// liveness probe) can tell whether the session they observed is still the
+	// live one: coreClient is created once and never replaced, so pointer
+	// identity proves nothing, and a disconnect+reconnect leaves the state
+	// machine back at Ready — indistinguishable from "never left". A stale
+	// verdict must not be applied to a brand-new healthy session (GH #965
+	// review).
+	connectionEpoch atomic.Int64
+
+	// epochMu serializes the probe goroutine's final epoch-check-and-SetError
+	// with Connect's epoch bump. Without it a reconnect could complete between
+	// the probe's staleness check and its SetError, letting a stale verdict
+	// evict the new session (GH #965 review, rounds 2-3). Lock invariant:
+	// epochMu is never held across code that can run foreign callbacks —
+	// TransitionTo invokes its state-change callback SYNCHRONOUSLY and so must
+	// stay outside; SetError dispatches its callback in a goroutine, so the
+	// probe may call it under epochMu.
+	epochMu sync.Mutex
+
+	// admission carries the spec-093 concurrency limiter registry and the
+	// rejection observer installed by the manager. Nil (the default) means no
+	// admission control at all — the zero-config behaviour (FR-006). Swapped
+	// atomically so a hot reload can republish the wiring without a lock; see
+	// admission.go.
+	admission atomic.Pointer[admissionControl]
+}
+
+// livenessProber is the minimal core-client surface the health loop needs: a
+// lightweight MCP `ping` to confirm the connection is alive (spec 074, FR-001).
+type livenessProber interface {
+	Ping(ctx context.Context) error
+}
+
+// toolCaller is the minimal core-client surface CallTool needs. Mirrors
+// livenessProber: production wires the coreClient, tests inject a fake.
+type toolCaller interface {
+	CallTool(ctx context.Context, toolName string, args map[string]interface{}) (*mcp.CallToolResult, error)
+}
+
+// ambiguousProbeTimeout bounds the liveness probe fired after an ambiguous
+// tools/call cancellation. Matches the background health-check probe budget.
+const ambiguousProbeTimeout = 5 * time.Second
+
+// healthCheckFailureThreshold is the number of consecutive transient
+// health-check failures we tolerate before marking the server Error.
+// With a 30-second tick this is ~90s of unreachability — long enough that a
+// real outage still surfaces promptly, short enough that one slow upstream
+// request doesn't paint the UI red and clear the tools list.
+const healthCheckFailureThreshold = 3
+
+// NewClient creates a new managed client with state management
+func NewClient(id string, serverConfig *config.ServerConfig, logger *zap.Logger, logConfig *config.LogConfig, globalConfig *config.Config, storage *storage.BoltDB, secretResolver *secret.Resolver) (*Client, error) {
+	// Create core client
+	coreClient, err := core.NewClient(id, serverConfig, logger, logConfig, globalConfig, storage, secretResolver)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create core client: %w", err)
+	}
+
+	// Create managed client
+	mc := &Client{
+		id:             id,
+		coreClient:     coreClient,
+		logger:         logger.With(zap.String("component", "managed_client")),
+		StateManager:   types.NewStateManager(),
+		logConfig:      logConfig,
+		storage:        storage,
+		stopMonitoring: make(chan struct{}),
+		healthProbe:    coreClient,
+		toolInvoker:    coreClient,
+	}
+	mc.cfg.Store(serverConfig)
+	mc.globalConfig.Store(globalConfig)
+
+	// Set up state change callback
+	mc.StateManager.SetStateChangeCallback(mc.onStateChange)
+
+	// Wire up core notification callback to forward to discovery callback
+	coreClient.SetOnToolsChangedCallback(func(serverName string) {
+		mc.mu.RLock()
+		callback := mc.toolDiscoveryCallback
+		mc.mu.RUnlock()
+
+		if callback == nil {
+			mc.logger.Debug("No tool discovery callback set - notification ignored",
+				zap.String("server", serverName))
+			return
+		}
+
+		// Run discovery in a goroutine with timeout to avoid blocking the notification handler
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			mc.logger.Debug("Triggering tool discovery from notification",
+				zap.String("server", serverName))
+
+			if err := callback(ctx, serverName); err != nil {
+				mc.logger.Error("Tool discovery triggered by notification failed",
+					zap.String("server", serverName),
+					zap.Error(err))
+			} else {
+				mc.logger.Debug("Tool discovery from notification completed successfully",
+					zap.String("server", serverName))
+			}
+		}()
+	})
+
+	return mc, nil
+}
+
+// Connect establishes connection with state management.
+// IMPORTANT: mc.mu is only held briefly for state checks/transitions, NOT during the
+// potentially slow coreClient.Connect() call (which may involve OAuth flows taking minutes).
+// This prevents blocking Disconnect, SetConfig, GetConfig, and other callers.
+func (mc *Client) Connect(ctx context.Context) error {
+	// Phase 1: Acquire lock, check state, prepare for connection
+	mc.mu.Lock()
+
+	// Check if already connecting or connected
+	if mc.StateManager.IsConnecting() || mc.StateManager.IsReady() {
+		mc.mu.Unlock()
+		return fmt.Errorf("connection already in progress or established (state: %s)", mc.StateManager.GetState().String())
+	}
+
+	// Snapshot the server name while mc.mu is held. Phase 3 below runs WITHOUT
+	// mc.mu, so dereferencing mc.GetConfig() there races with SetConfig swapping the
+	// pointer under the lock (MCP-770: SetConfig vs Connect). Use this local for
+	// any logging in the unlocked window.
+	serverName := mc.GetConfig().Name
+
+	mc.logger.Info("Starting managed connection to upstream server",
+		zap.String("server", mc.GetConfig().Name),
+		zap.String("current_state", mc.StateManager.GetState().String()),
+		zap.Bool("list_tools_in_progress", mc.listToolsInProgress))
+
+	// CRITICAL FIX: When reconnecting from Error state, disconnect core client first
+	// to clear stale c.connected flag that may remain from a previous connection
+	// that died silently (e.g., HTTP server timeout). Without this, core client
+	// rejects the connect attempt with "client already connected" error.
+	currentState := mc.StateManager.GetState()
+	if currentState == types.StateError || currentState == types.StateDisconnected {
+		mc.logger.Debug("Disconnecting core client before reconnect to clear stale state",
+			zap.String("server", mc.GetConfig().Name),
+			zap.String("from_state", currentState.String()))
+		if err := mc.coreClient.Disconnect(); err != nil {
+			mc.logger.Debug("Core client disconnect before reconnect returned",
+				zap.String("server", mc.GetConfig().Name),
+				zap.Error(err))
+		}
+	}
+
+	// Transition to connecting state
+	mc.StateManager.TransitionTo(types.StateConnecting)
+
+	// Release lock BEFORE the slow coreClient.Connect() call
+	mc.mu.Unlock()
+
+	// Phase 2: Create cancellable context for Disconnect() to abort in-flight Connect
+	connectCtx, cancel := context.WithCancel(ctx)
+	mc.connectMu.Lock()
+	mc.connectCancel = cancel
+	mc.connectMu.Unlock()
+
+	defer func() {
+		mc.connectMu.Lock()
+		mc.connectCancel = nil
+		mc.connectMu.Unlock()
+	}()
+
+	// Phase 3: Execute the actual connection (potentially slow - OAuth, MCP initialize)
+	// mc.mu is NOT held here, so Disconnect/SetConfig/GetConfig won't block
+	mc.logger.Debug("Invoking core client Connect for managed client",
+		zap.String("server", serverName))
+	connectErr := mc.coreClient.Connect(connectCtx)
+
+	// Phase 4: Re-acquire lock to update state based on result
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+
+	if connectErr != nil {
+		// Check if this is a deferred OAuth requirement (pending user action)
+		if core.IsOAuthPending(connectErr) {
+			mc.logger.Info("⏳ OAuth authentication pending user action",
+				zap.String("server", mc.GetConfig().Name))
+			// Transition to PendingAuth state instead of Error
+			mc.StateManager.TransitionTo(types.StatePendingAuth)
+			mc.StateManager.SetError(connectErr)
+			return fmt.Errorf("OAuth authentication pending: %w", connectErr)
+		}
+		// Check if this is an OAuth authorization requirement (not an error)
+		if mc.isOAuthAuthorizationRequired(connectErr) {
+			// Check if this is a token refresh scenario vs full re-auth
+			isRefreshScenario := mc.isTokenRefreshScenario(connectErr)
+			mc.logger.Info("🎯 OAuth authorization required during MCP initialization",
+				zap.String("server", mc.GetConfig().Name),
+				zap.Bool("token_refresh_scenario", isRefreshScenario))
+			// Don't apply backoff for OAuth authorization requirement
+			mc.StateManager.SetError(connectErr)
+			return fmt.Errorf("OAuth authorization during MCP init failed: %w", connectErr)
+		} else if mc.isOAuthError(connectErr) {
+			// Check if this is a token refresh scenario vs full re-auth
+			isRefreshScenario := mc.isTokenRefreshScenario(connectErr)
+			mc.logger.Warn("OAuth authentication failed, applying extended backoff",
+				zap.String("server", mc.GetConfig().Name),
+				zap.Bool("token_refresh_scenario", isRefreshScenario),
+				zap.Error(connectErr))
+			mc.StateManager.SetOAuthError(connectErr)
+		} else {
+			mc.StateManager.SetError(connectErr)
+		}
+		return fmt.Errorf("core client connection failed: %w", connectErr)
+	}
+
+	mc.logger.Debug("Core client Connect returned successfully",
+		zap.String("server", mc.GetConfig().Name))
+
+	// Open a new connection generation BEFORE exposing Ready. The bump is
+	// serialized under epochMu with the ambiguous-call probe's verdict block:
+	// once it lands, any stale probe (old epoch) drops its verdict, so the new
+	// session can never be evicted by a probe that observed the previous one.
+	// A stale verdict that wins the mutex first can only mark the still
+	// pre-Ready state, which the TransitionTo below immediately overrides.
+	// TransitionTo deliberately stays OUTSIDE the critical section — it invokes
+	// the state-change callback synchronously (types.go), and epochMu must
+	// never be held across foreign code (GH #965 review, rounds 2-3).
+	mc.epochMu.Lock()
+	mc.connectionEpoch.Add(1)
+	mc.epochMu.Unlock()
+
+	// Transition to ready state only if not already ready
+	if mc.StateManager.GetState() != types.StateReady {
+		mc.StateManager.TransitionTo(types.StateReady)
+	}
+
+	// Wipe any consecutive-failure debt accumulated before reconnect so the
+	// new session starts at zero. Without this, a server that flapped, then
+	// recovered, would carry stale counts into the next health-check window.
+	mc.resetHealthCheckFailures()
+
+	// A fresh connection (e.g. a post-sign-in reconnect that now carries a token)
+	// starts clean: clear any stale call-time OAuth-required flag so the Sign-in
+	// CTA doesn't linger after the user has authenticated. MCP-2084.
+	mc.oauthCallRequired.Store(false)
+
+	// Update state manager with server info
+	if serverInfo := mc.coreClient.GetServerInfo(); serverInfo != nil {
+		mc.StateManager.SetServerInfo(serverInfo.ServerInfo.Name, serverInfo.ServerInfo.Version)
+	}
+
+	mc.logger.Info("Successfully established managed connection",
+		zap.String("server", mc.GetConfig().Name))
+
+	// Add a small delay before starting background monitoring to let connection stabilize
+	mc.logger.Debug("🔍 Adding stabilization delay before starting background monitoring",
+		zap.String("server", mc.GetConfig().Name))
+
+	// Create cancellable context for monitoring startup
+	monitoringCtx, monitoringCancel := context.WithCancel(context.Background())
+	mc.monitoringCancelFunc = monitoringCancel
+
+	go func() {
+		select {
+		case <-time.After(2 * time.Second):
+			// Check if we're still connected before starting monitoring
+			mc.mu.Lock()
+			if mc.monitoringCancelFunc != nil {
+				mc.logger.Debug("🔍 Starting background monitoring after stabilization delay",
+					zap.String("server", mc.GetConfig().Name))
+				mc.startBackgroundMonitoring()
+			}
+			mc.mu.Unlock()
+		case <-monitoringCtx.Done():
+			mc.logger.Debug("🔍 Background monitoring startup cancelled",
+				zap.String("server", mc.GetConfig().Name))
+		}
+	}()
+
+	return nil
+}
+
+// Disconnect closes the connection and stops monitoring
+func (mc *Client) Disconnect() error {
+	mc.cancelInFlightListTools()
+	mc.cancelInFlightConnect()
+
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+
+	mc.logger.Info("Disconnecting managed client", zap.String("server", mc.GetConfig().Name))
+
+	// Ensure no ListTools operations remain after acquiring the lock
+	mc.cancelInFlightListTools()
+
+	// Cancel monitoring startup if it's still pending
+	if mc.monitoringCancelFunc != nil {
+		mc.monitoringCancelFunc()
+		mc.monitoringCancelFunc = nil
+	}
+
+	// Stop background monitoring
+	mc.stopBackgroundMonitoring()
+
+	// Disconnect core client. Nil only for hand-constructed test clients —
+	// the same fallback contract as toolInvoker/healthProbe.
+	if mc.coreClient != nil {
+		if err := mc.coreClient.Disconnect(); err != nil {
+			mc.logger.Error("Core client disconnect failed", zap.Error(err))
+		}
+	}
+
+	// Close this connection generation BEFORE resetting state, serialized with
+	// the ambiguous-call probe's verdict block. An in-flight probe either
+	// finishes its verdict first (its SetError is overridden by the Reset
+	// below) or observes the bumped epoch and drops the verdict — it can never
+	// flip the freshly Disconnected state back to Error (GH #965 review,
+	// round 4).
+	mc.epochMu.Lock()
+	mc.connectionEpoch.Add(1)
+	mc.epochMu.Unlock()
+
+	// Reset state
+	mc.StateManager.Reset()
+
+	mc.logger.Debug("Managed client disconnect complete",
+		zap.String("server", mc.GetConfig().Name),
+		zap.Bool("list_tools_in_progress", mc.listToolsInProgress))
+
+	return nil
+}
+
+// IsConnected returns whether the client is ready for operations
+func (mc *Client) IsConnected() bool {
+	return mc.StateManager.IsReady()
+}
+
+// IsConnecting returns whether the client is in a connecting state
+func (mc *Client) IsConnecting() bool {
+	return mc.StateManager.IsConnecting()
+}
+
+// GetState returns the current connection state
+func (mc *Client) GetState() types.ConnectionState {
+	return mc.StateManager.GetState()
+}
+
+// GetConnectionInfo returns detailed connection information
+func (mc *Client) GetConnectionInfo() types.ConnectionInfo {
+	return mc.StateManager.GetConnectionInfo()
+}
+
+// GetConfig returns the current server configuration pointer in a thread-safe,
+// lock-free manner. Safe to call whether or not mc.mu is held.
+func (mc *Client) GetConfig() *config.ServerConfig {
+	return mc.cfg.Load()
+}
+
+// SetConfig atomically swaps the server configuration. Lock-free; callers must
+// not hold mc.mu (they don't need to — the swap is atomic).
+//
+// Also pushes ExposePrompts down to the coreClient (PR #973 review, P2):
+// coreClient.config is set once at connect time and never reassigned, so
+// without this a hot-reloaded expose_prompts value would stay frozen at
+// whatever was in effect when the connection was created, until the next
+// reconnect-forcing change or restart.
+func (mc *Client) SetConfig(config *config.ServerConfig) {
+	mc.cfg.Store(config)
+	if mc.coreClient != nil {
+		mc.coreClient.SetExposePrompts(config.ExposePrompts)
+	}
+}
+
+// GetServerInfo returns server information
+func (mc *Client) GetServerInfo() *mcp.InitializeResult {
+	return mc.coreClient.GetServerInfo()
+}
+
+// GetLastError returns the last error from the state manager
+func (mc *Client) GetLastError() error {
+	info := mc.StateManager.GetConnectionInfo()
+	return info.LastError
+}
+
+// GetConnectionStatus returns detailed connection status information for compatibility
+func (mc *Client) GetConnectionStatus() map[string]interface{} {
+	info := mc.StateManager.GetConnectionInfo()
+
+	status := map[string]interface{}{
+		"state":        info.State.String(),
+		"connected":    mc.IsConnected(),
+		"connecting":   mc.IsConnecting(),
+		"should_retry": mc.ShouldRetry(),
+		"retry_count":  info.RetryCount,
+		"server_name":  info.ServerName,
+	}
+
+	if info.LastError != nil {
+		status["last_error"] = info.LastError.Error()
+	}
+
+	if !info.LastRetryTime.IsZero() {
+		status["last_retry_time"] = info.LastRetryTime
+	}
+
+	return status
+}
+
+// GetEnvManager returns the environment manager for testing purposes
+func (mc *Client) GetEnvManager() interface{} {
+	// This is a wrapper method to access the core client's environment manager
+	// We use interface{} to avoid exposing internal types
+	return mc.coreClient.GetEnvManager()
+}
+
+// ShouldRetry returns whether connection should be retried
+func (mc *Client) ShouldRetry() bool {
+	return mc.StateManager.ShouldRetry()
+}
+
+// IsDockerIsolated returns true if this server will use Docker isolation.
+// Used to select appropriate connect timeouts (Docker containers need more time for package installation).
+func (mc *Client) IsDockerIsolated() bool {
+	gc := mc.globalConfig.Load()
+	if gc == nil || gc.DockerIsolation == nil || !gc.DockerIsolation.Enabled {
+		return false
+	}
+	// Check if server has isolation explicitly disabled
+	if mc.GetConfig().Isolation != nil && mc.GetConfig().Isolation.Enabled != nil && !*mc.GetConfig().Isolation.Enabled {
+		return false
+	}
+	// Only stdio servers with commands get Docker-isolated
+	return mc.GetConfig().Command != ""
+}
+
+// SetUserLoggedOut marks that the user has explicitly logged out
+// This prevents automatic reconnection until cleared (e.g., by explicit login)
+func (mc *Client) SetUserLoggedOut(loggedOut bool) {
+	mc.StateManager.SetUserLoggedOut(loggedOut)
+}
+
+// IsUserLoggedOut returns true if the user has explicitly logged out
+func (mc *Client) IsUserLoggedOut() bool {
+	return mc.StateManager.IsUserLoggedOut()
+}
+
+// IsOAuthCallRequired reports whether a tools/call against this otherwise-
+// connected server returned "authorization required" / 401, indicating the
+// endpoint enforces OAuth only at call time. The runtime feeds this into the
+// health calculator to surface a proactive Sign-in CTA. Cleared by a successful
+// call or a fresh Connect. MCP-2084.
+func (mc *Client) IsOAuthCallRequired() bool {
+	return mc.oauthCallRequired.Load()
+}
+
+// SetStateChangeCallback sets a callback for state changes
+func (mc *Client) SetStateChangeCallback(callback func(oldState, newState types.ConnectionState, info *types.ConnectionInfo)) {
+	mc.StateManager.SetStateChangeCallback(callback)
+}
+
+// SetToolDiscoveryCallback sets the callback for triggering tool re-indexing when
+// a notifications/tools/list_changed notification is received from the upstream server.
+func (mc *Client) SetToolDiscoveryCallback(callback func(ctx context.Context, serverName string) error) {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	mc.toolDiscoveryCallback = callback
+}
+
+// acquireListToolsContext claims the in-progress flag for an upstream ListTools
+// call. When successful it also allocates listToolsWaitCh and resets the cached
+// last-result, so any concurrent ListTools waiter can safely block on the
+// channel and read the published result regardless of which caller is the
+// leader. release() must be called exactly once; it cancels the timeout,
+// publishes any result via publishListToolsResult (if the caller wrote one),
+// and closes the wait channel so coalesced waiters wake up.
+func (mc *Client) acquireListToolsContext(ctx context.Context, timeout time.Duration) (context.Context, func() bool, bool) {
+	mc.listToolsMu.Lock()
+	if mc.listToolsInProgress {
+		mc.listToolsMu.Unlock()
+		return nil, nil, false
+	}
+
+	mc.listToolsInProgress = true
+	mc.listToolsWaitCh = make(chan struct{})
+	mc.listToolsLastResult = nil
+	mc.listToolsLastErr = nil
+	listCtx, cancel := context.WithTimeout(ctx, timeout)
+	mc.listToolsCancel = cancel
+	mc.listToolsMu.Unlock()
+
+	release := func() bool {
+		cancel()
+		mc.listToolsMu.Lock()
+		mc.listToolsCancel = nil
+		mc.listToolsInProgress = false
+		if mc.listToolsWaitCh != nil {
+			close(mc.listToolsWaitCh)
+			mc.listToolsWaitCh = nil
+		}
+		mc.listToolsMu.Unlock()
+		return mc.IsConnected()
+	}
+
+	return listCtx, release, true
+}
+
+// publishListToolsResult records the outcome of an upstream ListTools call so
+// that coalesced waiters in ListTools() can read it once the wait channel is
+// closed. All call sites that go through acquireListToolsContext (ListTools,
+// the health check, and the tool-count refresh) must publish their result so
+// that an arriving ListTools waiter never reads stale or zero data.
+func (mc *Client) publishListToolsResult(tools []*config.ToolMetadata, err error) {
+	mc.listToolsMu.Lock()
+	mc.listToolsLastResult = tools
+	mc.listToolsLastErr = err
+	mc.listToolsMu.Unlock()
+}
+
+// ListTools retrieves tools with concurrency control and coalesces concurrent
+// callers onto a single in-flight upstream call.
+func (mc *Client) ListTools(ctx context.Context) ([]*config.ToolMetadata, error) {
+	mc.logger.Debug("🔍 ListTools called",
+		zap.String("server", mc.GetConfig().Name),
+		zap.String("state", mc.StateManager.GetState().String()),
+		zap.Bool("connected", mc.IsConnected()))
+
+	if !mc.IsConnected() {
+		mc.logger.Debug("🔍 ListTools rejected - client not connected",
+			zap.String("server", mc.GetConfig().Name),
+			zap.String("state", mc.StateManager.GetState().String()))
+		return nil, fmt.Errorf("client not connected (state: %s)", mc.StateManager.GetState().String())
+	}
+
+	for {
+		listCtx, release, ok := mc.acquireListToolsContext(ctx, 30*time.Second)
+		if ok {
+			return mc.runListToolsAsLeader(listCtx, release)
+		}
+
+		mc.listToolsMu.Lock()
+		waitCh := mc.listToolsWaitCh
+		inProgress := mc.listToolsInProgress
+		mc.listToolsMu.Unlock()
+
+		if !inProgress {
+			// Race: holder released between the failed acquire and our re-check.
+			// Try to become the leader again.
+			continue
+		}
+		if waitCh == nil {
+			// Defensive fallback: every leader path is supposed to allocate a
+			// wait channel via acquireListToolsContext, so this should be
+			// unreachable. Fail fast rather than block forever on a nil channel.
+			return nil, fmt.Errorf("ListTools operation already in progress for server %s", mc.GetConfig().Name)
+		}
+
+		mc.logger.Debug("🔍 ListTools already in progress, waiting for shared result",
+			zap.String("server", mc.GetConfig().Name))
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-waitCh:
+			mc.listToolsMu.Lock()
+			res := mc.listToolsLastResult
+			err := mc.listToolsLastErr
+			mc.listToolsMu.Unlock()
+			if err != nil {
+				return nil, fmt.Errorf("ListTools failed: %w", err)
+			}
+			return res, nil
+		}
+	}
+}
+
+// runListToolsAsLeader performs the upstream ListTools call as the elected
+// leader and publishes the result before release() closes the wait channel,
+// so coalesced waiters always see a consistent result.
+func (mc *Client) runListToolsAsLeader(listCtx context.Context, release func() bool) ([]*config.ToolMetadata, error) {
+	defer func() {
+		if release() {
+			mc.logger.Debug("🔍 ListTools operation completed, flag reset",
+				zap.String("server", mc.GetConfig().Name))
+		} else {
+			mc.logger.Debug("🔍 ListTools operation completed while disconnected",
+				zap.String("server", mc.GetConfig().Name))
+		}
+	}()
+
+	tools, err := mc.coreClient.ListTools(listCtx)
+	mc.publishListToolsResult(tools, err)
+
+	if err != nil {
+		mc.logger.Error("ListTools operation failed",
+			zap.String("server", mc.GetConfig().Name),
+			zap.Error(err))
+
+		if mc.isConnectionError(err) {
+			mc.logger.Warn("Connection error detected during ListTools, updating server state",
+				zap.String("server", mc.GetConfig().Name),
+				zap.Error(err))
+			mc.StateManager.SetError(err)
+		}
+		return nil, fmt.Errorf("ListTools failed: %w", err)
+	}
+
+	mc.setToolCountCache(len(tools))
+	return tools, nil
+}
+
+// CallTool executes a tool with error handling
+func (mc *Client) CallTool(ctx context.Context, toolName string, args map[string]interface{}) (*mcp.CallToolResult, error) {
+	if !mc.IsConnected() {
+		return nil, fmt.Errorf("client not connected (state: %s)", mc.StateManager.GetState().String())
+	}
+
+	// Spec 093 FR-003/FR-005: admission control sits here, above
+	// coreClient.CallTool (which is where the call_tool_timeout context is
+	// created), so queue waiting never consumes the execution budget and every
+	// in-process dispatch path is bounded by the same limits.
+	releaseSlot, err := mc.acquireAdmission(ctx, toolName)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseSlot()
+
+	invoker := mc.toolInvoker
+	if invoker == nil {
+		invoker = mc.coreClient
+	}
+
+	result, err := invoker.CallTool(ctx, toolName, args)
+	if err != nil {
+		mc.recordCallToolOAuthSignal(toolName, err)
+		// GH #965: a canceled or timed-out CALL is not a dead SERVER. SetError
+		// flips the whole upstream to Error and burns a retry, evicting it for
+		// every other client — so only hard evidence of a broken transport may
+		// take that path. Classify, most-specific first.
+		switch {
+		case ctx.Err() != nil:
+			// The caller itself went away (HTTP client disconnect, per-request
+			// deadline). Call-scoped by definition — never touch server state.
+			mc.logger.Warn("Tool call canceled/deadline by caller; not marking server unhealthy",
+				zap.String("server", mc.GetConfig().Name),
+				zap.String("tool", toolName),
+				zap.Error(ctx.Err()))
+
+		case !mc.isConnectionError(err):
+			// Log non-connection errors at error level
+			mc.logger.Error("Tool call failed",
+				zap.String("server", mc.GetConfig().Name),
+				zap.String("tool", toolName),
+				zap.Error(err))
+
+		case isAmbiguousCancellationError(err):
+			// Cancellation surfaced from inside the transport while our caller
+			// context is still live (mcp-go internals, an HTTP client timeout,
+			// or remote error text). It could be a dead server or just a dropped
+			// request — probe asynchronously instead of evicting on a guess.
+			mc.logger.Warn("Tool call failed with an ambiguous cancellation; probing server liveness before marking it unhealthy",
+				zap.String("server", mc.GetConfig().Name),
+				zap.String("tool", toolName),
+				zap.Error(err))
+			mc.probeAfterAmbiguousCallError(err)
+
+		default:
+			// Hard evidence (connection refused/reset, broken pipe, dial i/o
+			// timeout…): the transport is genuinely broken — existing behavior.
+			if mc.isNormalReconnectionError(err) {
+				mc.logger.Warn("Tool call failed due to connection loss, will attempt reconnection",
+					zap.String("server", mc.GetConfig().Name),
+					zap.String("tool", toolName),
+					zap.String("error_type", "normal_reconnection"),
+					zap.Error(err))
+			} else {
+				mc.logger.Error("Tool call failed with connection error",
+					zap.String("server", mc.GetConfig().Name),
+					zap.String("tool", toolName),
+					zap.Error(err))
+			}
+			mc.StateManager.SetError(err)
+		}
+		return nil, err
+	}
+
+	// A successful call means OAuth (if it was ever required at call time) is now
+	// satisfied — clear the Sign-in CTA flag. MCP-2084.
+	if mc.oauthCallRequired.CompareAndSwap(true, false) {
+		mc.logger.Info("🔓 Tool call succeeded; clearing OAuth Sign-in CTA flag",
+			zap.String("server", mc.GetConfig().Name))
+	}
+
+	return result, nil
+}
+
+// recordCallToolOAuthSignal inspects a failed tools/call error and, when it is an
+// "authorization required" / 401 from an otherwise-connected server (NOT a
+// connection error), flags the server as needing OAuth sign-in. This covers
+// endpoints that connect + list tools anonymously but enforce OAuth only at
+// call time (e.g. Google's sqladmin MCP). The flag drives a proactive Sign-in
+// CTA via the health calculator. MCP-2084.
+func (mc *Client) recordCallToolOAuthSignal(toolName string, err error) {
+	if err == nil || mc.isConnectionError(err) {
+		return
+	}
+	if !mc.isOAuthAuthorizationRequired(err) && !mc.isOAuthError(err) {
+		return
+	}
+	if mc.oauthCallRequired.CompareAndSwap(false, true) {
+		mc.logger.Info("🔐 Tool call requires OAuth sign-in; flagging server for Sign-in CTA",
+			zap.String("server", mc.GetConfig().Name),
+			zap.String("tool", toolName))
+	}
+}
+
+// isAmbiguousCancellationError reports whether a tools/call error is a
+// cancellation/deadline signal rather than hard evidence that the transport is
+// broken (GH #965).
+//
+// These arrive with a live caller context — mcp-go cancelling internally, the
+// HTTP client's own timeout firing, or the remote echoing cancellation text —
+// so they say nothing definitive about the server's health. isConnectionError
+// matches them by substring today, which is what evicted the whole upstream on
+// a single client disconnect. It is deliberately NOT modified: ListTools, the
+// health loop and reconnect all rely on its current matching.
+func isAmbiguousCancellationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
+	errStr := err.Error()
+	// "cancelled" (British) is how mcp-go's sse.go spells it; the plain-text
+	// forms cover errors whose chain was stripped before reaching us.
+	for _, marker := range []string{"context canceled", "context cancelled", "context deadline exceeded"} {
+		if containsString(errStr, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// probeAfterAmbiguousCallError fires one bounded liveness probe after an
+// ambiguous tools/call cancellation (GH #965) and classifies the outcome:
+//
+//   - healthy probe → the call was merely canceled; the server is left untouched.
+//   - transient probe failure (deadline exceeded on the ping, momentary
+//     overload, or a non-connection error such as an upstream without `ping`)
+//     → nothing happens here. A busy upstream is precisely what produces slow
+//     calls and ambiguous cancellations, so a single missed 5s ping is not
+//     eviction-grade evidence; the background health loop owns transient
+//     failures and its healthCheckFailureThreshold consecutive-miss budget.
+//   - hard probe failure (connection refused/reset, broken pipe, no such
+//     host…) on the SAME connection generation → Error, as before.
+//
+// Runs asynchronously so the tool call returns immediately, and is gated to a
+// single in-flight probe so a burst of canceled calls cannot stampede the
+// upstream. The connection epoch captured before launching guards against a
+// disconnect+reconnect completing mid-probe: a verdict about a superseded
+// session is dropped rather than applied to the fresh one.
+func (mc *Client) probeAfterAmbiguousCallError(cause error) {
+	if !mc.ambiguousProbeInFlight.CompareAndSwap(false, true) {
+		return
+	}
+
+	epoch := mc.connectionEpoch.Load()
+
+	go func() {
+		defer mc.ambiguousProbeInFlight.Store(false)
+
+		if !mc.IsConnected() || mc.connectionEpoch.Load() != epoch {
+			return
+		}
+
+		prober := mc.healthProbe
+		if prober == nil {
+			if mc.coreClient == nil {
+				return
+			}
+			prober = mc.coreClient
+		}
+
+		// Derived from Background: the caller context that produced the
+		// ambiguous error is very likely already dead.
+		ctx, cancel := context.WithTimeout(context.Background(), ambiguousProbeTimeout)
+		defer cancel()
+
+		err := prober.Ping(ctx)
+		if err == nil {
+			mc.logger.Debug("Liveness probe after canceled tool call succeeded; server left untouched",
+				zap.String("server", mc.GetConfig().Name),
+				zap.NamedError("call_error", cause))
+			return
+		}
+
+		// Only hard transport evidence evicts. Transient failures are the
+		// background health loop's business — it counts consecutive misses
+		// instead of acting on one. consecutiveHealthFailures is deliberately
+		// NOT touched here: it is only synchronized for the monitor goroutine.
+		if !mc.isConnectionError(err) || isTransientHealthCheckError(err) {
+			mc.logger.Info("Liveness probe after canceled tool call failed transiently; leaving state to the background health loop",
+				zap.String("server", mc.GetConfig().Name),
+				zap.NamedError("call_error", cause),
+				zap.Error(err))
+			return
+		}
+
+		// The state may have moved on while the probe was in flight (disconnect,
+		// or a full reconnect that opened a new connection generation) — this
+		// verdict describes a session nobody is using any more. epochMu pairs
+		// this check-and-SetError with Connect's bump-and-Ready so a reconnect
+		// cannot complete between the check and the verdict (GH #965 review,
+		// round 2).
+		mc.epochMu.Lock()
+		defer mc.epochMu.Unlock()
+		if !mc.IsConnected() || mc.connectionEpoch.Load() != epoch {
+			mc.logger.Debug("Liveness probe after canceled tool call failed, but the connection it observed is gone; skipping",
+				zap.String("server", mc.GetConfig().Name),
+				zap.Error(err))
+			return
+		}
+
+		mc.logger.Warn("Liveness probe after canceled tool call failed with hard connection evidence; marking server unhealthy",
+			zap.String("server", mc.GetConfig().Name),
+			zap.NamedError("call_error", cause),
+			zap.Error(err))
+		mc.StateManager.SetError(err)
+	}()
+}
+
+func (mc *Client) cancelInFlightListTools() {
+	mc.listToolsMu.Lock()
+	cancel := mc.listToolsCancel
+	inProgress := mc.listToolsInProgress
+	mc.listToolsMu.Unlock()
+
+	if !inProgress || cancel == nil {
+		return
+	}
+
+	mc.logger.Debug("Cancelling in-flight ListTools operation",
+		zap.String("server", mc.GetConfig().Name))
+
+	cancel()
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	for time.Now().Before(deadline) {
+		<-ticker.C
+		mc.listToolsMu.Lock()
+		done := !mc.listToolsInProgress
+		mc.listToolsMu.Unlock()
+		if done {
+			return
+		}
+	}
+
+	mc.logger.Debug("Timed out waiting for ListTools operation to cancel",
+		zap.String("server", mc.GetConfig().Name))
+}
+
+// cancelInFlightConnect cancels any in-flight Connect() operation.
+// This is called from Disconnect() BEFORE acquiring mc.mu, so Disconnect()
+// doesn't block on a Connect() that holds mc.mu during slow OAuth flows.
+func (mc *Client) cancelInFlightConnect() {
+	mc.connectMu.Lock()
+	cancel := mc.connectCancel
+	mc.connectMu.Unlock()
+
+	if cancel == nil {
+		return
+	}
+
+	mc.logger.Debug("Cancelling in-flight Connect operation",
+		zap.String("server", mc.GetConfig().Name))
+	cancel()
+}
+
+// onStateChange handles state transition events
+func (mc *Client) onStateChange(oldState, newState types.ConnectionState, info *types.ConnectionInfo) {
+	mc.logger.Info("State transition",
+		zap.String("from", oldState.String()),
+		zap.String("to", newState.String()),
+		zap.String("server", mc.GetConfig().Name))
+
+	// Handle error states with appropriate log levels
+	if newState == types.StateError && info.LastError != nil {
+		// Check for deprecated endpoint errors first - these require URL changes, not reconnection
+		if mc.isDeprecatedEndpointError(info.LastError) {
+			mc.logger.Error("⚠️ ENDPOINT DEPRECATED: Server URL needs to be updated",
+				zap.String("server", mc.GetConfig().Name),
+				zap.String("current_url", mc.GetConfig().URL),
+				zap.String("error_type", "endpoint_deprecated"),
+				zap.String("action", "Update the server URL in your configuration"),
+				zap.String("hint", "The server may have migrated from /sse to /mcp - check the server's documentation"),
+				zap.Error(info.LastError))
+			return // Don't log as normal reconnection error
+		}
+
+		if mc.isNormalReconnectionError(info.LastError) {
+			mc.logger.Warn("Connection error, will attempt automatic reconnection",
+				zap.String("server", mc.GetConfig().Name),
+				zap.String("error_type", "normal_reconnection"),
+				zap.Error(info.LastError),
+				zap.Int("retry_count", info.RetryCount))
+		} else {
+			mc.logger.Error("Connection error",
+				zap.String("server", mc.GetConfig().Name),
+				zap.Error(info.LastError),
+				zap.Int("retry_count", info.RetryCount))
+		}
+	}
+}
+
+// startBackgroundMonitoring starts monitoring the connection health.
+//
+// Idempotent: tryReconnect() re-enters Connect() after tearing down only the
+// core client, so this is reached again on every reconnect while the existing
+// monitor is still running (stopBackgroundMonitoring is only called from the
+// managed client's Disconnect()). Without this guard each reconnect leaked
+// another backgroundHealthCheck goroutine, multiplying the ListTools liveness
+// probes sent to the upstream server for the rest of the process's life.
+func (mc *Client) startBackgroundMonitoring() {
+	if mc.monitoringStarted {
+		return
+	}
+
+	// Mark that monitoring has been started
+	mc.monitoringStarted = true
+	mc.monitoringWG.Add(1)
+	go func() {
+		defer mc.monitoringWG.Done()
+		mc.backgroundHealthCheck()
+	}()
+}
+
+// stopBackgroundMonitoring stops the background monitoring
+func (mc *Client) stopBackgroundMonitoring() {
+	// Only proceed if monitoring was actually started
+	if !mc.monitoringStarted {
+		mc.logger.Debug("Background monitoring was never started, skipping stop",
+			zap.String("server", mc.GetConfig().Name))
+		return
+	}
+
+	close(mc.stopMonitoring)
+
+	// Use a timeout for the wait to prevent hanging during shutdown
+	done := make(chan struct{})
+	go func() {
+		mc.monitoringWG.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		mc.logger.Debug("Background monitoring stopped successfully",
+			zap.String("server", mc.GetConfig().Name))
+	case <-time.After(1 * time.Second):
+		mc.logger.Warn("Background monitoring stop timed out after 1s, forcing shutdown",
+			zap.String("server", mc.GetConfig().Name))
+	}
+
+	mc.monitoringStarted = false
+
+	// Recreate the channel for potential reuse
+	mc.stopMonitoring = make(chan struct{})
+}
+
+// healthCheckDisabledRecheckInterval is how long the health loop sleeps between
+// re-checks when probing is disabled (resolved interval <= 0). It is NOT a
+// probe — it just lets a later config hot-reload re-enable the loop without a
+// restart (spec 074, FR-012).
+const healthCheckDisabledRecheckInterval = 30 * time.Second
+
+// GetGlobalConfig returns the current proxy-wide config snapshot (may be nil for
+// hand-constructed test clients). Lock-free; safe to call whether or not mc.mu
+// is held.
+func (mc *Client) GetGlobalConfig() *config.Config {
+	return mc.globalConfig.Load()
+}
+
+// SetGlobalConfig swaps the proxy-wide config the background loops re-resolve
+// against. Called on a config hot-reload (via Manager.SetGlobalConfig) so the
+// resettable health-check timer picks up a new global interval without a restart
+// (spec 074, FR-012). Lock-free atomic swap.
+func (mc *Client) SetGlobalConfig(cfg *config.Config) {
+	mc.globalConfig.Store(cfg)
+}
+
+// resolveHealthCheckInterval resolves this server's effective health-check
+// interval (per-server override → global → built-in default). A nil
+// globalConfig (hand-constructed clients) falls back to the built-in default.
+func (mc *Client) resolveHealthCheckInterval() time.Duration {
+	cfg := mc.globalConfig.Load()
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	return cfg.ResolveHealthCheckInterval(mc.GetConfig())
+}
+
+// planHealthCheckCycle decides one iteration of the health loop: whether to
+// probe and how long to wait first. A positive interval probes on that cadence;
+// a non-positive interval disables probing and waits the re-check window.
+func planHealthCheckCycle(interval, disabledRecheck time.Duration) (probe bool, wait time.Duration) {
+	if interval <= 0 {
+		return false, disabledRecheck
+	}
+	return true, interval
+}
+
+// backgroundHealthCheck performs periodic health checks. The interval is
+// re-resolved every cycle from config, so a hot-reload changes the cadence (or
+// disables the loop entirely) without restarting the server (spec 074).
+func (mc *Client) backgroundHealthCheck() {
+	for {
+		probe, wait := planHealthCheckCycle(mc.resolveHealthCheckInterval(), healthCheckDisabledRecheckInterval)
+		timer := time.NewTimer(wait)
+		select {
+		case <-timer.C:
+			if probe {
+				mc.performHealthCheck()
+			}
+		case <-mc.stopMonitoring:
+			timer.Stop()
+			mc.logger.Debug("Background health monitoring stopped",
+				zap.String("server", mc.GetConfig().Name))
+			return
+		}
+	}
+}
+
+// performHealthCheck checks if the connection is still healthy and attempts reconnection if needed
+func (mc *Client) performHealthCheck() {
+	// Skip all health/reconnect work when user explicitly logged out
+	if mc.IsUserLoggedOut() {
+		mc.logger.Debug("Health check skipped - user explicitly logged out",
+			zap.String("server", mc.GetConfig().Name))
+		return
+	}
+
+	// Handle OAuth errors with extended backoff
+	if mc.StateManager.GetState() == types.StateError && mc.StateManager.IsOAuthError() {
+		if mc.StateManager.ShouldRetryOAuth() {
+			info := mc.StateManager.GetConnectionInfo()
+			mc.logger.Info("Attempting OAuth reconnection with extended backoff",
+				zap.String("server", mc.GetConfig().Name),
+				zap.Int("oauth_retry_count", info.OAuthRetryCount),
+				zap.Time("last_oauth_attempt", info.LastOAuthAttempt))
+			mc.tryReconnect()
+		} else {
+			info := mc.StateManager.GetConnectionInfo()
+			mc.logger.Debug("OAuth backoff period not elapsed, skipping reconnection",
+				zap.String("server", mc.GetConfig().Name),
+				zap.Int("oauth_retry_count", info.OAuthRetryCount),
+				zap.Time("last_oauth_attempt", info.LastOAuthAttempt))
+		}
+		return
+	}
+
+	// Check if client is in error state and should retry connection (non-OAuth errors)
+	if mc.StateManager.GetState() == types.StateError {
+		info := mc.StateManager.GetConnectionInfo()
+		if info.GaveUp {
+			// Log once at WARN then suppress — server needs manual reconnect
+			if info.RetryCount == types.MaxConnectionRetries {
+				mc.logger.Warn("Giving up automatic reconnection after max retries — use manual reconnect or reconnect-on-use",
+					zap.String("server", mc.GetConfig().Name),
+					zap.Int("retry_count", info.RetryCount))
+			}
+			return
+		}
+		if mc.ShouldRetry() {
+			mc.logger.Info("Attempting automatic reconnection with exponential backoff",
+				zap.String("server", mc.GetConfig().Name),
+				zap.Int("retry_count", info.RetryCount))
+
+			mc.tryReconnect()
+			return
+		}
+	}
+
+	// Skip health checks if not connected
+	if !mc.IsConnected() {
+		return
+	}
+
+	// Skip health checks for Docker servers to avoid interference with container management
+	if mc.isDockerServer() {
+		mc.logger.Debug("Skipping health check for Docker server",
+			zap.String("server", mc.GetConfig().Name),
+			zap.String("command", mc.GetConfig().Command))
+		return
+	}
+
+	// Create a short timeout for health check
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Probe liveness with the MCP-standard lightweight `ping` rather than
+	// re-listing every tool (spec 074, FR-001). This removes the dominant
+	// source of recurring background `tools/list` traffic (#608) while still
+	// detecting a dead transport. The heavyweight ListTools coalescing
+	// machinery (acquireListToolsContext/publishListToolsResult) remains for
+	// real discovery callers; the health path no longer participates.
+	prober := mc.healthProbe
+	if prober == nil {
+		prober = mc.coreClient
+	}
+	err := prober.Ping(ctx)
+
+	if err != nil {
+		// Only mark as error if it's a real connection issue, not timeout during high activity
+		if mc.isConnectionError(err) {
+			if mc.recordHealthCheckFailure(err) {
+				mc.logger.Warn("Health check failed repeatedly, marking as error",
+					zap.String("server", mc.GetConfig().Name),
+					zap.Int("consecutive_failures", mc.consecutiveHealthFailures),
+					zap.Error(err))
+				mc.StateManager.SetError(err)
+			} else {
+				mc.logger.Info("Health check failed transiently, tolerating below threshold",
+					zap.String("server", mc.GetConfig().Name),
+					zap.Int("consecutive_failures", mc.consecutiveHealthFailures),
+					zap.Int("threshold", healthCheckFailureThreshold),
+					zap.Error(err))
+			}
+		} else {
+			mc.logger.Debug("Health check failed with timeout (high activity), ignoring",
+				zap.String("server", mc.GetConfig().Name),
+				zap.Error(err))
+		}
+		return
+	}
+
+	mc.recordHealthCheckSuccess()
+	mc.logger.Debug("Health check passed successfully",
+		zap.String("server", mc.GetConfig().Name))
+}
+
+// recordHealthCheckFailure increments the consecutive-failure counter and
+// returns whether the caller should now flip the state machine to Error.
+//
+// Transient errors (timeout, deadline exceeded, context canceled) need
+// healthCheckFailureThreshold consecutive misses before they're considered a
+// real outage — slow upstreams (e.g. hf.co/mcp under load) routinely miss a
+// single 5-second health-check window without actually being down. Hard
+// failures (connection refused, host unreachable, DNS gone) trigger Error
+// immediately because waiting buys nothing — the server is genuinely
+// unreachable and the user should see that.
+func (mc *Client) recordHealthCheckFailure(err error) bool {
+	mc.consecutiveHealthFailures++
+	if !isTransientHealthCheckError(err) {
+		return true
+	}
+	return mc.consecutiveHealthFailures >= healthCheckFailureThreshold
+}
+
+// recordHealthCheckSuccess resets the consecutive-failure counter. One good
+// check is enough to wipe the slate — we're not trying to track flap
+// frequency, just preventing single misses from looking like outages.
+func (mc *Client) recordHealthCheckSuccess() {
+	mc.consecutiveHealthFailures = 0
+}
+
+// resetHealthCheckFailures clears the counter. Called from the connect
+// success path so a successful reconnect doesn't carry stale failure debt
+// from before the disconnect.
+func (mc *Client) resetHealthCheckFailures() {
+	mc.consecutiveHealthFailures = 0
+}
+
+// isTransientHealthCheckError identifies failure modes that warrant
+// flap-resistance — slow upstream / momentary timeout — vs. hard failures
+// that should surface to the user immediately.
+func isTransientHealthCheckError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	// Hard failures: short-circuit to "not transient" so the caller flips
+	// Error on the first miss. Order matters — check these BEFORE the
+	// generic timeout heuristics below.
+	switch {
+	case strings.Contains(msg, "connection refused"),
+		strings.Contains(msg, "no such host"),
+		strings.Contains(msg, "network is unreachable"),
+		strings.Contains(msg, "no route to host"),
+		strings.Contains(msg, "connection reset"),
+		strings.Contains(msg, "broken pipe"),
+		strings.Contains(msg, "econnrefused"):
+		return false
+	}
+	// Soft failures: short-window misses we want to tolerate.
+	switch {
+	case strings.Contains(msg, "deadline exceeded"),
+		strings.Contains(msg, "timeout"),
+		strings.Contains(msg, "context canceled"):
+		return true
+	}
+	return false
+}
+
+// RefreshOAuthTokenDirect forces an OAuth token refresh without reconnecting.
+// This delegates to the core client's direct refresh implementation.
+// Used by the RefreshManager for proactive token refresh before expiration.
+func (mc *Client) RefreshOAuthTokenDirect(ctx context.Context) error {
+	if mc == nil || mc.coreClient == nil {
+		return fmt.Errorf("client not initialized")
+	}
+	return mc.coreClient.RefreshOAuthTokenDirect(ctx)
+}
+
+// ForceReconnect triggers an immediate reconnection attempt regardless of backoff state.
+func (mc *Client) ForceReconnect(reason string) {
+	if mc == nil {
+		return
+	}
+
+	if mc.IsUserLoggedOut() {
+		mc.logger.Info("Force reconnect skipped - user explicitly logged out",
+			zap.String("server", mc.GetConfig().Name),
+			zap.String("reason", reason))
+		return
+	}
+
+	serverName := ""
+	if mc.GetConfig() != nil {
+		serverName = mc.GetConfig().Name
+	}
+
+	if mc.IsConnected() {
+		mc.logger.Debug("Force reconnect skipped - client already connected",
+			zap.String("server", serverName),
+			zap.String("reason", reason))
+		return
+	}
+
+	if mc.IsConnecting() {
+		mc.logger.Debug("Force reconnect skipped - client currently connecting",
+			zap.String("server", serverName),
+			zap.String("reason", reason))
+		return
+	}
+
+	mc.logger.Info("Force reconnect requested",
+		zap.String("server", serverName),
+		zap.String("reason", reason),
+		zap.String("state", mc.StateManager.GetState().String()))
+
+	// Full Reset clears retryCount so a "gave up" server can be retried
+	mc.StateManager.Reset()
+	go mc.tryReconnect()
+}
+
+// tryReconnect attempts to reconnect the client with proper error handling
+func (mc *Client) tryReconnect() {
+	if mc.IsUserLoggedOut() {
+		mc.logger.Info("Skipping reconnection attempt - user explicitly logged out",
+			zap.String("server", mc.GetConfig().Name))
+		return
+	}
+
+	// CRITICAL FIX: Prevent concurrent reconnection attempts to avoid duplicate containers
+	mc.reconnectMu.Lock()
+	if mc.reconnectInProgress {
+		mc.reconnectMu.Unlock()
+		mc.logger.Debug("Reconnection already in progress, skipping duplicate attempt",
+			zap.String("server", mc.GetConfig().Name))
+		return
+	}
+	mc.reconnectInProgress = true
+	mc.reconnectMu.Unlock()
+
+	// Ensure we clear the reconnection flag when done
+	defer func() {
+		mc.reconnectMu.Lock()
+		mc.reconnectInProgress = false
+		mc.reconnectMu.Unlock()
+	}()
+
+	// Create a timeout context for the reconnection attempt - increased for OAuth flows
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	mc.logger.Info("Starting reconnection attempt",
+		zap.String("server", mc.GetConfig().Name),
+		zap.String("current_state", mc.StateManager.GetState().String()))
+
+	// First, disconnect the current client to clean up any broken connections
+	// Cancel any in-flight connect/listTools before attempting reconnection
+	mc.cancelInFlightConnect()
+	mc.cancelInFlightListTools()
+	if err := mc.coreClient.Disconnect(); err != nil {
+		mc.logger.Warn("Failed to disconnect during reconnection attempt",
+			zap.String("server", mc.GetConfig().Name),
+			zap.Error(err))
+	}
+
+	// Transition to disconnected for reconnect, preserving retryCount for backoff
+	mc.StateManager.ResetForReconnect()
+
+	// Attempt to reconnect using the existing Connect method
+	// The Connect method already handles state transitions and error management
+	if err := mc.Connect(ctx); err != nil {
+		info := mc.StateManager.GetConnectionInfo()
+
+		// Use different log levels based on error type and retry count
+		if mc.isOAuthError(err) {
+			mc.logger.Warn("OAuth reconnection attempt failed, extended backoff will apply",
+				zap.String("server", mc.GetConfig().Name),
+				zap.String("error_type", "oauth_authentication"),
+				zap.Error(err),
+				zap.Int("oauth_retry_count", info.OAuthRetryCount))
+		} else if mc.isNormalReconnectionError(err) && info.RetryCount <= 5 {
+			mc.logger.Warn("Reconnection attempt failed, will retry with exponential backoff",
+				zap.String("server", mc.GetConfig().Name),
+				zap.String("error_type", "normal_reconnection"),
+				zap.Error(err),
+				zap.Int("retry_count", info.RetryCount))
+		} else {
+			mc.logger.Error("Reconnection attempt failed",
+				zap.String("server", mc.GetConfig().Name),
+				zap.Error(err),
+				zap.Int("retry_count", info.RetryCount))
+		}
+		// Connect method already sets the error state, so we don't need to do it here
+		return
+	}
+
+	mc.logger.Info("Reconnection attempt successful",
+		zap.String("server", mc.GetConfig().Name),
+		zap.String("new_state", mc.StateManager.GetState().String()))
+}
+
+// TryReconnectSync attempts a synchronous reconnection within the given context.
+// Unlike ForceReconnect which spawns a goroutine, this blocks until the reconnect
+// attempt completes or the context is cancelled. It uses the existing reconnectInProgress
+// flag to prevent concurrent reconnection storms.
+//
+// Returns nil if reconnection succeeds, error otherwise.
+func (mc *Client) TryReconnectSync(ctx context.Context) error {
+	if mc == nil {
+		return fmt.Errorf("client is nil")
+	}
+
+	// Check context before starting
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("context already cancelled: %w", err)
+	}
+
+	// Skip if user explicitly logged out
+	if mc.IsUserLoggedOut() {
+		return fmt.Errorf("reconnect skipped: user explicitly logged out")
+	}
+
+	// Skip if already connected
+	if mc.IsConnected() {
+		return nil
+	}
+
+	// Skip if currently connecting (another attempt is in progress)
+	if mc.IsConnecting() {
+		return fmt.Errorf("reconnect skipped: connection already in progress")
+	}
+
+	// Acquire reconnect lock to prevent storms
+	mc.reconnectMu.Lock()
+	if mc.reconnectInProgress {
+		mc.reconnectMu.Unlock()
+		// Another reconnect is in progress — wait for it to finish by polling
+		// with the context deadline rather than starting a duplicate attempt
+		return mc.waitForReconnectCompletion(ctx)
+	}
+	mc.reconnectInProgress = true
+	mc.reconnectMu.Unlock()
+
+	// Clear reconnect flag when done
+	defer func() {
+		mc.reconnectMu.Lock()
+		mc.reconnectInProgress = false
+		mc.reconnectMu.Unlock()
+	}()
+
+	serverName := ""
+	if mc.GetConfig() != nil {
+		serverName = mc.GetConfig().Name
+	}
+
+	mc.logger.Info("TryReconnectSync: starting synchronous reconnect",
+		zap.String("server", serverName))
+
+	// Disconnect stale state first
+	mc.cancelInFlightConnect()
+	mc.cancelInFlightListTools()
+	if err := mc.coreClient.Disconnect(); err != nil {
+		mc.logger.Warn("TryReconnectSync: disconnect during reconnect returned error",
+			zap.String("server", serverName),
+			zap.Error(err))
+	}
+
+	// Reset state to disconnected
+	mc.StateManager.Reset()
+
+	// Attempt synchronous connect with the provided context
+	if err := mc.Connect(ctx); err != nil {
+		mc.logger.Warn("TryReconnectSync: reconnect failed",
+			zap.String("server", serverName),
+			zap.Error(err))
+		return fmt.Errorf("reconnect failed: %w", err)
+	}
+
+	mc.logger.Info("TryReconnectSync: reconnect succeeded",
+		zap.String("server", serverName),
+		zap.String("new_state", mc.StateManager.GetState().String()))
+
+	return nil
+}
+
+// waitForReconnectCompletion polls until an in-progress reconnect completes or the context expires.
+func (mc *Client) waitForReconnectCompletion(ctx context.Context) error {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timed out waiting for in-progress reconnect: %w", ctx.Err())
+		case <-ticker.C:
+			mc.reconnectMu.Lock()
+			inProgress := mc.reconnectInProgress
+			mc.reconnectMu.Unlock()
+
+			if !inProgress {
+				// Reconnect finished — check if it succeeded
+				if mc.IsConnected() {
+					return nil
+				}
+				return fmt.Errorf("concurrent reconnect completed but connection not established")
+			}
+		}
+	}
+}
+
+// isConnectionError checks if an error indicates a connection problem
+func (mc *Client) isConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errStr := err.Error()
+	connectionErrors := []string{
+		"connection refused",
+		"no such host",
+		"connection reset",
+		"broken pipe",
+		"network is unreachable",
+		"timeout",
+		"deadline exceeded",
+		"context canceled",
+		// SSE and HTTP transport specific errors
+		"terminated",
+		"fetch failed",
+		"TypeError",
+		"ECONNREFUSED",
+		"SSE stream disconnected",
+		"stream disconnected",
+		"Failed to reconnect SSE stream",
+		"Maximum reconnection attempts",
+		"connect ECONNREFUSED",
+	}
+
+	for _, connErr := range connectionErrors {
+		if containsString(errStr, connErr) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// isOAuthAuthorizationRequired checks if OAuth authorization is needed (not an error)
+func (mc *Client) isOAuthAuthorizationRequired(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errStr := err.Error()
+	authRequiredErrors := []string{
+		"OAuth authorization during MCP init failed",
+		"OAuth authorization not implemented",
+		"OAuth authorization required",
+		"authorization required",
+	}
+
+	for _, authErr := range authRequiredErrors {
+		if containsString(errStr, authErr) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// isTokenRefreshScenario checks if we're in a token refresh scenario vs full re-auth.
+// Returns true if we have a refresh token available but need new access token.
+func (mc *Client) isTokenRefreshScenario(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errStr := err.Error()
+	// Token refresh scenarios typically involve expired access tokens
+	// but still having a valid refresh token
+	tokenRefreshIndicators := []string{
+		"token expired",
+		"access_token expired",
+		"token refresh",
+		"refresh_token",
+		"automatic refresh",
+	}
+
+	for _, indicator := range tokenRefreshIndicators {
+		if containsString(errStr, indicator) {
+			mc.logger.Debug("🔄 Detected token refresh scenario",
+				zap.String("server", mc.GetConfig().Name),
+				zap.String("indicator", indicator))
+			return true
+		}
+	}
+
+	return false
+}
+
+// isOAuthError checks if the error is OAuth-related (actual authentication failure)
+func (mc *Client) isOAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errStr := err.Error()
+	oauthErrors := []string{
+		"invalid_token",
+		"invalid_grant",
+		"access_denied",
+		"unauthorized",
+		"401", // HTTP 401 Unauthorized
+		"Missing or invalid access token",
+		"OAuth authentication failed",
+		"oauth timeout",
+		"oauth error",
+	}
+
+	for _, oauthErr := range oauthErrors {
+		if containsString(errStr, oauthErr) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// isNormalReconnectionError checks if error is part of normal reconnection flow
+func (mc *Client) isNormalReconnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errStr := err.Error()
+	normalReconnectionErrors := []string{
+		"SSE stream disconnected",
+		"stream disconnected",
+		"terminated",
+		"fetch failed",
+		"Failed to reconnect SSE stream",
+		"Maximum reconnection attempts",
+		"TypeError: terminated",
+		"OAuth authorization required",
+		"authentication strategies failed",
+	}
+
+	for _, reconnErr := range normalReconnectionErrors {
+		if containsString(errStr, reconnErr) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// isDeprecatedEndpointError checks if error indicates a deprecated/removed endpoint (HTTP 410 Gone)
+// This helps detect when an MCP server has migrated to a new endpoint URL
+func (mc *Client) isDeprecatedEndpointError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// Check for transport.ErrEndpointDeprecated type first
+	if transport.IsEndpointDeprecatedError(err) {
+		return true
+	}
+
+	errStr := strings.ToLower(err.Error())
+	deprecationIndicators := []string{
+		"410",                            // HTTP 410 Gone
+		"gone",                           // Status text
+		"deprecated",                     // Common migration message
+		"removed",                        // Endpoint removed
+		"no longer supported",            // Common deprecation message
+		"use the http transport",         // Sentry-specific migration hint
+		"sse transport has been removed", // Sentry-specific error
+		"endpoint deprecated",            // Our custom error message
+	}
+
+	for _, indicator := range deprecationIndicators {
+		if strings.Contains(errStr, indicator) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// GetCachedToolCount returns the cached tool count or fetches fresh count if cache is expired
+// Uses a 2-minute cache TTL to reduce frequent ListTools calls
+func (mc *Client) GetCachedToolCount(ctx context.Context) (int, error) {
+	const cacheTimeout = 2 * time.Minute
+
+	mc.toolCountMu.RLock()
+	cachedCount := mc.toolCount
+	cachedTime := mc.toolCountTime
+	mc.toolCountMu.RUnlock()
+
+	// Check if cache is valid and not expired
+	if !cachedTime.IsZero() && time.Since(cachedTime) < cacheTimeout {
+		// Cache hit - return cached count without logging to reduce noise
+		return cachedCount, nil
+	}
+
+	// Cache miss or expired - need to fetch fresh count
+	if !mc.IsConnected() {
+		mc.logger.Debug("🔍 Tool count fetch skipped - client not connected",
+			zap.String("server", mc.GetConfig().Name),
+			zap.String("state", mc.StateManager.GetState().String()))
+		return 0, fmt.Errorf("client not connected (state: %s)", mc.StateManager.GetState().String())
+	}
+
+	listCtx, release, ok := mc.acquireListToolsContext(ctx, 30*time.Second)
+	if !ok {
+		mc.logger.Debug("🔍 Tool count fetch skipped - ListTools already in progress",
+			zap.String("server", mc.GetConfig().Name))
+		// Return cached count even if expired rather than causing another concurrent call
+		return cachedCount, nil
+	}
+	defer release()
+
+	mc.logger.Debug("🔍 Tool count cache miss - fetching fresh count",
+		zap.String("server", mc.GetConfig().Name),
+		zap.Bool("cache_expired", !cachedTime.IsZero()),
+		zap.Duration("cache_age", time.Since(cachedTime)))
+
+	// Fetch fresh tool count with timeout. Publish the result so any concurrent
+	// ListTools waiter coalesced behind us receives the real tools list.
+	tools, err := mc.coreClient.ListTools(listCtx)
+	mc.publishListToolsResult(tools, err)
+	if err != nil {
+		mc.logger.Debug("Tool count fetch failed, returning cached value",
+			zap.String("server", mc.GetConfig().Name),
+			zap.Error(err),
+			zap.Int("cached_count", cachedCount))
+
+		// Check if it's a connection error and update state
+		if mc.isConnectionError(err) {
+			mc.StateManager.SetError(err)
+		}
+
+		// Return cached count if available, even if stale
+		if !cachedTime.IsZero() {
+			return cachedCount, nil
+		}
+		return 0, fmt.Errorf("tool count fetch failed: %w", err)
+	}
+
+	freshCount := len(tools)
+
+	// Update cache with the latest count
+	mc.setToolCountCache(freshCount)
+
+	mc.logger.Debug("🔍 Tool count cache updated",
+		zap.String("server", mc.GetConfig().Name),
+		zap.Int("fresh_count", freshCount),
+		zap.Int("previous_count", cachedCount))
+
+	return freshCount, nil
+}
+
+// GetCachedToolCountNonBlocking returns the cached tool count without any blocking calls
+// Returns 0 if cache is not populated yet. Safe to call from SSE/API handlers.
+func (mc *Client) GetCachedToolCountNonBlocking() int {
+	mc.toolCountMu.RLock()
+	count := mc.toolCount
+	mc.toolCountMu.RUnlock()
+	return count
+}
+
+// InvalidateToolCountCache clears the tool count cache
+// Should be called when tools are known to have changed
+func (mc *Client) InvalidateToolCountCache() {
+	mc.toolCountMu.Lock()
+	mc.toolCount = 0
+	mc.toolCountTime = time.Time{}
+	mc.toolCountMu.Unlock()
+
+	mc.logger.Debug("🔍 Tool count cache invalidated",
+		zap.String("server", mc.GetConfig().Name))
+}
+
+// Helper function to check if string contains substring
+func containsString(str, substr string) bool {
+	if substr == "" {
+		return true
+	}
+	if len(str) < len(substr) {
+		return false
+	}
+
+	for i := 0; i <= len(str)-len(substr); i++ {
+		if str[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
+// IsDockerCommand returns whether this client is running a Docker command
+func (mc *Client) IsDockerCommand() bool {
+	return mc.isDockerServer()
+}
+
+// GetContainerID returns the Docker container ID if this is a Docker-based server
+func (mc *Client) GetContainerID() string {
+	if mc.coreClient == nil {
+		return ""
+	}
+	return mc.coreClient.GetContainerID()
+}
+
+// setToolCountCache records the latest tool count and timestamp for non-blocking consumers.
+func (mc *Client) setToolCountCache(count int) {
+	mc.toolCountMu.Lock()
+	mc.toolCount = count
+	mc.toolCountTime = time.Now()
+	mc.toolCountMu.Unlock()
+}
+
+// isDockerServer checks if the server is running via Docker
+func (mc *Client) isDockerServer() bool {
+	return containsString(mc.GetConfig().Command, "docker")
+}

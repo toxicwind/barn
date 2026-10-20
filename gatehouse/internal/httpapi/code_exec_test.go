@@ -1,0 +1,472 @@
+package httpapi_test
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/config"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/contracts"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/httpapi"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+)
+
+// mockController is a minimal mock for testing the code exec handler
+type mockController struct {
+	callToolFunc func(ctx context.Context, toolName string, args map[string]interface{}) (interface{}, error)
+}
+
+func (m *mockController) CallTool(ctx context.Context, toolName string, args map[string]interface{}) (interface{}, error) {
+	if m.callToolFunc != nil {
+		return m.callToolFunc(ctx, toolName, args)
+	}
+	return nil, nil
+}
+
+// Stub implementations for other ServerController methods
+func (m *mockController) IsRunning() bool                          { return true }
+func (m *mockController) IsReady() bool                            { return true }
+func (m *mockController) GetListenAddress() string                 { return "" }
+func (m *mockController) GetUpstreamStats() map[string]interface{} { return nil }
+func (m *mockController) StartServer(ctx context.Context) error    { return nil }
+func (m *mockController) StopServer() error                        { return nil }
+func (m *mockController) GetStatus() interface{}                   { return nil }
+func (m *mockController) StatusChannel() <-chan interface{}        { return nil }
+func (m *mockController) EventsChannel() <-chan interface{}        { return nil }
+func (m *mockController) GetAllServers() ([]map[string]interface{}, error) {
+	return nil, nil
+}
+func (m *mockController) EnableServer(serverName string, enabled bool) error { return nil }
+func (m *mockController) RestartServer(serverName string) error              { return nil }
+func (m *mockController) ForceReconnectAllServers(reason string) error       { return nil }
+func (m *mockController) GetDockerRecoveryStatus() interface{}               { return nil }
+func (m *mockController) QuarantineServer(serverName string, quarantined bool) error {
+	return nil
+}
+func (m *mockController) GetQuarantinedServers() ([]map[string]interface{}, error) {
+	return nil, nil
+}
+func (m *mockController) UnquarantineServer(serverName string) error { return nil }
+func (m *mockController) GetServerTools(serverName string) ([]map[string]interface{}, error) {
+	return nil, nil
+}
+func (m *mockController) SearchTools(query string, limit int) ([]map[string]interface{}, error) {
+	return nil, nil
+}
+func (m *mockController) GetServerLogs(serverName string, tail int) ([]contracts.LogEntry, error) {
+	return nil, nil
+}
+func (m *mockController) ReloadConfiguration() error                { return nil }
+func (m *mockController) GetConfigPath() string                     { return "" }
+func (m *mockController) GetLogDir() string                         { return "" }
+func (m *mockController) TriggerOAuthLogin(serverName string) error { return nil }
+func (m *mockController) GetSecretResolver() interface{}            { return nil }
+func (m *mockController) GetCurrentConfig() interface{}             { return nil }
+func (m *mockController) NotifySecretsChanged(ctx context.Context, operation, secretName string) error {
+	return nil
+}
+func (m *mockController) GetToolCalls(limit, offset int) (interface{}, int, error) {
+	return nil, 0, nil
+}
+func (m *mockController) GetToolCallByID(id string) (interface{}, error) { return nil, nil }
+func (m *mockController) GetServerToolCalls(serverName string, limit int) (interface{}, error) {
+	return nil, nil
+}
+func (m *mockController) ReplayToolCall(id string, arguments map[string]interface{}) (interface{}, error) {
+	return nil, nil
+}
+func (m *mockController) ValidateConfig(cfg interface{}) (interface{}, error) { return nil, nil }
+func (m *mockController) ApplyConfig(cfg interface{}, cfgPath string) (interface{}, error) {
+	return nil, nil
+}
+func (m *mockController) GetConfig() (interface{}, error) { return nil, nil }
+func (m *mockController) GetTokenSavings() (interface{}, error) {
+	return nil, nil
+}
+func (m *mockController) ListRegistries() ([]interface{}, error) { return nil, nil }
+func (m *mockController) SearchRegistryServers(registryID, tag, query string, limit int) ([]interface{}, *contracts.RegistryCacheInfo, error) {
+	return nil, nil, nil
+}
+func (m *mockController) RefreshRegistryCache(registryID string) (int, error) { return 0, nil }
+func (m *mockController) AddServerFromRegistryRef(_ context.Context, _, _, _ string, _ map[string]string, _ *bool) (*config.ServerConfig, *contracts.RegistryAddError, error) {
+	return nil, nil, nil
+}
+func (m *mockController) AddRegistrySourceRef(_, _, _, _ string) (*config.RegistryEntry, *contracts.RegistryAddError, error) {
+	return nil, nil, nil
+}
+func (m *mockController) RemoveRegistrySourceRef(_ string) (*config.RegistryEntry, *contracts.RegistryAddError, error) {
+	return nil, nil, nil
+}
+func (m *mockController) EditRegistrySourceRef(_, _, _, _ string) (*config.RegistryEntry, *contracts.RegistryAddError, error) {
+	return nil, nil, nil
+}
+func (m *mockController) GetManagementService() interface{}                       { return nil }
+func (m *mockController) GetRuntime() interface{}                                 { return nil }
+func (m *mockController) GetSessions(limit, offset int) (interface{}, int, error) { return nil, 0, nil }
+func (m *mockController) GetSessionByID(id string) (interface{}, error)           { return nil, nil }
+func (m *mockController) GetRecentSessions(limit int) (interface{}, int, error)   { return nil, 0, nil }
+func (m *mockController) GetToolCallsBySession(sessionID string, limit, offset int) (interface{}, int, error) {
+	return nil, 0, nil
+}
+func (m *mockController) GetVersionInfo() interface{}                            { return nil }
+func (m *mockController) RefreshVersionInfo() interface{}                        { return nil }
+func (m *mockController) DiscoverServerTools(_ context.Context, _ string) error  { return nil }
+func (m *mockController) AddServer(_ context.Context, _ interface{}) error       { return nil }
+func (m *mockController) RemoveServer(_ context.Context, _ string) error         { return nil }
+func (m *mockController) ListActivities(_ interface{}) (interface{}, int, error) { return nil, 0, nil }
+func (m *mockController) GetActivity(_ string) (interface{}, error)              { return nil, nil }
+func (m *mockController) StreamActivities(_ interface{}) <-chan interface{} {
+	ch := make(chan interface{})
+	close(ch)
+	return ch
+}
+
+func TestCodeExecHandler_Success(t *testing.T) {
+	// Given: Valid code execution request
+	reqBody := map[string]interface{}{
+		"code":  "({ result: input.value * 2 })",
+		"input": map[string]interface{}{"value": 21},
+		"options": map[string]interface{}{
+			"timeout_ms":     60000,
+			"max_tool_calls": 10,
+		},
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/code/exec", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+
+	// Mock controller that returns success result in MCP Content format
+	mockCtrl := &mockController{
+		callToolFunc: func(ctx context.Context, toolName string, args map[string]interface{}) (interface{}, error) {
+			assert.Equal(t, "code_execution", toolName)
+			// Return MCP Content array format (matches actual CallTool behavior)
+			execResult := map[string]interface{}{
+				"ok":    true,
+				"value": 42,
+			}
+			resultJSON, _ := json.Marshal(execResult)
+			return []interface{}{
+				map[string]interface{}{
+					"type": "text",
+					"text": string(resultJSON),
+				},
+			}, nil
+		},
+	}
+
+	logger := zap.NewNop().Sugar()
+	handler := httpapi.NewCodeExecHandler(mockCtrl, logger)
+
+	// When: Calling endpoint
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+
+	// Then: Returns success with result
+	assert.Equal(t, http.StatusOK, recorder.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(recorder.Body.Bytes(), &response)
+	require.NoError(t, err)
+
+	assert.True(t, response["ok"].(bool))
+	assert.Contains(t, response, "result")
+}
+
+func TestCodeExecHandler_MissingCode(t *testing.T) {
+	// Given: Request without code
+	reqBody := map[string]interface{}{
+		"input": map[string]interface{}{},
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/code/exec", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+
+	mockCtrl := &mockController{}
+	logger := zap.NewNop().Sugar()
+	handler := httpapi.NewCodeExecHandler(mockCtrl, logger)
+
+	// When: Calling endpoint
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+
+	// Then: Returns 400 Bad Request
+	assert.Equal(t, http.StatusBadRequest, recorder.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(recorder.Body.Bytes(), &response)
+	require.NoError(t, err)
+
+	assert.False(t, response["ok"].(bool))
+	assert.Contains(t, response, "error")
+}
+
+func TestCodeExecHandler_TypeScriptSuccess(t *testing.T) {
+	// Given: TypeScript code execution request
+	reqBody := map[string]interface{}{
+		"code":     "const x: number = 42; ({ result: x })",
+		"language": "typescript",
+		"input":    map[string]interface{}{},
+		"options": map[string]interface{}{
+			"timeout_ms":     60000,
+			"max_tool_calls": 10,
+		},
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/code/exec", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+
+	// Mock controller that verifies language is passed through
+	mockCtrl := &mockController{
+		callToolFunc: func(ctx context.Context, toolName string, args map[string]interface{}) (interface{}, error) {
+			assert.Equal(t, "code_execution", toolName)
+			// Verify language parameter is passed
+			assert.Equal(t, "typescript", args["language"])
+			// Return success
+			execResult := map[string]interface{}{
+				"ok":    true,
+				"value": 42,
+			}
+			resultJSON, _ := json.Marshal(execResult)
+			return []interface{}{
+				map[string]interface{}{
+					"type": "text",
+					"text": string(resultJSON),
+				},
+			}, nil
+		},
+	}
+
+	logger := zap.NewNop().Sugar()
+	handler := httpapi.NewCodeExecHandler(mockCtrl, logger)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+
+	assert.Equal(t, http.StatusOK, recorder.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(recorder.Body.Bytes(), &response)
+	require.NoError(t, err)
+	assert.True(t, response["ok"].(bool))
+}
+
+func TestCodeExecHandler_NoLanguageDefaultsToJavaScript(t *testing.T) {
+	// Given: Request without language field
+	reqBody := map[string]interface{}{
+		"code":  "({ result: 42 })",
+		"input": map[string]interface{}{},
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/code/exec", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+
+	mockCtrl := &mockController{
+		callToolFunc: func(ctx context.Context, toolName string, args map[string]interface{}) (interface{}, error) {
+			// Verify no language parameter is passed (backward compat)
+			_, hasLanguage := args["language"]
+			assert.False(t, hasLanguage, "language should not be in args when not specified")
+			execResult := map[string]interface{}{
+				"ok":    true,
+				"value": 42,
+			}
+			resultJSON, _ := json.Marshal(execResult)
+			return []interface{}{
+				map[string]interface{}{
+					"type": "text",
+					"text": string(resultJSON),
+				},
+			}, nil
+		},
+	}
+
+	logger := zap.NewNop().Sugar()
+	handler := httpapi.NewCodeExecHandler(mockCtrl, logger)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+
+	assert.Equal(t, http.StatusOK, recorder.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(recorder.Body.Bytes(), &response)
+	require.NoError(t, err)
+	assert.True(t, response["ok"].(bool))
+}
+
+func TestCodeExecHandler_InvalidLanguage(t *testing.T) {
+	// Given: Request with invalid language
+	reqBody := map[string]interface{}{
+		"code":     "({ result: 42 })",
+		"language": "python",
+		"input":    map[string]interface{}{},
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/code/exec", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+
+	mockCtrl := &mockController{}
+	logger := zap.NewNop().Sugar()
+	handler := httpapi.NewCodeExecHandler(mockCtrl, logger)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+
+	assert.Equal(t, http.StatusBadRequest, recorder.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(recorder.Body.Bytes(), &response)
+	require.NoError(t, err)
+	assert.False(t, response["ok"].(bool))
+	errorMap := response["error"].(map[string]interface{})
+	assert.Equal(t, "INVALID_LANGUAGE", errorMap["code"])
+	assert.Contains(t, errorMap["message"], "python")
+}
+
+func TestCodeExecHandler_ExecutionError(t *testing.T) {
+	// Given: Code with syntax error (returned from code_execution tool)
+	reqBody := map[string]interface{}{
+		"code":  "invalid javascript {{{",
+		"input": map[string]interface{}{},
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/code/exec", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+
+	// Mock controller returns error result from code_execution tool in MCP Content format
+	mockCtrl := &mockController{
+		callToolFunc: func(ctx context.Context, toolName string, args map[string]interface{}) (interface{}, error) {
+			// Return MCP Content array format with error
+			execResult := map[string]interface{}{
+				"ok": false,
+				"error": map[string]interface{}{
+					"code":    "SYNTAX_ERROR",
+					"message": "Invalid syntax",
+				},
+			}
+			resultJSON, _ := json.Marshal(execResult)
+			return []interface{}{
+				map[string]interface{}{
+					"type": "text",
+					"text": string(resultJSON),
+				},
+			}, nil
+		},
+	}
+
+	logger := zap.NewNop().Sugar()
+	handler := httpapi.NewCodeExecHandler(mockCtrl, logger)
+
+	// When: Calling endpoint
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+
+	// Then: Returns 200 with ok=false (execution error, not HTTP error)
+	assert.Equal(t, http.StatusOK, recorder.Code)
+
+	var response map[string]interface{}
+	err := json.Unmarshal(recorder.Body.Bytes(), &response)
+	require.NoError(t, err)
+
+	assert.False(t, response["ok"].(bool))
+	errorMap := response["error"].(map[string]interface{})
+	assert.Equal(t, "SYNTAX_ERROR", errorMap["code"])
+}
+
+// postCodeExec runs one request through the handler and returns the recorder.
+func postCodeExec(t *testing.T, ctrl httpapi.ToolCaller, body map[string]interface{}) *httptest.ResponseRecorder {
+	t.Helper()
+
+	bodyBytes, err := json.Marshal(body)
+	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/code/exec", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	httpapi.NewCodeExecHandler(ctrl, zap.NewNop().Sugar()).ServeHTTP(recorder, req)
+	return recorder
+}
+
+// TestCodeExecHandler_ScriptXORCode (Spec 097, T008) pins the REST half of the
+// exactly-one-of rule: a request that names both sources, or neither, is a
+// malformed request and is answered as one — with this endpoint's own
+// {ok:false, error:{code}} envelope — instead of reaching the tool.
+func TestCodeExecHandler_ScriptXORCode(t *testing.T) {
+	tests := []struct {
+		name string
+		body map[string]interface{}
+	}{
+		{
+			name: "both code and script",
+			body: map[string]interface{}{"code": "({ result: 1 })", "script": "daily-report"},
+		},
+		{
+			name: "neither code nor script",
+			body: map[string]interface{}{"input": map[string]interface{}{}},
+		},
+		{
+			name: "empty strings count as absent",
+			body: map[string]interface{}{"code": "", "script": ""},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dispatched := false
+			ctrl := &mockController{
+				callToolFunc: func(context.Context, string, map[string]interface{}) (interface{}, error) {
+					dispatched = true
+					return nil, nil
+				},
+			}
+
+			recorder := postCodeExec(t, ctrl, tc.body)
+			assert.Equal(t, http.StatusBadRequest, recorder.Code, "body: %s", recorder.Body.String())
+			assert.False(t, dispatched, "a malformed request must not reach the code_execution tool")
+
+			var response map[string]interface{}
+			require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
+			assert.False(t, response["ok"].(bool))
+			errorMap, ok := response["error"].(map[string]interface{})
+			require.True(t, ok, "response carries no error object: %s", recorder.Body.String())
+			assert.Equal(t, "INVALID_REQUEST", errorMap["code"])
+			assert.Contains(t, errorMap["message"], "exactly one")
+		})
+	}
+}
+
+// TestCodeExecHandler_ScriptForwardedAsName: over REST too, only the NAME
+// travels — the daemon's code_execution handler is the single execution-time
+// resolver, so REST cannot smuggle in source of its own.
+func TestCodeExecHandler_ScriptForwardedAsName(t *testing.T) {
+	var dispatched map[string]interface{}
+	ctrl := &mockController{
+		callToolFunc: func(_ context.Context, toolName string, args map[string]interface{}) (interface{}, error) {
+			assert.Equal(t, "code_execution", toolName)
+			dispatched = args
+			resultJSON, err := json.Marshal(map[string]interface{}{"ok": true, "value": 42})
+			require.NoError(t, err)
+			return []interface{}{map[string]interface{}{"type": "text", "text": string(resultJSON)}}, nil
+		},
+	}
+
+	recorder := postCodeExec(t, ctrl, map[string]interface{}{
+		"script": "daily-report",
+		"input":  map[string]interface{}{"value": 21},
+	})
+	require.Equal(t, http.StatusOK, recorder.Code, "body: %s", recorder.Body.String())
+
+	require.NotNil(t, dispatched, "the request never reached the tool")
+	assert.Equal(t, "daily-report", dispatched["script"])
+	assert.NotContains(t, dispatched, "code", "a stored-script request carries no inline code")
+}
