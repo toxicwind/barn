@@ -816,10 +816,15 @@ def cmd_bitwarden_get(svc, a, registry, as_json):
 def cmd_cookie_vault_sync(svc, a, registry, as_json):
     """Synchronize Firefox and Keeper cookies via cookie-vault utility."""
     import subprocess
-    cookie_vault_bin = "/home/toxic/estate/ranch/barn/browserless/bin/cookie-vault.ts"
+    candidates = [
+        "/home/toxic/estate/ranch/cookie-vault/bin/cookie-vault.js",
+        "/home/toxic/estate/ranch/barn/browserless/bin/cookie-vault.ts",
+    ]
+    cookie_vault_bin = next((c for c in candidates if os.path.exists(c)), candidates[0])
     subcmd = a.vault_action or "sync"
+    runner = ["node", cookie_vault_bin, subcmd] if cookie_vault_bin.endswith(".js") else ["bun", cookie_vault_bin, subcmd]
     try:
-        res = subprocess.run(["bun", cookie_vault_bin, subcmd], capture_output=True, text=True, timeout=15)
+        res = subprocess.run(runner, capture_output=True, text=True, timeout=15)
         out = res.stdout.strip()
         if as_json:
             print(json.dumps({"action": subcmd, "exit": res.returncode, "output": out}))
@@ -829,6 +834,88 @@ def cmd_cookie_vault_sync(svc, a, registry, as_json):
     except Exception as e:
         print("secretsmith: cookie-vault error: %s" % e, file=sys.stderr)
         return 1
+
+def cmd_tau_auth_sync(svc, a, registry, as_json):
+    """Mirror tau's built-in auth_credentials table into the keyring.
+
+    Reads ~/.tau/agent/agent.db (via getAgentDbPath symlink) and stores each
+    credential as a Secret Service item so secretsmith is the SSOT for the
+    built-in auth store too. OAuth tokens and API keys share one schema:
+      attr tau_credential = "1"
+      attr provider       = <provider>
+      attr cred_type      = oauth|api_key
+      attr identity       = identity_key (when present)
+    Label: "tau-auth:<provider>". Secret bytes = the raw `data` JSON blob.
+    """
+    DB_PATH = a.db_path or os.path.join(os.path.expanduser("~"), ".tau", "agent", "agent.db")
+    if not os.path.exists(DB_PATH):
+        raise SecretsmithError("tau agent.db not found at %s" % DB_PATH)
+    import sqlite3
+    con = sqlite3.connect("file:%s?mode=ro" % DB_PATH, uri=True)
+    rows = con.execute(
+        "SELECT id, provider, credential_type, data, identity_key "
+        "FROM auth_credentials ORDER BY id"
+    ).fetchall()
+    con.close()
+    if not rows:
+        print("secretsmith: no tau credentials to sync")
+        return 0
+    # Maximal autonomous workaround for a locked Default Keyring: pick the
+    # requested collection when it is unlocked, else fall back to the first
+    # unlocked collection (usually the volatile `session` one) so the sync
+    # never blocks on a GUI password prompt. The durable source stays
+    # tau's agent.db -- this mirror is an access layer, not a second
+    # authority, so volatile storage is acceptable.
+    def _pick_unlocked():
+        if a.collection:
+            # Explicit target may be a label or an object path; resolve below.
+            return a.collection
+        coll = svc.collections()
+        unlocked = [c for c in coll if not c.get("locked")]
+        if unlocked:
+            # Prefer a labeled collection; the volatile `session` collection
+            # has an empty label, so hand back its object path directly when
+            # it is the only unlocked one.
+            labeled = next((c for c in unlocked if c.get("label")), None)
+            if labeled:
+                return labeled["label"]
+            return unlocked[0]["path"]
+        raise SecretsmithError(
+            "no unlocked Secret Service collection available (Default Keyring "
+            "locked and no session collection). Unlock the keyring or run with "
+            "--collection <label>."
+        )
+    collection = _pick_unlocked()
+    stored = []
+    for row_id, provider, cred_type, data, identity_key in rows:
+        if not data:
+            continue
+        if not isinstance(data, str):
+            data = data.decode("utf-8", "replace") if isinstance(data, (bytes, bytearray)) else str(data)
+        label = "tau-auth:%s" % provider
+        attrs = {
+            "tau_credential": "1",
+            "provider": str(provider or ""),
+            "cred_type": str(cred_type or ""),
+            "row_id": str(row_id),
+            "identity": str(identity_key or ""),
+        }
+        try:
+            svc.set_item(collection, label, attrs, data.encode("utf-8"),
+                         content_type=a.content_type, replace=True)
+            stored.append({"id": row_id, "provider": provider,
+                           "type": cred_type, "label": label})
+        except Exception as e:
+            raise SecretsmithError("failed to store %s: %s" % (label, e))
+    if as_json:
+        print(json.dumps({"synced": stored, "count": len(stored),
+                          "db": DB_PATH, "collection": collection}, indent=2))
+    else:
+        for item in stored:
+            print("stored [%s] %s (%s, id %s)" % (item["type"], item["label"],
+                                                  item["provider"], item["id"]))
+        print("synced %d of %d tau credentials (%s)" % (len(stored), len(rows), DB_PATH))
+    return 0
 
 
 def build_parser():
@@ -932,6 +1019,15 @@ def build_parser():
     cv = sub.add_parser("cookie-vault", help="cookie-vault sync/grab/restore integration")
     cv.add_argument("vault_action", nargs="?", default="sync", choices=["sync", "grab-firefox", "grab-keeper", "restore-keeper", "status"])
     cv.set_defaults(func=cmd_cookie_vault_sync)
+
+    # tau built-in auth -> keyring mirror (secretsmith as SSOT for tau auth)
+    ta = sub.add_parser("tau-auth-sync", parents=[common],
+                        help="mirror tau agent.db auth_credentials into the keyring")
+    ta.add_argument("--db-path", default="", help="path to tau agent.db (default ~/.tau/agent/agent.db)")
+    ta.add_argument("--collection", default="", help="collection label or 'default'")
+    ta.add_argument("--content-type", default="application/json",
+                    help="content type for stored secrets (default application/json)")
+    ta.set_defaults(func=cmd_tau_auth_sync)
 
     return p
 
