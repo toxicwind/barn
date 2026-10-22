@@ -416,3 +416,52 @@ make test           # Unit tests
 make test-e2e       # E2E tests
 make lint           # Run linters
 ```
+
+## Gatehouse features (estate fork)
+
+This fork (`toxicwind/barn` → `gatehouse`) is the estate's **MCP federation / skills-hub
+server**. Beyond upstream mcpproxy it adds the estate's first-class tooling. Feature
+surface verified against `internal/server` handlers.
+
+### Tool call variants (Spec 018)
+- `retrieve_tools` — **BM25 + AST reciprocal-rank-fusion** code recall (not a context-eating dump).
+- `call_tool_read` / `call_tool_write` / `call_tool_destructive` — variant calls with intent tracking
+  (`intent_reason`, `intent_data_sensitivity`) + activity audit.
+- `call_tool_destructive` bypasses the server-intent check (most permissive).
+- **`tools_allow_destructive_via_generic_call`** (`internal/config/config.go:248`) — when `true`,
+  a generic `call_tool` / `call_tool_write` may invoke `destructiveHint=true` tools instead of
+  forcing `call_tool_destructive` (default `false`, upstream-compatible). Set it to stop the
+  "use call_tool_destructive" footgun.
+- `mcp_describe_tool`, `mcp_describe_check`, `mcp_direct_callability`, `mcp_visibility`,
+  `mcp_trust_mode`, `mcp_input_validation`, `mcp_output_schema` — the per-tool describe/scope layer.
+
+### Server registry (first-class `upstream_servers` MCP group)
+- `upstream_servers list|add|remove|update|patch|add_from_registry` — drive servers at runtime.
+- `list_registries`, `search_servers` (official + reference + docker + glama catalogs),
+  `add_registry_source`, `edit_registry_source`.
+- `quarantine_security` — review/approve/block tools per server (Tool Poisoning guard).
+- `tail_log`, `restart_upstream`, `refresh_upstream`, `doctor`.
+
+### Secrets & integrations
+- `${keyring:NAME}` and `${env:VAR}` secret references resolved by gatehouse
+  (`internal/upstream/core/client.go:#ExpandStructSecretsCollectErrors`). Put a keyring ref in a
+  server's `env`/`headers` and rotate the value in the OS keyring without restarting gatehouse.
+- `secretsmith` keyring first-class: the estate's `secretsmith` shares the freedesktop Secret
+  Service, so `${keyring:EXA_API_KEY}` etc. resolve the same values the CLI reports.
+- Agent cockpit, observability bridge/edition, benchmark export, code-execution dispatch,
+  concurrency-shed, output sanitisation/validation, host validation.
+
+### Server inventory (estate live set)
+`ffs`, `grasp-hub`, `ghas`, `tavily`, `serper`, `browserless` (keeper CDP), `forge-mcp`,
+`gatehouse` (self), `squawk`, `hatch-mcp`, `hyprland-ipc`, `kitty`, `lasso`, `markitdown`,
+`mcp-background-job`, `mise`, `nnunley`, `openfang`, `patchwork`, `pitchfork`, `prometheus`,
+`qdrant`, `redis`, `rsync`, `sequential-thinking`, `smarter-ast-mcp`, `smithers`, `sqlite`,
+`tavily`, `tmux`, `tpc-thought-ledger`, `vram`, `websearch`, `wezterm`, `xray`,
+`agent-orchestration`, `arxiv(-advanced)`, `ash`, `codebase-memory`, `computer-use-linux`,
+`context7`, `den`, `desktop-commander`, `exa`, `filesystem`, `github`, `gibber-crypto`,
+`herd-test`, `huggingface` (disabled), `kappa-serve`, `rig`, `safurrier-filesystem-smart`,
+`byte-vision-llamacpp` (needs llama :8080).
+
+Full per-feature detail lives in `docs/` (`agent-cockpit`, `architecture`, `configuration`,
+`cli-*`, `upstream-servers`). Gatehouse is the estate's single MCP gateway; `call_tool` is the
+audited execution surface.
