@@ -160,7 +160,7 @@ func (i *IntentDeclaration) ValidateForToolVariant(toolVariant string) *IntentVa
 }
 
 // ValidateAgainstServerAnnotations validates intent against server-provided annotations
-func (i *IntentDeclaration) ValidateAgainstServerAnnotations(toolVariant, serverTool string, annotations *config.ToolAnnotations, strict bool, allowDestructiveViaGeneric bool) *IntentValidationError {
+func (i *IntentDeclaration) ValidateAgainstServerAnnotations(toolVariant, serverTool string, annotations *config.ToolAnnotations, strict bool) *IntentValidationError {
 	// call_tool_destructive is the most permissive - skip server validation
 	if toolVariant == ToolVariantDestructive {
 		return nil
@@ -174,12 +174,6 @@ func (i *IntentDeclaration) ValidateAgainstServerAnnotations(toolVariant, server
 	// Check for destructive tool being called with non-destructive variant
 	if annotations.DestructiveHint != nil && *annotations.DestructiveHint {
 		if toolVariant == ToolVariantRead || toolVariant == ToolVariantWrite {
-			if allowDestructiveViaGeneric {
-				// Gatehouse config `tools_allow_destructive_via_generic_call`:
-				// let generic call_tool / call_tool_write invoke destructive tools
-				// without forcing call_tool_destructive.
-				return nil
-			}
 			if strict {
 				return NewIntentValidationError(
 					IntentErrorCodeServerMismatch,

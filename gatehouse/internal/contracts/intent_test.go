@@ -283,15 +283,14 @@ func TestIntentDeclaration_ValidateAgainstServerAnnotations(t *testing.T) {
 	falseVal := false
 
 	tests := []struct {
-		name             string
-		intent           IntentDeclaration
-		toolVariant      string
-		serverTool       string
-		annotations      *config.ToolAnnotations
-		strict           bool
-		allowDestructive bool
-		wantErr          bool
-		wantErrCode      string
+		name        string
+		intent      IntentDeclaration
+		toolVariant string
+		serverTool  string
+		annotations *config.ToolAnnotations
+		strict      bool
+		wantErr     bool
+		wantErrCode string
 	}{
 		{
 			name: "no annotations - always allowed",
@@ -343,20 +342,6 @@ func TestIntentDeclaration_ValidateAgainstServerAnnotations(t *testing.T) {
 			},
 			strict:  false,
 			wantErr: false,
-		},
-		{
-			name: "call_tool_read on destructiveHint=true - allowed even under strict when gatehouse allowDestructive flag is set",
-			intent: IntentDeclaration{
-				OperationType: OperationTypeRead,
-			},
-			toolVariant: ToolVariantRead,
-			serverTool:  "github:delete_repo",
-			annotations: &config.ToolAnnotations{
-				DestructiveHint: &trueVal,
-			},
-			strict:           true,
-			allowDestructive: true,
-			wantErr:          false,
 		},
 		{
 			name: "call_tool_write on destructiveHint=true - rejected (strict)",
@@ -428,7 +413,7 @@ func TestIntentDeclaration_ValidateAgainstServerAnnotations(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := tt.intent.ValidateAgainstServerAnnotations(tt.toolVariant, tt.serverTool, tt.annotations, tt.strict, tt.allowDestructive)
+			err := tt.intent.ValidateAgainstServerAnnotations(tt.toolVariant, tt.serverTool, tt.annotations, tt.strict)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ValidateAgainstServerAnnotations() error = %v, wantErr %v", err, tt.wantErr)
 				return

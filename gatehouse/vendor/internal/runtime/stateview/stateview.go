@@ -1,0 +1,271 @@
+package stateview
+
+import (
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/config"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/diagnostics"
+)
+
+// ToolInfo represents a cached tool definition.
+type ToolInfo struct {
+	Name        string
+	Description string
+	InputSchema map[string]interface{}
+	Annotations *config.ToolAnnotations
+	// OutputSchemaJSON is the tool's declared output schema (raw JSON), empty
+	// when the tool declares none. Used for output-schema validation (Spec 056).
+	OutputSchemaJSON string
+}
+
+// ServerStatus represents the runtime status of an upstream server.
+type ServerStatus struct {
+	Name           string
+	Config         *config.ServerConfig
+	State          string // Actor state: idle, connecting, connected, error, etc.
+	Enabled        bool
+	Quarantined    bool
+	Connected      bool
+	LastError      string
+	LastErrorTime  *time.Time
+	ConnectedAt    *time.Time
+	DisconnectedAt *time.Time
+	RetryCount     int
+	ToolCount      int
+	Tools          []ToolInfo // Phase 7.1: Cached tool list for lock-free reads
+	// ToolsDiscovered reports that a discovery pass has COMPLETED for this
+	// connection and Tools is its authoritative result — including an
+	// authoritative EMPTY result for an upstream that lists zero tools. It is
+	// stamped by the supervisor when discovery publishes the tool set
+	// (RefreshToolsFromDiscovery / RefreshServerToolsFromDiscovery) and
+	// cleared together with Tools on disconnect, so a freshly connected server
+	// whose discovery has not run yet reads Connected=true, Tools=nil,
+	// ToolsDiscovered=false. Spec 105 FR-009 (research D4) keys tool-identity
+	// resolution on it rather than on len(Tools) > 0: the connect→discovery
+	// window and a genuinely tool-less server both fail CLOSED instead of
+	// admitting any name with the destructive-tier fallback.
+	ToolsDiscovered bool
+	// DiscoveryEpoch is the live client's connection-instance token
+	// (managed.Client.ConnectionEpoch) captured BEFORE the tools/list that
+	// produced Tools, stamped together with ToolsDiscovered. Identity
+	// resolution compares it with the client's current token: a mismatch
+	// means the connection changed since discovery ran — its events dropped
+	// or lagging, no reconcile edge observed yet — and the stamp certifies
+	// nothing for the live connection (Spec 105 FR-009; astra r2 C3). Zero
+	// when no discovery has been published for this connection.
+	DiscoveryEpoch int64
+	Metadata       map[string]interface{}
+	// Diagnostic is the most recent classified failure for this server, or nil
+	// when the server is healthy (or the last failure has not yet been classified).
+	// Spec 044.
+	Diagnostic *diagnostics.DiagnosticError
+
+	// RetryStopped reports that automatic reconnection has been given up for
+	// good: the classifier proved the failure deterministic and unrecoverable,
+	// so re-dialing cannot succeed until a human changes something (GH #1145).
+	// It is NOT the ordinary exponential backoff — that keeps retrying.
+	//
+	// The three fields exist as first-class status so the REST API, the CLI and
+	// the tray all read the same thing; without them a parked server would look
+	// like any other error and the user would wait forever for a retry that is
+	// never coming.
+	RetryStopped bool
+	// RetryStoppedCode is the stable MCPX_* code that justified stopping.
+	RetryStoppedCode string
+	// RetryStoppedReason is the human-readable cause, taken from the diagnostics
+	// catalog entry for RetryStoppedCode (falling back to the raw error).
+	RetryStoppedReason string
+}
+
+// ServerStatusSnapshot is an immutable snapshot of all server statuses.
+type ServerStatusSnapshot struct {
+	Servers   map[string]*ServerStatus
+	Timestamp time.Time
+}
+
+// View provides a read-only view of server statuses.
+// It maintains an in-memory snapshot updated via supervisor events.
+type View struct {
+	snapshot atomic.Value // *ServerStatusSnapshot
+	mu       sync.RWMutex // Protects updates only
+}
+
+// New creates a new state view.
+func New() *View {
+	v := &View{}
+	v.snapshot.Store(&ServerStatusSnapshot{
+		Servers:   make(map[string]*ServerStatus),
+		Timestamp: time.Now(),
+	})
+	return v
+}
+
+// Snapshot returns the current immutable snapshot of all server statuses.
+// This is a lock-free read operation.
+func (v *View) Snapshot() *ServerStatusSnapshot {
+	return v.snapshot.Load().(*ServerStatusSnapshot)
+}
+
+// GetServer returns the status for a specific server (lock-free).
+func (v *View) GetServer(name string) (*ServerStatus, bool) {
+	snap := v.Snapshot()
+	status, ok := snap.Servers[name]
+	return status, ok
+}
+
+// GetAll returns all server statuses (lock-free).
+func (v *View) GetAll() map[string]*ServerStatus {
+	return v.Snapshot().Servers
+}
+
+// UpdateServer updates or creates a server status entry.
+func (v *View) UpdateServer(name string, fn func(*ServerStatus)) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	// Get current snapshot
+	oldSnap := v.snapshot.Load().(*ServerStatusSnapshot)
+
+	// Deep clone the map
+	newServers := make(map[string]*ServerStatus, len(oldSnap.Servers))
+	for k, vs := range oldSnap.Servers {
+		// Clone each status
+		newStatus := *vs
+		if vs.LastErrorTime != nil {
+			t := *vs.LastErrorTime
+			newStatus.LastErrorTime = &t
+		}
+		if vs.ConnectedAt != nil {
+			t := *vs.ConnectedAt
+			newStatus.ConnectedAt = &t
+		}
+		if vs.DisconnectedAt != nil {
+			t := *vs.DisconnectedAt
+			newStatus.DisconnectedAt = &t
+		}
+		if vs.Tools != nil {
+			// Phase 7.1: Clone tools slice
+			newStatus.Tools = make([]ToolInfo, len(vs.Tools))
+			copy(newStatus.Tools, vs.Tools)
+		}
+		if vs.Metadata != nil {
+			newStatus.Metadata = make(map[string]interface{}, len(vs.Metadata))
+			for mk, mv := range vs.Metadata {
+				newStatus.Metadata[mk] = mv
+			}
+		}
+		if vs.Diagnostic != nil {
+			d := *vs.Diagnostic
+			newStatus.Diagnostic = &d
+		}
+		newServers[k] = &newStatus
+	}
+
+	// Get or create the server status
+	status, exists := newServers[name]
+	if !exists {
+		status = &ServerStatus{
+			Name:     name,
+			Metadata: make(map[string]interface{}),
+		}
+		newServers[name] = status
+	}
+
+	// Apply the update function
+	fn(status)
+
+	// Store the new snapshot
+	v.snapshot.Store(&ServerStatusSnapshot{
+		Servers:   newServers,
+		Timestamp: time.Now(),
+	})
+}
+
+// RemoveServer removes a server from the view.
+func (v *View) RemoveServer(name string) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	// Get current snapshot
+	oldSnap := v.snapshot.Load().(*ServerStatusSnapshot)
+
+	// Check if server exists
+	if _, exists := oldSnap.Servers[name]; !exists {
+		return
+	}
+
+	// Deep clone the map without the removed server
+	newServers := make(map[string]*ServerStatus, len(oldSnap.Servers)-1)
+	for k, vs := range oldSnap.Servers {
+		if k == name {
+			continue
+		}
+		// Clone each status
+		newStatus := *vs
+		if vs.LastErrorTime != nil {
+			t := *vs.LastErrorTime
+			newStatus.LastErrorTime = &t
+		}
+		if vs.ConnectedAt != nil {
+			t := *vs.ConnectedAt
+			newStatus.ConnectedAt = &t
+		}
+		if vs.DisconnectedAt != nil {
+			t := *vs.DisconnectedAt
+			newStatus.DisconnectedAt = &t
+		}
+		if vs.Tools != nil {
+			// Phase 7.1: Clone tools slice
+			newStatus.Tools = make([]ToolInfo, len(vs.Tools))
+			copy(newStatus.Tools, vs.Tools)
+		}
+		if vs.Metadata != nil {
+			newStatus.Metadata = make(map[string]interface{}, len(vs.Metadata))
+			for mk, mv := range vs.Metadata {
+				newStatus.Metadata[mk] = mv
+			}
+		}
+		if vs.Diagnostic != nil {
+			d := *vs.Diagnostic
+			newStatus.Diagnostic = &d
+		}
+		newServers[k] = &newStatus
+	}
+
+	// Store the new snapshot
+	v.snapshot.Store(&ServerStatusSnapshot{
+		Servers:   newServers,
+		Timestamp: time.Now(),
+	})
+}
+
+// Count returns the number of servers in the view (lock-free).
+func (v *View) Count() int {
+	return len(v.Snapshot().Servers)
+}
+
+// CountByState returns the number of servers in a specific state (lock-free).
+func (v *View) CountByState(state string) int {
+	snap := v.Snapshot()
+	count := 0
+	for _, status := range snap.Servers {
+		if status.State == state {
+			count++
+		}
+	}
+	return count
+}
+
+// CountConnected returns the number of connected servers (lock-free).
+func (v *View) CountConnected() int {
+	snap := v.Snapshot()
+	count := 0
+	for _, status := range snap.Servers {
+		if status.Connected {
+			count++
+		}
+	}
+	return count
+}

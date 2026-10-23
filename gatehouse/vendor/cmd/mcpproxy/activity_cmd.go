@@ -1,0 +1,1996 @@
+package main
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"os/signal"
+	"sort"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/spf13/cobra"
+	"go.uber.org/zap"
+
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/cli/output"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/cliclient"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/config"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/logs"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/socket"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/storage"
+)
+
+// Activity command flags
+var (
+	// Shared filter flags
+	activityType          string
+	activityServer        string
+	activityTool          string
+	activityStatus        string
+	activitySessionID     string
+	activityStartTime     string
+	activityEndTime       string
+	activityLimit         int
+	activityOffset        int
+	activityIntentType    string // Spec 018: Filter by operation type (read, write, destructive)
+	activityRequestID     string // Spec 021: Filter by HTTP request ID for correlation
+	activityParentID      string // Activity transparency: filter to sub-calls of a code_execution parent
+	activityNoIcons       bool   // Disable emoji icons in output
+	activityDetectionType string // Spec 026: Filter by detection type (e.g., "aws_access_key")
+	activitySeverity      string // Spec 026: Filter by severity level (critical, high, medium, low)
+	activityAgent         string // Spec 028: Filter by agent token name
+	activityAuthType      string // Spec 028: Filter by auth type (admin, agent)
+
+	// Show command flags
+	activityIncludeResponse bool
+
+	// Summary command flags
+	activityPeriod  string
+	activityGroupBy string
+
+	// Export command flags
+	activityExportOutput  string
+	activityExportFormat  string
+	activityIncludeBodies bool
+)
+
+// ActivityFilter contains options for filtering activity records
+type ActivityFilter struct {
+	Type          string
+	Server        string
+	Tool          string
+	Status        string
+	SessionID     string
+	StartTime     string
+	EndTime       string
+	Limit         int
+	Offset        int
+	IntentType    string // Spec 018: Filter by operation type (read, write, destructive)
+	RequestID     string // Spec 021: Filter by HTTP request ID for correlation
+	ParentID      string // Activity transparency: filter to sub-calls of a code_execution parent
+	SensitiveData *bool  // Spec 026: Filter by sensitive data detection
+	DetectionType string // Spec 026: Filter by detection type
+	Severity      string // Spec 026: Filter by severity level
+	AgentName     string // Spec 028: Filter by agent token name
+	AuthType      string // Spec 028: Filter by auth type (admin, agent)
+}
+
+// Validate validates the filter options
+func (f *ActivityFilter) Validate() error {
+	// Validate type(s) - supports comma-separated values (Spec 024)
+	if f.Type != "" {
+		validTypes := []string{
+			"tool_call", "policy_decision", "quarantine_change", "server_change",
+			"system_start", "system_stop", "internal_tool_call", "config_change", // Spec 024: new types
+			string(storage.ActivityTypePreflight), // Spec 098: required-tools preflight
+			string(storage.ActivityTypePromptGet), // Finding F10: prompts/get activity
+		}
+		// Split by comma for multi-type support
+		types := strings.Split(f.Type, ",")
+		for _, t := range types {
+			t = strings.TrimSpace(t)
+			valid := false
+			for _, vt := range validTypes {
+				if t == vt {
+					valid = true
+					break
+				}
+			}
+			if !valid {
+				return fmt.Errorf("invalid type '%s': must be one of %v", t, validTypes)
+			}
+		}
+	}
+
+	// Validate status
+	if f.Status != "" {
+		// Spec 093 added "rejected" (shed by a concurrency limit) to the closed
+		// activity status vocabulary; the CLI filter must accept it.
+		validStatuses := []string{"success", "error", "blocked", "rejected"}
+		valid := false
+		for _, s := range validStatuses {
+			if f.Status == s {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			return fmt.Errorf("invalid status '%s': must be one of %v", f.Status, validStatuses)
+		}
+	}
+
+	// Validate intent_type (Spec 018)
+	if f.IntentType != "" {
+		validIntentTypes := []string{"read", "write", "destructive"}
+		valid := false
+		for _, it := range validIntentTypes {
+			if f.IntentType == it {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			return fmt.Errorf("invalid intent-type '%s': must be one of %v", f.IntentType, validIntentTypes)
+		}
+	}
+
+	// Validate severity (Spec 026)
+	if f.Severity != "" {
+		validSeverities := []string{"critical", "high", "medium", "low"}
+		valid := false
+		for _, s := range validSeverities {
+			if f.Severity == s {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			return fmt.Errorf("invalid severity '%s': must be one of %v", f.Severity, validSeverities)
+		}
+	}
+
+	// Validate auth_type (Spec 028)
+	if f.AuthType != "" {
+		validAuthTypes := []string{"admin", "agent"}
+		valid := false
+		for _, at := range validAuthTypes {
+			if f.AuthType == at {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			return fmt.Errorf("invalid auth-type '%s': must be one of %v", f.AuthType, validAuthTypes)
+		}
+	}
+
+	// Validate time formats
+	if f.StartTime != "" {
+		if _, err := time.Parse(time.RFC3339, f.StartTime); err != nil {
+			return fmt.Errorf("invalid start-time format: must be RFC3339 (e.g., 2025-01-01T00:00:00Z)")
+		}
+	}
+	if f.EndTime != "" {
+		if _, err := time.Parse(time.RFC3339, f.EndTime); err != nil {
+			return fmt.Errorf("invalid end-time format: must be RFC3339 (e.g., 2025-01-01T00:00:00Z)")
+		}
+	}
+
+	// Clamp limit
+	if f.Limit < 1 {
+		f.Limit = 50
+	} else if f.Limit > 100 {
+		f.Limit = 100
+	}
+
+	return nil
+}
+
+// ToQueryParams converts filter to URL query parameters
+func (f *ActivityFilter) ToQueryParams() url.Values {
+	q := url.Values{}
+	if f.Type != "" {
+		q.Set("type", f.Type)
+	}
+	if f.Server != "" {
+		q.Set("server", f.Server)
+	}
+	if f.Tool != "" {
+		q.Set("tool", f.Tool)
+	}
+	if f.Status != "" {
+		q.Set("status", f.Status)
+	}
+	if f.SessionID != "" {
+		q.Set(sessionQueryParam(f.SessionID), f.SessionID)
+	}
+	if f.StartTime != "" {
+		q.Set("start_time", f.StartTime)
+	}
+	if f.EndTime != "" {
+		q.Set("end_time", f.EndTime)
+	}
+	if f.Limit > 0 {
+		q.Set("limit", fmt.Sprintf("%d", f.Limit))
+	}
+	if f.Offset > 0 {
+		q.Set("offset", fmt.Sprintf("%d", f.Offset))
+	}
+	if f.IntentType != "" {
+		q.Set("intent_type", f.IntentType)
+	}
+	// Spec 021: Add request_id filter for log correlation
+	if f.RequestID != "" {
+		q.Set("request_id", f.RequestID)
+	}
+	// Activity transparency: parent_id joins a code_execution record to the
+	// sandboxed sub-calls it made (child.parent_id == parent.request_id).
+	if f.ParentID != "" {
+		q.Set("parent_id", f.ParentID)
+	}
+	// Spec 026: Add sensitive data filters
+	if f.SensitiveData != nil {
+		q.Set("sensitive_data", fmt.Sprintf("%t", *f.SensitiveData))
+	}
+	if f.DetectionType != "" {
+		q.Set("detection_type", f.DetectionType)
+	}
+	if f.Severity != "" {
+		q.Set("severity", f.Severity)
+	}
+	// Spec 028: Agent token identity filters
+	if f.AgentName != "" {
+		q.Set("agent", f.AgentName)
+	}
+	if f.AuthType != "" {
+		q.Set("auth_type", f.AuthType)
+	}
+	return q
+}
+
+// formatRelativeTime formats a timestamp as relative time for recent events
+func formatRelativeTime(t time.Time) string {
+	now := time.Now()
+	diff := now.Sub(t)
+
+	switch {
+	case diff < time.Minute:
+		return "just now"
+	case diff < time.Hour:
+		mins := int(diff.Minutes())
+		if mins == 1 {
+			return "1 minute ago"
+		}
+		return fmt.Sprintf("%d minutes ago", mins)
+	case diff < 24*time.Hour:
+		hours := int(diff.Hours())
+		if hours == 1 {
+			return "1 hour ago"
+		}
+		return fmt.Sprintf("%d hours ago", hours)
+	case diff < 7*24*time.Hour:
+		days := int(diff.Hours() / 24)
+		if days == 1 {
+			return "1 day ago"
+		}
+		return fmt.Sprintf("%d days ago", days)
+	case t.Year() == now.Year():
+		return t.Format("Jan 02")
+	default:
+		return t.Format("Jan 02, 2006")
+	}
+}
+
+// formatActivityDuration formats duration in milliseconds to human-readable
+func formatActivityDuration(ms int64) string {
+	if ms < 1000 {
+		return fmt.Sprintf("%dms", ms)
+	}
+	return fmt.Sprintf("%.1fs", float64(ms)/1000)
+}
+
+// formatSourceIndicator returns an icon/abbreviation for the activity source
+func formatSourceIndicator(source string) string {
+	switch source {
+	case "mcp":
+		return "MCP" // AI agent via MCP protocol
+	case "cli":
+		return "CLI" // Direct CLI command
+	case "api":
+		return "API" // REST API call
+	default:
+		return "MCP" // Default to MCP for backwards compatibility
+	}
+}
+
+// formatSourceDescription returns a human-readable description for the activity source
+func formatSourceDescription(source string) string {
+	switch source {
+	case "mcp":
+		return "AI agent via MCP protocol"
+	case "cli":
+		return "CLI command"
+	case "api":
+		return "REST API"
+	default:
+		return "AI agent via MCP protocol"
+	}
+}
+
+// formatIntentIndicator extracts intent from activity metadata and returns visual indicator
+// Returns emoji indicators: 📖 read, ✏️ write, ⚠️ destructive, or "-" if no intent
+func formatIntentIndicator(activity map[string]interface{}) string {
+	// Extract metadata from activity
+	metadata := getMapField(activity, "metadata")
+	if metadata == nil {
+		return "-"
+	}
+
+	// Extract intent from metadata
+	intent := getMapField(metadata, "intent")
+	if intent == nil {
+		// Check for tool_variant as fallback
+		if toolVariant := getStringField(metadata, "tool_variant"); toolVariant != "" {
+			return formatOperationIcon(toolVariantToOperationType(toolVariant))
+		}
+		return "-"
+	}
+
+	// Get operation_type from intent
+	opType := getStringField(intent, "operation_type")
+	if opType == "" {
+		return "-"
+	}
+
+	return formatOperationIcon(opType)
+}
+
+// formatOperationIcon returns the visual indicator for an operation type
+// If activityNoIcons is true, returns text instead of emoji
+func formatOperationIcon(opType string) string {
+	if activityNoIcons {
+		// Text-only output
+		switch opType {
+		case "read":
+			return "read"
+		case "write":
+			return "write"
+		case "destructive":
+			return "destructive"
+		default:
+			return "-"
+		}
+	}
+	// Emoji output
+	switch opType {
+	case "read":
+		return "📖" // Read operation
+	case "write":
+		return "✏️" // Write operation
+	case "destructive":
+		return "⚠️" // Destructive operation
+	default:
+		return "-"
+	}
+}
+
+// formatSensitiveDataIndicator returns a visual indicator if sensitive data was detected
+// Returns "⚠️" (or "SENSITIVE" if no-icons) if detected, "-" otherwise
+func formatSensitiveDataIndicator(activity map[string]interface{}) string {
+	metadata := getMapField(activity, "metadata")
+	if metadata == nil {
+		return "-"
+	}
+
+	detection := getMapField(metadata, "sensitive_data_detection")
+	if detection == nil {
+		return "-"
+	}
+
+	detected, ok := detection["detected"].(bool)
+	if !ok || !detected {
+		return "-"
+	}
+
+	if activityNoIcons {
+		return "SENSITIVE"
+	}
+	return "⚠️"
+}
+
+// getSensitiveDataDetection extracts the sensitive data detection result from activity metadata
+func getSensitiveDataDetection(activity map[string]interface{}) map[string]interface{} {
+	metadata := getMapField(activity, "metadata")
+	if metadata == nil {
+		return nil
+	}
+	return getMapField(metadata, "sensitive_data_detection")
+}
+
+// getMaxSeverity returns the highest severity level from detections
+func getMaxSeverity(detections []interface{}) string {
+	severityOrder := map[string]int{
+		"critical": 4,
+		"high":     3,
+		"medium":   2,
+		"low":      1,
+	}
+
+	maxSeverity := ""
+	maxOrder := 0
+
+	for _, d := range detections {
+		if detection, ok := d.(map[string]interface{}); ok {
+			severity := getStringField(detection, "severity")
+			if order, exists := severityOrder[severity]; exists && order > maxOrder {
+				maxOrder = order
+				maxSeverity = severity
+			}
+		}
+	}
+
+	return maxSeverity
+}
+
+// toolVariantToOperationType converts tool variant name to operation type
+func toolVariantToOperationType(variant string) string {
+	switch variant {
+	case "call_tool_read":
+		return "read"
+	case "call_tool_write":
+		return "write"
+	case "call_tool_destructive":
+		return "destructive"
+	default:
+		return ""
+	}
+}
+
+// displayIntentSection displays intent information for activity show command
+func displayIntentSection(activity map[string]interface{}) {
+	// Extract metadata from activity
+	metadata := getMapField(activity, "metadata")
+	if metadata == nil {
+		return
+	}
+
+	// Check if there's any intent-related data
+	toolVariant := getStringField(metadata, "tool_variant")
+	intent := getMapField(metadata, "intent")
+
+	if toolVariant == "" && intent == nil {
+		return
+	}
+
+	fmt.Println()
+	fmt.Println("Intent Declaration:")
+
+	// Display tool variant if present
+	if toolVariant != "" {
+		opType := toolVariantToOperationType(toolVariant)
+		fmt.Printf("  Tool Variant:      %s\n", toolVariant)
+		if opType != "" {
+			fmt.Printf("  Operation Type:    %s %s\n", formatOperationIcon(opType), opType)
+		}
+	}
+
+	// Display intent details if present
+	if intent != nil {
+		if opType := getStringField(intent, "operation_type"); opType != "" && toolVariant == "" {
+			fmt.Printf("  Operation Type:    %s %s\n", formatOperationIcon(opType), opType)
+		}
+		if sensitivity := getStringField(intent, "data_sensitivity"); sensitivity != "" {
+			fmt.Printf("  Data Sensitivity:  %s\n", sensitivity)
+		}
+		if reason := getStringField(intent, "reason"); reason != "" {
+			fmt.Printf("  Reason:            %s\n", reason)
+		}
+		if reversible, ok := intent["reversible"].(bool); ok {
+			reversibleStr := "no"
+			if reversible {
+				reversibleStr = "yes"
+			}
+			fmt.Printf("  Reversible:        %s\n", reversibleStr)
+		}
+	}
+}
+
+// displaySensitiveDataSection displays sensitive data detection information for activity show command (Spec 026)
+func displaySensitiveDataSection(activity map[string]interface{}) {
+	detection := getSensitiveDataDetection(activity)
+	if detection == nil {
+		return
+	}
+
+	detected, ok := detection["detected"].(bool)
+	if !ok {
+		return
+	}
+
+	fmt.Println()
+	fmt.Println("Sensitive Data Detection:")
+
+	// Show detection status
+	if detected {
+		if activityNoIcons {
+			fmt.Println("  Status:            DETECTED")
+		} else {
+			fmt.Println("  Status:            \u26a0 DETECTED")
+		}
+	} else {
+		fmt.Println("  Status:            No sensitive data detected")
+		return
+	}
+
+	// Show scan duration if available
+	if scanMs, ok := detection["scan_duration_ms"].(float64); ok {
+		fmt.Printf("  Scan Duration:     %dms\n", int64(scanMs))
+	}
+
+	// Show if truncated
+	if truncated, ok := detection["truncated"].(bool); ok && truncated {
+		fmt.Println("  Note:              Payload was truncated for scanning")
+	}
+
+	// Show detections
+	if detections, ok := detection["detections"].([]interface{}); ok && len(detections) > 0 {
+		fmt.Println()
+		fmt.Println("  Detections:")
+
+		for i, d := range detections {
+			if det, ok := d.(map[string]interface{}); ok {
+				detType := getStringField(det, "type")
+				category := getStringField(det, "category")
+				severity := getStringField(det, "severity")
+				location := getStringField(det, "location")
+				isExample, _ := det["is_likely_example"].(bool)
+
+				fmt.Printf("    [%d] Type:        %s\n", i+1, detType)
+				fmt.Printf("        Category:    %s\n", category)
+				fmt.Printf("        Severity:    %s\n", formatSeverityWithColor(severity))
+				if location != "" {
+					fmt.Printf("        Location:    %s\n", location)
+				}
+				if isExample {
+					fmt.Printf("        Note:        Likely an example/test value\n")
+				}
+				fmt.Println()
+			}
+		}
+	}
+}
+
+// --- Spec 098: preflight activity records ------------------------------------
+//
+// A preflight record is set-scoped, not server-scoped: server_name and
+// tool_name are empty and everything an operator wants to see lives in
+// Metadata ({verdict, ids_count, reasons{code:count}, per_tool[{id,status,
+// reason?}]}, written by runtime.ActivityService.RecordPreflight). Without the
+// renderers below, `activity list` shows a bare row with three empty columns
+// and `activity show` shows nothing at all — the FR-014 transparency promise
+// only holds if the record is actually readable.
+//
+// The metadata arrives here as decoded JSON, so counts are float64 and the
+// nested payloads are []interface{} / map[string]interface{}; every accessor
+// below tolerates both that and the native Go shape used in tests.
+
+// maxPreflightSummaryReasons caps how many distinct reason codes the one-line
+// summary names before it collapses the tail into "+N more". A preflight may
+// carry up to 100 ids across 15 reason codes; an uncapped rollup would push
+// every other column of `activity list` off screen.
+const maxPreflightSummaryReasons = 3
+
+// maxPreflightSummaryCell bounds the summary in the `activity list` TOOL
+// column, matching the cap the tool tables already use for their widest cell.
+const maxPreflightSummaryCell = 60
+
+// isPreflightActivity reports whether a record is a Spec 098 preflight.
+func isPreflightActivity(activity map[string]interface{}) bool {
+	return getStringField(activity, "type") == string(storage.ActivityTypePreflight)
+}
+
+// preflightReasonCount is one {reason code, count} pair of the metadata rollup.
+type preflightReasonCount struct {
+	Reason string
+	Count  int
+}
+
+// preflightReasonRollup reads metadata["reasons"] into a DETERMINISTIC order:
+// most frequent first, ties broken alphabetically. Map iteration order would
+// otherwise make the same record render differently on every invocation, which
+// breaks both diffing two runs and any test that asserts the line.
+func preflightReasonRollup(metadata map[string]interface{}) []preflightReasonCount {
+	counts := map[string]int{}
+	for reason, raw := range getMapField(metadata, storage.MetadataKeyPreflightReasons) {
+		if count, ok := numericMetadataValue(raw); ok {
+			counts[reason] = count
+		}
+	}
+
+	// Fallback for a record whose rollup is missing: recount from the per-tool
+	// detail, which carries the same codes.
+	if len(counts) == 0 {
+		for _, entry := range getArrayField(metadata, storage.MetadataKeyPreflightPerTool) {
+			tool, ok := entry.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if reason := getStringField(tool, storage.PreflightPerToolKeyReason); reason != "" {
+				counts[reason]++
+			}
+		}
+	}
+	if len(counts) == 0 {
+		return nil
+	}
+
+	rollup := make([]preflightReasonCount, 0, len(counts))
+	for reason, count := range counts {
+		rollup = append(rollup, preflightReasonCount{Reason: reason, Count: count})
+	}
+	sort.Slice(rollup, func(i, j int) bool {
+		if rollup[i].Count != rollup[j].Count {
+			return rollup[i].Count > rollup[j].Count
+		}
+		return rollup[i].Reason < rollup[j].Reason
+	})
+	return rollup
+}
+
+// formatPreflightReasons renders a rollup as "code xN, code xN". limit <= 0
+// means "name them all"; a positive limit collapses the tail into "+N more".
+func formatPreflightReasons(rollup []preflightReasonCount, limit int) string {
+	if len(rollup) == 0 {
+		return ""
+	}
+
+	shown := rollup
+	remaining := 0
+	if limit > 0 && len(rollup) > limit {
+		shown = rollup[:limit]
+		remaining = len(rollup) - limit
+	}
+
+	parts := make([]string, 0, len(shown)+1)
+	for _, entry := range shown {
+		parts = append(parts, fmt.Sprintf("%s x%d", entry.Reason, entry.Count))
+	}
+	if remaining > 0 {
+		parts = append(parts, fmt.Sprintf("+%d more", remaining))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// numericMetadataValue reads a metadata count that may have arrived as JSON
+// (float64) or as the native int the writer used.
+func numericMetadataValue(raw interface{}) (int, bool) {
+	switch v := raw.(type) {
+	case float64:
+		return int(v), true
+	case int:
+		return v, true
+	default:
+		return 0, false
+	}
+}
+
+// preflightIDsCount is how many unique tool ids the run evaluated. ids_count is
+// authoritative (the writer sets it); per_tool length is the fallback for a
+// record written by an older/partial writer.
+func preflightIDsCount(metadata map[string]interface{}) int {
+	if count := getIntField(metadata, storage.MetadataKeyPreflightIDsCount); count > 0 {
+		return count
+	}
+	return len(getArrayField(metadata, storage.MetadataKeyPreflightPerTool))
+}
+
+// preflightActivitySummary renders the one-line verdict summary shown in the
+// `activity list` table, e.g. "blocked (4 tools): server_disabled x2,
+// tool_changed x1". Empty string for anything that is not a readable preflight
+// record, so the caller falls back to its usual "-" placeholder.
+func preflightActivitySummary(activity map[string]interface{}) string {
+	if !isPreflightActivity(activity) {
+		return ""
+	}
+	metadata := getMapField(activity, "metadata")
+	if metadata == nil {
+		return ""
+	}
+	verdict := getStringField(metadata, storage.MetadataKeyPreflightVerdict)
+	if verdict == "" {
+		return ""
+	}
+
+	count := preflightIDsCount(metadata)
+	unit := "tools"
+	if count == 1 {
+		unit = "tool"
+	}
+	summary := fmt.Sprintf("%s (%d %s)", verdict, count, unit)
+
+	if reasons := formatPreflightReasons(preflightReasonRollup(metadata), maxPreflightSummaryReasons); reasons != "" {
+		summary += ": " + reasons
+	}
+	return summary
+}
+
+// preflightDetailLines builds the `activity show` section for a preflight
+// record. It returns lines instead of printing so the rendering is unit-tested
+// without capturing stdout. Empty slice ⇒ nothing to render.
+func preflightDetailLines(activity map[string]interface{}) []string {
+	if !isPreflightActivity(activity) {
+		return nil
+	}
+	metadata := getMapField(activity, "metadata")
+	if metadata == nil {
+		return nil
+	}
+	verdict := getStringField(metadata, storage.MetadataKeyPreflightVerdict)
+	if verdict == "" {
+		return nil
+	}
+
+	lines := []string{
+		"",
+		"Preflight:",
+		fmt.Sprintf("  Verdict:           %s", verdict),
+		fmt.Sprintf("  Tools Checked:     %d", preflightIDsCount(metadata)),
+	}
+	// The full rollup here — the detail view has the room the table row lacks.
+	if reasons := formatPreflightReasons(preflightReasonRollup(metadata), 0); reasons != "" {
+		lines = append(lines, fmt.Sprintf("  Reasons:           %s", reasons))
+	}
+
+	perTool := getArrayField(metadata, storage.MetadataKeyPreflightPerTool)
+	if len(perTool) == 0 {
+		return lines
+	}
+
+	lines = append(lines, "", "  Tools:")
+	for i, entry := range perTool {
+		tool, ok := entry.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		// Tool ids are caller-supplied strings that round-trip through the
+		// activity log; escape them before they reach a tty (same trust
+		// boundary as `tools list`).
+		id := sanitizeName(getStringField(tool, storage.PreflightPerToolKeyID))
+		status := getStringField(tool, storage.PreflightPerToolKeyStatus)
+		line := fmt.Sprintf("    [%d] %-40s %s", i+1, id, status)
+		if reason := getStringField(tool, storage.PreflightPerToolKeyReason); reason != "" {
+			line += "  " + reason
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+// displayPreflightSection prints the preflight detail for `activity show`.
+func displayPreflightSection(activity map[string]interface{}) {
+	for _, line := range preflightDetailLines(activity) {
+		fmt.Println(line)
+	}
+}
+
+// formatSeverityWithColor returns a severity string with visual indicator
+func formatSeverityWithColor(severity string) string {
+	if activityNoIcons {
+		return severity
+	}
+	switch severity {
+	case "critical":
+		return "\u2622 " + severity // radioactive symbol for critical
+	case "high":
+		return "\u26a0 " + severity // warning sign for high
+	case "medium":
+		return "\u26a1 " + severity // lightning for medium
+	case "low":
+		return "\u2139 " + severity // info for low
+	default:
+		return severity
+	}
+}
+
+// outputActivityError outputs an error in the appropriate format
+func outputActivityError(err error, code string) error {
+	outputFormat := ResolveOutputFormat()
+	formatter, fmtErr := GetOutputFormatter()
+	if fmtErr != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		return err
+	}
+
+	// T026: Extract request_id from APIError if available
+	var requestID string
+	var apiErr *cliclient.APIError
+	if errors.As(err, &apiErr) && apiErr.HasRequestID() {
+		requestID = apiErr.RequestID
+	}
+
+	if outputFormat == "json" || outputFormat == "yaml" {
+		structErr := output.NewStructuredError(code, err.Error()).
+			WithGuidance("Use 'mcpproxy activity list' to view recent activities").
+			WithRecoveryCommand("mcpproxy activity list --limit 10")
+		// T026: Add request_id to StructuredError if available
+		if requestID != "" {
+			structErr = structErr.WithRequestID(requestID)
+		}
+		result, _ := formatter.FormatError(structErr)
+		fmt.Println(result)
+	} else {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		// T026: Include request ID with log retrieval suggestion if available
+		if requestID != "" {
+			fmt.Fprintf(os.Stderr, "\nRequest ID: %s\n", requestID)
+			fmt.Fprintf(os.Stderr, "Use 'mcpproxy activity list --request-id %s' to find related logs.\n", requestID)
+		}
+		fmt.Fprintf(os.Stderr, "Hint: Use 'mcpproxy activity list' to view recent activities\n")
+	}
+	return err
+}
+
+// Activity command definitions
+var (
+	activityCmd = &cobra.Command{
+		Use:   "activity",
+		Short: "Query and monitor activity logs",
+		Long:  "Commands for listing, watching, and exporting activity logs from the MCPProxy daemon",
+	}
+
+	activityListCmd = &cobra.Command{
+		Use:   "list",
+		Short: "List activity records with filtering",
+		Long: `List activity records with optional filtering and pagination.
+
+Examples:
+  # List recent activity
+  mcpproxy activity list
+
+  # List last 10 tool calls
+  mcpproxy activity list --type tool_call --limit 10
+
+  # List errors from github server
+  mcpproxy activity list --server github --status error
+
+  # List activity by request ID (for error correlation)
+  mcpproxy activity list --request-id abc123-def456
+
+  # List the sub-calls a code_execution made (value = the parent's request_id)
+  mcpproxy activity list --parent-id abc123-def456
+
+  # List only activities with sensitive data detected
+  mcpproxy activity list --sensitive-data
+
+  # Filter by detection type
+  mcpproxy activity list --detection-type aws_access_key
+
+  # Filter by severity level
+  mcpproxy activity list --severity critical
+
+  # List activity as JSON
+  mcpproxy activity list -o json`,
+		RunE: runActivityList,
+	}
+
+	activityWatchCmd = &cobra.Command{
+		Use:   "watch",
+		Short: "Watch activity stream in real-time",
+		Long: `Watch activity events in real-time via SSE stream.
+
+Examples:
+  # Watch all activity
+  mcpproxy activity watch
+
+  # Watch only tool calls from github
+  mcpproxy activity watch --type tool_call --server github
+
+  # Watch with JSON output
+  mcpproxy activity watch -o json`,
+		RunE: runActivityWatch,
+	}
+
+	activityShowCmd = &cobra.Command{
+		Use:   "show <id>",
+		Short: "Show activity details",
+		Long: `Show full details of a specific activity record.
+
+Examples:
+  # Show activity details
+  mcpproxy activity show 01JFXYZ123ABC
+
+  # Show with full response body
+  mcpproxy activity show 01JFXYZ123ABC --include-response`,
+		Args: cobra.ExactArgs(1),
+		RunE: runActivityShow,
+	}
+
+	activitySummaryCmd = &cobra.Command{
+		Use:   "summary",
+		Short: "Show activity statistics",
+		Long: `Show aggregated activity statistics for a time period.
+
+Examples:
+  # Show 24-hour summary
+  mcpproxy activity summary
+
+  # Show weekly summary
+  mcpproxy activity summary --period 7d
+
+  # Show summary grouped by server
+  mcpproxy activity summary --by server`,
+		RunE: runActivitySummary,
+	}
+
+	activityExportCmd = &cobra.Command{
+		Use:   "export",
+		Short: "Export activity records",
+		Long: `Export activity records for compliance and auditing.
+
+Examples:
+  # Export all activity as JSON Lines to file
+  mcpproxy activity export --output activity.jsonl
+
+  # Export as CSV
+  mcpproxy activity export --format csv --output activity.csv
+
+  # Export to stdout for piping
+  mcpproxy activity export --format csv | gzip > activity.csv.gz
+
+  # Export just the sub-calls of one code_execution
+  mcpproxy activity export --parent-id abc123-def456`,
+		RunE: runActivityExport,
+	}
+)
+
+// GetActivityCommand returns the activity command for registration
+func GetActivityCommand() *cobra.Command {
+	return activityCmd
+}
+
+func init() {
+	// Add subcommands
+	activityCmd.AddCommand(activityListCmd)
+	activityCmd.AddCommand(activityWatchCmd)
+	activityCmd.AddCommand(activityShowCmd)
+	activityCmd.AddCommand(activitySummaryCmd)
+	activityCmd.AddCommand(activityExportCmd)
+
+	// List command flags
+	activityListCmd.Flags().StringVarP(&activityType, "type", "t", "", "Filter by type (comma-separated for multiple): tool_call, system_start, system_stop, internal_tool_call, config_change, policy_decision, quarantine_change, server_change, preflight")
+	activityListCmd.Flags().StringVarP(&activityServer, "server", "s", "", "Filter by server name")
+	activityListCmd.Flags().StringVar(&activityTool, "tool", "", "Filter by tool name")
+	activityListCmd.Flags().StringVar(&activityStatus, "status", "", "Filter by status: success, error, blocked, rejected")
+	activityListCmd.Flags().StringVar(&activitySessionID, "session", "", "Filter by session — a work session id (ws-...) or a raw MCP transport session id")
+	activityListCmd.Flags().StringVar(&activityStartTime, "start-time", "", "Filter records after this time (RFC3339)")
+	activityListCmd.Flags().StringVar(&activityEndTime, "end-time", "", "Filter records before this time (RFC3339)")
+	activityListCmd.Flags().IntVarP(&activityLimit, "limit", "n", 50, "Max records to return (1-100)")
+	activityListCmd.Flags().IntVar(&activityOffset, "offset", 0, "Pagination offset")
+	activityListCmd.Flags().StringVar(&activityIntentType, "intent-type", "", "Filter by intent operation type: read, write, destructive")
+	activityListCmd.Flags().StringVar(&activityRequestID, "request-id", "", "Filter by HTTP request ID for log correlation")
+	activityListCmd.Flags().StringVar(&activityParentID, "parent-id", "", "List child tool calls of a code_execution activity (value = the parent record request_id)")
+	activityListCmd.Flags().BoolVar(&activityNoIcons, "no-icons", false, "Disable emoji icons in output (use text instead)")
+	// Spec 026: Sensitive data detection filters
+	activityListCmd.Flags().Bool("sensitive-data", false, "Filter to show only activities with sensitive data detected")
+	activityListCmd.Flags().StringVar(&activityDetectionType, "detection-type", "", "Filter by detection type (e.g., aws_access_key, stripe_key)")
+	activityListCmd.Flags().StringVar(&activitySeverity, "severity", "", "Filter by severity level: critical, high, medium, low")
+	// Spec 028: Agent token identity filters
+	activityListCmd.Flags().StringVar(&activityAgent, "agent", "", "Filter by agent token name")
+	activityListCmd.Flags().StringVar(&activityAuthType, "auth-type", "", "Filter by auth type: admin, agent")
+
+	// Watch command flags
+	activityWatchCmd.Flags().StringVarP(&activityType, "type", "t", "", "Filter by type (comma-separated): tool_call, system_start, system_stop, internal_tool_call, config_change, policy_decision, quarantine_change, server_change, preflight")
+	activityWatchCmd.Flags().StringVarP(&activityServer, "server", "s", "", "Filter by server name")
+
+	// Show command flags
+	activityShowCmd.Flags().BoolVar(&activityIncludeResponse, "include-response", false, "Show full response (may be large)")
+	activityShowCmd.Flags().BoolVar(&activityNoIcons, "no-icons", false, "Disable emoji icons in output (use text instead)")
+
+	// Summary command flags
+	activitySummaryCmd.Flags().StringVarP(&activityPeriod, "period", "p", "24h", "Time period: 1h, 24h, 7d, 30d")
+	activitySummaryCmd.Flags().StringVar(&activityGroupBy, "by", "", "Group by: server, tool, status")
+
+	// Export command flags
+	activityExportCmd.Flags().StringVar(&activityExportOutput, "output", "", "Output file path (stdout if not specified)")
+	activityExportCmd.Flags().StringVarP(&activityExportFormat, "format", "f", "json", "Export format: json, csv")
+	activityExportCmd.Flags().BoolVar(&activityIncludeBodies, "include-bodies", false, "Include full request/response bodies")
+	// Reuse list filter flags for export
+	activityExportCmd.Flags().StringVarP(&activityType, "type", "t", "", "Filter by type (comma-separated): tool_call, system_start, system_stop, internal_tool_call, config_change, policy_decision, quarantine_change, server_change, preflight")
+	activityExportCmd.Flags().StringVarP(&activityServer, "server", "s", "", "Filter by server name")
+	activityExportCmd.Flags().StringVar(&activityTool, "tool", "", "Filter by tool name")
+	activityExportCmd.Flags().StringVar(&activityStatus, "status", "", "Filter by status: success, error, blocked, rejected")
+	activityExportCmd.Flags().StringVar(&activitySessionID, "session", "", "Filter by session — a work session id (ws-...) or a raw MCP transport session id")
+	activityExportCmd.Flags().StringVar(&activityStartTime, "start-time", "", "Filter after this time (RFC3339)")
+	activityExportCmd.Flags().StringVar(&activityEndTime, "end-time", "", "Filter before this time (RFC3339)")
+	activityExportCmd.Flags().StringVar(&activityParentID, "parent-id", "", "Export only child tool calls of a code_execution activity (value = the parent record request_id)")
+}
+
+// getActivityClient creates an HTTP client for the daemon
+func getActivityClient(logger *zap.SugaredLogger) (*cliclient.Client, error) {
+	cfg, err := loadActivityConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load config: %w", err)
+	}
+
+	// Try socket first, then TCP fallback (cfg.Listen + API key)
+	client, ok := newDaemonClient(cfg, logger)
+	if !ok {
+		return nil, fmt.Errorf("mcpproxy daemon is not reachable. Start with: mcpproxy serve")
+	}
+	return client, nil
+}
+
+// runActivityList implements the activity list command
+func runActivityList(cmd *cobra.Command, _ []string) error {
+	// Setup logger
+	cmdLogLevel, _ := cmd.Flags().GetString("log-level")
+	cmdLogToFile, _ := cmd.Flags().GetBool("log-to-file")
+	cmdLogDir, _ := cmd.Flags().GetString("log-dir")
+
+	logger, err := logs.SetupCommandLogger(false, cmdLogLevel, cmdLogToFile, cmdLogDir)
+	if err != nil {
+		return fmt.Errorf("failed to setup logger: %w", err)
+	}
+	defer func() { _ = logger.Sync() }()
+
+	// Spec 026: Handle sensitive-data flag
+	var sensitiveDataPtr *bool
+	if cmd.Flags().Changed("sensitive-data") {
+		sensitiveDataVal, _ := cmd.Flags().GetBool("sensitive-data")
+		sensitiveDataPtr = &sensitiveDataVal
+	}
+
+	// Build filter
+	filter := &ActivityFilter{
+		Type:          activityType,
+		Server:        activityServer,
+		Tool:          activityTool,
+		Status:        activityStatus,
+		SessionID:     activitySessionID,
+		StartTime:     activityStartTime,
+		EndTime:       activityEndTime,
+		Limit:         activityLimit,
+		Offset:        activityOffset,
+		IntentType:    activityIntentType,
+		RequestID:     activityRequestID,
+		ParentID:      activityParentID,
+		SensitiveData: sensitiveDataPtr,
+		DetectionType: activityDetectionType,
+		Severity:      activitySeverity,
+		AgentName:     activityAgent,
+		AuthType:      activityAuthType,
+	}
+
+	if err := filter.Validate(); err != nil {
+		return outputActivityError(err, "INVALID_FILTER")
+	}
+
+	// Create client
+	client, err := getActivityClient(logger.Sugar())
+	if err != nil {
+		return outputActivityError(err, "CONNECTION_ERROR")
+	}
+
+	// Fetch activities
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	activities, total, err := client.ListActivities(ctx, filter)
+	if err != nil {
+		return outputActivityError(err, "FETCH_ERROR")
+	}
+
+	// Format output
+	outputFormat := ResolveOutputFormat()
+	formatter, err := GetOutputFormatter()
+	if err != nil {
+		return err
+	}
+
+	if outputFormat == "json" || outputFormat == "yaml" {
+		data := map[string]interface{}{
+			"activities": activities,
+			"total":      total,
+			"limit":      filter.Limit,
+			"offset":     filter.Offset,
+		}
+		result, err := formatter.Format(data)
+		if err != nil {
+			return err
+		}
+		fmt.Println(result)
+		return nil
+	}
+
+	// Table output
+	if len(activities) == 0 {
+		fmt.Println("No activities found")
+		return nil
+	}
+
+	// Spec 026: Add SENSITIVE column to indicate activities with sensitive data detected
+	headers := []string{"ID", "SRC", "TYPE", "SERVER", "TOOL", "INTENT", "SENSITIVE", "STATUS", "DURATION", "TIME"}
+	rows := make([][]string, 0, len(activities))
+
+	for _, act := range activities {
+		id := getStringField(act, "id")
+		source := getStringField(act, "source")
+		actType := getStringField(act, "type")
+		server := getStringField(act, "server_name")
+		tool := getStringField(act, "tool_name")
+		status := getStringField(act, "status")
+		durationMs := getIntField(act, "duration_ms")
+		timestamp := getStringField(act, "timestamp")
+
+		// Spec 098: a preflight is set-scoped — server_name/tool_name are empty
+		// by construction, so the TOOL cell carries the verdict summary instead
+		// of rendering an empty row the operator cannot interpret.
+		if tool == "" {
+			if summary := preflightActivitySummary(act); summary != "" {
+				tool = sanitizeCell(summary, maxPreflightSummaryCell)
+			}
+		}
+
+		// Extract intent from metadata (Spec 018)
+		intentStr := formatIntentIndicator(act)
+
+		// Spec 026: Format sensitive data indicator
+		sensitiveStr := formatSensitiveDataIndicator(act)
+
+		// Parse and format timestamp
+		timeStr := timestamp
+		if t, err := time.Parse(time.RFC3339, timestamp); err == nil {
+			timeStr = formatRelativeTime(t)
+		}
+
+		// Truncate type for display
+		if len(actType) > 12 {
+			actType = actType[:12]
+		}
+
+		// Format source indicator
+		sourceIcon := formatSourceIndicator(source)
+
+		rows = append(rows, []string{
+			id, // Show full ID so it can be used with 'activity show'
+			sourceIcon,
+			actType,
+			server,
+			// Activity transparency: a sub-call of a code_execution parent is
+			// indented so a mixed list reads as a tree, not a flat run of rows.
+			activityChildToolCell(act, tool),
+			intentStr,
+			sensitiveStr, // Spec 026: Show sensitive data indicator
+			status,
+			formatActivityDuration(int64(durationMs)),
+			timeStr,
+		})
+	}
+
+	result, err := formatter.FormatTable(headers, rows)
+	if err != nil {
+		return err
+	}
+	fmt.Print(result)
+
+	// Show pagination info
+	fmt.Printf("\nShowing %d of %d records", len(activities), total)
+	if filter.Offset > 0 || total > filter.Limit {
+		page := (filter.Offset / filter.Limit) + 1
+		fmt.Printf(" (page %d)", page)
+	}
+	fmt.Println()
+
+	return nil
+}
+
+// runActivityWatch implements the activity watch command
+func runActivityWatch(cmd *cobra.Command, _ []string) error {
+	// Setup logger
+	cmdLogLevel, _ := cmd.Flags().GetString("log-level")
+	cmdLogToFile, _ := cmd.Flags().GetBool("log-to-file")
+	cmdLogDir, _ := cmd.Flags().GetString("log-dir")
+
+	logger, err := logs.SetupCommandLogger(false, cmdLogLevel, cmdLogToFile, cmdLogDir)
+	if err != nil {
+		return fmt.Errorf("failed to setup logger: %w", err)
+	}
+	defer func() { _ = logger.Sync() }()
+
+	// Load config to get endpoint - use same logic as getActivityClient
+	cfg, err := loadActivityConfig()
+	if err != nil {
+		return outputActivityError(err, "CONFIG_ERROR")
+	}
+
+	// Resolve the SSE target via the shared daemon detection: socket first,
+	// then probed TCP fallback with the env>config API key (QA finding
+	// CLI-SOCKET — same semantics as getActivityClient).
+	sseURL, apiKey, transport, ok := activityWatchTarget(cfg, logger.Sugar())
+	if !ok {
+		return outputActivityError(fmt.Errorf("mcpproxy daemon is not reachable. Start with: mcpproxy serve"), "CONNECTION_ERROR")
+	}
+
+	// Setup context with signal handling
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		fmt.Fprintln(os.Stderr, "\nReceived interrupt, stopping...")
+		cancel()
+	}()
+
+	outputFormat := ResolveOutputFormat()
+
+	// Create HTTP client with transport
+	httpClient := &http.Client{
+		Transport: transport,
+		Timeout:   0, // No timeout for SSE
+	}
+
+	// Watch with reconnection
+	return watchWithReconnect(ctx, sseURL, apiKey, outputFormat, logger.Sugar(), httpClient)
+}
+
+// activityWatchTarget resolves the SSE URL, API key, and HTTP transport for
+// `activity watch` using the shared daemon detection (daemonEndpoint):
+// socket first (no API key needed), then probed TCP fallback with the
+// env>config API key. ok=false when no daemon is reachable.
+func activityWatchTarget(cfg *config.Config, logger *zap.SugaredLogger) (sseURL, apiKey string, transport *http.Transport, ok bool) {
+	endpoint, apiKey, ok := daemonEndpoint(cfg)
+	if !ok {
+		return "", "", nil, false
+	}
+	transport, baseURL := activityTransport(endpoint, logger)
+	return baseURL + "/events", apiKey, transport, true
+}
+
+// activityTransport builds an HTTP transport + base URL for a daemonEndpoint
+// result: unix://|npipe:// endpoints get a socket dialer, http(s) endpoints
+// are used as-is.
+func activityTransport(endpoint string, logger *zap.SugaredLogger) (*http.Transport, string) {
+	transport := &http.Transport{}
+	dialer, baseURL, err := socket.CreateDialer(endpoint)
+	if err != nil {
+		if logger != nil {
+			logger.Warnw("Failed to create socket dialer, using endpoint directly",
+				"endpoint", endpoint,
+				"error", err)
+		}
+		return transport, endpoint
+	}
+	if dialer == nil {
+		return transport, endpoint
+	}
+	transport.DialContext = dialer
+	if logger != nil {
+		logger.Debugw("Using socket/pipe connection", "endpoint", endpoint)
+	}
+	return transport, baseURL
+}
+
+// watchWithReconnect watches the SSE stream with automatic reconnection
+func watchWithReconnect(ctx context.Context, sseURL, apiKey string, outputFormat string, logger *zap.SugaredLogger, httpClient *http.Client) error {
+	backoff := 1 * time.Second
+	maxBackoff := 30 * time.Second
+
+	for {
+		err := watchActivityStream(ctx, sseURL, apiKey, outputFormat, logger, httpClient)
+
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Connection lost: %v. Reconnecting in %v...\n", err, backoff)
+			time.Sleep(backoff)
+			backoff = min(backoff*2, maxBackoff)
+			continue
+		}
+
+		backoff = 1 * time.Second
+	}
+}
+
+// watchActivityStream connects to SSE and streams events
+func watchActivityStream(ctx context.Context, sseURL, apiKey string, outputFormat string, _ *zap.SugaredLogger, httpClient *http.Client) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sseURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	if apiKey != "" {
+		// TCP fallback: /events sits behind apiKeyAuthMiddleware. Header, not
+		// ?apikey= query param, so the key never lands in URLs/logs.
+		req.Header.Set("X-API-Key", apiKey)
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to connect: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("server returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	var eventType, eventData string
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		switch {
+		case strings.HasPrefix(line, "event: "):
+			eventType = strings.TrimPrefix(line, "event: ")
+		case strings.HasPrefix(line, "data: "):
+			eventData = strings.TrimPrefix(line, "data: ")
+		case line == "":
+			// Empty line = event complete
+			// Display all activity events except .started (which have no meaningful status/duration)
+			// Includes: .completed, policy_decision, system_start, system_stop, config_change
+			if strings.HasPrefix(eventType, "activity.") && !strings.HasSuffix(eventType, ".started") {
+				displayActivityEvent(eventType, eventData, outputFormat)
+			}
+			eventType, eventData = "", ""
+		}
+	}
+
+	return scanner.Err()
+}
+
+// displayActivityEvent formats and displays an SSE activity event
+func displayActivityEvent(eventType, eventData, outputFormat string) {
+	if outputFormat == "json" {
+		// NDJSON output
+		fmt.Println(eventData)
+		return
+	}
+
+	// Parse event data - SSE wraps the actual payload in {"payload": ..., "timestamp": ...}
+	var wrapper map[string]interface{}
+	if err := json.Unmarshal([]byte(eventData), &wrapper); err != nil {
+		return
+	}
+
+	// Extract the actual payload from the wrapper
+	event, ok := wrapper["payload"].(map[string]interface{})
+	if !ok {
+		// If no wrapper, use the data directly (for backwards compatibility/testing)
+		event = wrapper
+	}
+
+	// Determine event category from eventType (e.g., "activity.tool_call.completed" -> "tool_call")
+	parts := strings.Split(eventType, ".")
+	eventCategory := ""
+	if len(parts) >= 2 {
+		eventCategory = parts[1]
+	}
+
+	// Apply client-side filters
+	if activityServer != "" {
+		// For tool_call events, check server_name
+		// For internal_tool_call events, check target_server
+		server := getStringField(event, "server_name")
+		if server == "" {
+			server = getStringField(event, "target_server")
+		}
+		if server == "" {
+			server = getStringField(event, "affected_entity") // for config_change
+		}
+		if server != activityServer {
+			return
+		}
+	}
+	if activityType != "" {
+		if eventCategory != activityType {
+			return
+		}
+	}
+
+	// Skip successful call_tool_* internal tool calls to avoid duplicates
+	// These have a corresponding tool_call entry that shows the actual upstream call.
+	// Failed call_tool_* calls are shown since they have no corresponding tool_call.
+	if eventCategory == "internal_tool_call" {
+		internalToolName := getStringField(event, "internal_tool_name")
+		status := getStringField(event, "status")
+		if status == "success" && strings.HasPrefix(internalToolName, "call_tool_") {
+			return
+		}
+	}
+
+	// Format output based on event type
+	timestamp := time.Now().Format("15:04:05")
+
+	var line string
+	switch eventCategory {
+	case "tool_call":
+		line = formatToolCallEvent(event, timestamp)
+	case "internal_tool_call":
+		line = formatInternalToolCallEvent(event, timestamp)
+	case "policy_decision":
+		line = formatPolicyDecisionEvent(event, timestamp)
+	case "system_start":
+		line = formatSystemStartEvent(event, timestamp)
+	case "system_stop":
+		line = formatSystemStopEvent(event, timestamp)
+	case "config_change":
+		line = formatConfigChangeEvent(event, timestamp)
+	default:
+		// Fallback for unknown event types
+		line = fmt.Sprintf("[%s] [?] %s", timestamp, eventType)
+	}
+
+	fmt.Println(line)
+}
+
+// formatToolCallEvent formats a tool_call event for display
+func formatToolCallEvent(event map[string]interface{}, timestamp string) string {
+	source := getStringField(event, "source")
+	server := getStringField(event, "server_name")
+	tool := getStringField(event, "tool_name")
+	status := getStringField(event, "status")
+	durationMs := getIntField(event, "duration_ms")
+	errMsg := getStringField(event, "error_message")
+
+	sourceIcon := formatSourceIndicator(source)
+	statusIcon := formatStatusIcon(status)
+
+	line := fmt.Sprintf("[%s] [%s] %s:%s %s %s", timestamp, sourceIcon, server, tool, statusIcon, formatActivityDuration(int64(durationMs)))
+	// Activity transparency: mark sub-calls made from inside a code_execution.
+	line += formatParentMarker(event)
+	if errMsg != "" {
+		line += " " + errMsg
+	}
+	switch status {
+	case "blocked":
+		line += " BLOCKED"
+	case "rejected":
+		line += " REJECTED (concurrency limit)"
+	}
+	return line
+}
+
+// formatInternalToolCallEvent formats an internal_tool_call event for display
+func formatInternalToolCallEvent(event map[string]interface{}, timestamp string) string {
+	internalTool := getStringField(event, "internal_tool_name")
+	targetServer := getStringField(event, "target_server")
+	targetTool := getStringField(event, "target_tool")
+	status := getStringField(event, "status")
+	durationMs := getIntField(event, "duration_ms")
+	errMsg := getStringField(event, "error_message")
+
+	statusIcon := formatStatusIcon(status)
+
+	// Format: [HH:MM:SS] [INT] internal_tool -> target_server:target_tool status duration
+	target := ""
+	if targetServer != "" && targetTool != "" {
+		target = fmt.Sprintf(" -> %s:%s", targetServer, targetTool)
+	} else if targetServer != "" {
+		target = fmt.Sprintf(" -> %s", targetServer)
+	}
+
+	line := fmt.Sprintf("[%s] [INT] %s%s %s %s", timestamp, internalTool, target, statusIcon, formatActivityDuration(int64(durationMs)))
+	line += formatParentMarker(event)
+	if errMsg != "" {
+		line += " " + errMsg
+	}
+	return line
+}
+
+// formatPolicyDecisionEvent formats a policy_decision event for display
+func formatPolicyDecisionEvent(event map[string]interface{}, timestamp string) string {
+	server := getStringField(event, "server_name")
+	tool := getStringField(event, "tool_name")
+	decision := getStringField(event, "decision")
+	reason := getStringField(event, "reason")
+
+	statusIcon := "\u2298" // circle with slash for blocked
+	if decision == "allowed" {
+		statusIcon = "\u2713"
+	}
+
+	line := fmt.Sprintf("[%s] [POL] %s:%s %s", timestamp, server, tool, statusIcon)
+	if reason != "" {
+		line += " " + reason
+	}
+	return line
+}
+
+// formatSystemStartEvent formats a system_start event for display
+func formatSystemStartEvent(event map[string]interface{}, timestamp string) string {
+	version := getStringField(event, "version")
+	listenAddr := getStringField(event, "listen_address")
+	startupMs := getIntField(event, "startup_duration_ms")
+
+	return fmt.Sprintf("[%s] [SYS] \u25B6 Started v%s on %s (%s)", timestamp, version, listenAddr, formatActivityDuration(int64(startupMs)))
+}
+
+// formatSystemStopEvent formats a system_stop event for display
+func formatSystemStopEvent(event map[string]interface{}, timestamp string) string {
+	reason := getStringField(event, "reason")
+	signal := getStringField(event, "signal")
+	uptimeSec := getIntField(event, "uptime_seconds")
+	errMsg := getStringField(event, "error_message")
+
+	line := fmt.Sprintf("[%s] [SYS] \u25A0 Stopped: %s", timestamp, reason)
+	if signal != "" {
+		line += fmt.Sprintf(" (signal: %s)", signal)
+	}
+	if uptimeSec > 0 {
+		line += fmt.Sprintf(" uptime: %ds", uptimeSec)
+	}
+	if errMsg != "" {
+		line += " error: " + errMsg
+	}
+	return line
+}
+
+// formatConfigChangeEvent formats a config_change event for display
+func formatConfigChangeEvent(event map[string]interface{}, timestamp string) string {
+	action := getStringField(event, "action")
+	entity := getStringField(event, "affected_entity")
+	source := getStringField(event, "source")
+
+	sourceIcon := formatSourceIndicator(source)
+
+	return fmt.Sprintf("[%s] [%s] \u2699 Config: %s %s", timestamp, sourceIcon, action, entity)
+}
+
+// formatStatusIcon returns a status icon for the given status
+func formatStatusIcon(status string) string {
+	switch status {
+	case "success":
+		return "\u2713" // checkmark
+	case "error":
+		return "\u2717" // X
+	case "blocked":
+		return "\u2298" // circle with slash
+	case "rejected":
+		// Spec 093: shed by a concurrency limit — backpressure, not a failure.
+		return "\u23f8" // pause
+	default:
+		return "?"
+	}
+}
+
+// activityChildToolCell renders the TOOL cell for a list row, marking records
+// that are sub-calls of a code_execution parent (ParentID == parent request_id).
+func activityChildToolCell(act map[string]interface{}, tool string) string {
+	if getStringField(act, "parent_id") == "" {
+		return tool
+	}
+	return "└ " + tool
+}
+
+// formatParentMarker renders the short "[child of <parent_id>]" suffix used by
+// `activity watch`, so a sub-call is recognisable in the live stream.
+func formatParentMarker(event map[string]interface{}) string {
+	parentID := getStringField(event, "parent_id")
+	if parentID == "" {
+		return ""
+	}
+	return fmt.Sprintf(" [child of %s]", parentID)
+}
+
+// isCodeExecutionParent reports whether a record is the code_execution activity
+// that sandboxed sub-calls hang off. Only the internal_tool_call record spawns
+// children; a same-named upstream tool_call does not.
+func isCodeExecutionParent(activity map[string]interface{}) bool {
+	if getStringField(activity, "type") != string(storage.ActivityTypeInternalToolCall) {
+		return false
+	}
+	if getStringField(activity, "tool_name") == "code_execution" {
+		return true
+	}
+	if metadata := getMapField(activity, "metadata"); metadata != nil {
+		return getStringField(metadata, "internal_tool_name") == "code_execution"
+	}
+	return false
+}
+
+// runActivityShow implements the activity show command
+func runActivityShow(cmd *cobra.Command, args []string) error {
+	activityID := args[0]
+
+	// Setup logger
+	cmdLogLevel, _ := cmd.Flags().GetString("log-level")
+	cmdLogToFile, _ := cmd.Flags().GetBool("log-to-file")
+	cmdLogDir, _ := cmd.Flags().GetString("log-dir")
+
+	logger, err := logs.SetupCommandLogger(false, cmdLogLevel, cmdLogToFile, cmdLogDir)
+	if err != nil {
+		return fmt.Errorf("failed to setup logger: %w", err)
+	}
+	defer func() { _ = logger.Sync() }()
+
+	// Create client
+	client, err := getActivityClient(logger.Sugar())
+	if err != nil {
+		return outputActivityError(err, "CONNECTION_ERROR")
+	}
+
+	// Fetch activity detail
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	activity, err := client.GetActivityDetail(ctx, activityID)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			return outputActivityError(fmt.Errorf("activity not found: %s", activityID), "ACTIVITY_NOT_FOUND")
+		}
+		return outputActivityError(err, "FETCH_ERROR")
+	}
+
+	// Format output
+	outputFormat := ResolveOutputFormat()
+	formatter, err := GetOutputFormatter()
+	if err != nil {
+		return err
+	}
+
+	if outputFormat == "json" || outputFormat == "yaml" {
+		result, err := formatter.Format(activity)
+		if err != nil {
+			return err
+		}
+		fmt.Println(result)
+		return nil
+	}
+
+	// Table output - key-value pairs
+	fmt.Println("Activity Details")
+	fmt.Println("================")
+	fmt.Println()
+
+	fmt.Printf("ID:           %s\n", getStringField(activity, "id"))
+	fmt.Printf("Type:         %s\n", getStringField(activity, "type"))
+	source := getStringField(activity, "source")
+	if source == "" {
+		source = "mcp" // Default for backwards compatibility
+	}
+	fmt.Printf("Source:       %s (%s)\n", formatSourceIndicator(source), formatSourceDescription(source))
+	fmt.Printf("Server:       %s\n", getStringField(activity, "server_name"))
+	fmt.Printf("Tool:         %s\n", getStringField(activity, "tool_name"))
+	fmt.Printf("Status:       %s\n", getStringField(activity, "status"))
+	fmt.Printf("Duration:     %s\n", formatActivityDuration(int64(getIntField(activity, "duration_ms"))))
+	fmt.Printf("Timestamp:    %s\n", getStringField(activity, "timestamp"))
+
+	if sessionID := getStringField(activity, "session_id"); sessionID != "" {
+		fmt.Printf("Session ID:   %s\n", sessionID)
+	}
+
+	// Spec 098 (SC-005): the request id is how a preflight record is joined to
+	// the tool calls of the same workflow (`activity list --request-id <id>`),
+	// so the detail view has to show it, not just accept it as a filter.
+	requestID := getStringField(activity, "request_id")
+	if requestID != "" {
+		fmt.Printf("Request ID:   %s\n", requestID)
+	}
+
+	// Activity transparency: both directions of the code_execution ↔ sub-call
+	// link are navigable from the detail view.
+	//   child  → parent:   the Parent ID line below
+	//   parent → children: the hint below it
+	if parentID := getStringField(activity, "parent_id"); parentID != "" {
+		fmt.Printf("Parent ID:    %s\n", parentID)
+		fmt.Printf("              (sub-call of a code_execution — 'mcpproxy activity list --request-id %s' shows the parent)\n", parentID)
+	} else if isCodeExecutionParent(activity) && requestID != "" {
+		fmt.Printf("\nUse 'mcpproxy activity list --parent-id %s' to see sub-calls.\n", requestID)
+	}
+
+	if errMsg := getStringField(activity, "error_message"); errMsg != "" {
+		fmt.Printf("Error:        %s\n", errMsg)
+	}
+
+	// Intent information (Spec 018)
+	displayIntentSection(activity)
+
+	// Sensitive Data Detection (Spec 026)
+	displaySensitiveDataSection(activity)
+
+	// Preflight verdict + per-tool reasons (Spec 098)
+	displayPreflightSection(activity)
+
+	// Arguments
+	if args, ok := activity["arguments"].(map[string]interface{}); ok && len(args) > 0 {
+		fmt.Println()
+		fmt.Println("Arguments:")
+		argsJSON, _ := json.MarshalIndent(args, "  ", "  ")
+		fmt.Printf("  %s\n", string(argsJSON))
+	}
+
+	// Response (if included)
+	if activityIncludeResponse {
+		if response := getStringField(activity, "response"); response != "" {
+			fmt.Println()
+			fmt.Println("Response:")
+			fmt.Printf("  %s\n", response)
+
+			if truncated, ok := activity["response_truncated"].(bool); ok && truncated {
+				fmt.Println("  (response was truncated)")
+			}
+		}
+	}
+
+	return nil
+}
+
+// runActivitySummary implements the activity summary command
+func runActivitySummary(cmd *cobra.Command, _ []string) error {
+	// Setup logger
+	cmdLogLevel, _ := cmd.Flags().GetString("log-level")
+	cmdLogToFile, _ := cmd.Flags().GetBool("log-to-file")
+	cmdLogDir, _ := cmd.Flags().GetString("log-dir")
+
+	logger, err := logs.SetupCommandLogger(false, cmdLogLevel, cmdLogToFile, cmdLogDir)
+	if err != nil {
+		return fmt.Errorf("failed to setup logger: %w", err)
+	}
+	defer func() { _ = logger.Sync() }()
+
+	// Validate period
+	validPeriods := []string{"1h", "24h", "7d", "30d"}
+	valid := false
+	for _, p := range validPeriods {
+		if activityPeriod == p {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		return outputActivityError(fmt.Errorf("invalid period '%s': must be one of %v", activityPeriod, validPeriods), "INVALID_PERIOD")
+	}
+
+	// Create client
+	client, err := getActivityClient(logger.Sugar())
+	if err != nil {
+		return outputActivityError(err, "CONNECTION_ERROR")
+	}
+
+	// Fetch summary
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	summary, err := client.GetActivitySummary(ctx, activityPeriod, activityGroupBy)
+	if err != nil {
+		return outputActivityError(err, "FETCH_ERROR")
+	}
+
+	// Format output
+	outputFormat := ResolveOutputFormat()
+	formatter, err := GetOutputFormatter()
+	if err != nil {
+		return err
+	}
+
+	if outputFormat == "json" || outputFormat == "yaml" {
+		result, err := formatter.Format(summary)
+		if err != nil {
+			return err
+		}
+		fmt.Println(result)
+		return nil
+	}
+
+	// Table output
+	period := getStringField(summary, "period")
+	totalCount := getIntField(summary, "total_count")
+	callCount := getIntField(summary, "call_count")
+	callErrorCount := getIntField(summary, "call_error_count")
+	successCount := getIntField(summary, "success_count")
+	errorCount := getIntField(summary, "error_count")
+	blockedCount := getIntField(summary, "blocked_count")
+
+	fmt.Printf("Activity Summary (last %s)\n", period)
+	fmt.Println("===========================")
+	fmt.Println()
+
+	// Calculate percentages
+	successPct := float64(0)
+	errorPct := float64(0)
+	blockedPct := float64(0)
+	if totalCount > 0 {
+		successPct = float64(successCount) / float64(totalCount) * 100
+		errorPct = float64(errorCount) / float64(totalCount) * 100
+		blockedPct = float64(blockedCount) / float64(totalCount) * 100
+	}
+
+	// "Total Calls" used to print total_count, which counts every activity
+	// record — security scans, quarantine auto-approvals, system starts — so the
+	// CLI, the Web UI's Usage tab and the tray all reported different totals for
+	// the same window (audit finding F1, #1046). Events and calls are separate
+	// rows now, and the call row is the number every other surface shows.
+	callErrorPct := float64(0)
+	if callCount > 0 {
+		callErrorPct = float64(callErrorCount) / float64(callCount) * 100
+	}
+
+	fmt.Printf("%-15s %s\n", "METRIC", "VALUE")
+	fmt.Printf("%-15s %s\n", strings.Repeat("-", 15), strings.Repeat("-", 20))
+	fmt.Printf("%-15s %d\n", "Total Events", totalCount)
+	fmt.Printf("%-15s %d (%.1f%% failed)\n", "Calls", callCount, callErrorPct)
+	fmt.Printf("%-15s %d (%.1f%%)\n", "Successful", successCount, successPct)
+	fmt.Printf("%-15s %d (%.1f%%)\n", "Errors", errorCount, errorPct)
+	fmt.Printf("%-15s %d (%.1f%%)\n", "Blocked", blockedCount, blockedPct)
+
+	// Top servers
+	if topServers, ok := summary["top_servers"].([]interface{}); ok && len(topServers) > 0 {
+		fmt.Println()
+		fmt.Println("TOP SERVERS")
+		fmt.Println(strings.Repeat("-", 30))
+		for _, s := range topServers {
+			if srv, ok := s.(map[string]interface{}); ok {
+				name := getStringField(srv, "name")
+				count := getIntField(srv, "count")
+				fmt.Printf("%-20s %d calls\n", name, count)
+			}
+		}
+	}
+
+	// Top tools
+	if topTools, ok := summary["top_tools"].([]interface{}); ok && len(topTools) > 0 {
+		fmt.Println()
+		fmt.Println("TOP TOOLS")
+		fmt.Println(strings.Repeat("-", 40))
+		for _, t := range topTools {
+			if tool, ok := t.(map[string]interface{}); ok {
+				server := getStringField(tool, "server")
+				toolName := getStringField(tool, "tool")
+				count := getIntField(tool, "count")
+				fmt.Printf("%-30s %d calls\n", server+":"+toolName, count)
+			}
+		}
+	}
+
+	return nil
+}
+
+// activityExportQueryParams builds the export query string from the export
+// flags. Export does NOT go through ActivityFilter.ToQueryParams, so every
+// filter flag has to be wired here as well or it is a silent no-op.
+func activityExportQueryParams() url.Values {
+	q := url.Values{}
+	q.Set("format", activityExportFormat)
+	if activityType != "" {
+		q.Set("type", activityType)
+	}
+	if activityServer != "" {
+		q.Set("server", activityServer)
+	}
+	if activityTool != "" {
+		q.Set("tool", activityTool)
+	}
+	if activityStatus != "" {
+		q.Set("status", activityStatus)
+	}
+	if activitySessionID != "" {
+		q.Set(sessionQueryParam(activitySessionID), activitySessionID)
+	}
+	if activityStartTime != "" {
+		q.Set("start_time", activityStartTime)
+	}
+	if activityEndTime != "" {
+		q.Set("end_time", activityEndTime)
+	}
+	// Activity transparency: export the sub-calls of one code_execution.
+	if activityParentID != "" {
+		q.Set("parent_id", activityParentID)
+	}
+	if activityIncludeBodies {
+		q.Set("include_bodies", "true")
+	}
+	return q
+}
+
+// runActivityExport implements the activity export command
+func runActivityExport(cmd *cobra.Command, _ []string) error {
+	// Setup logger
+	cmdLogLevel, _ := cmd.Flags().GetString("log-level")
+	cmdLogToFile, _ := cmd.Flags().GetBool("log-to-file")
+	cmdLogDir, _ := cmd.Flags().GetString("log-dir")
+
+	logger, err := logs.SetupCommandLogger(false, cmdLogLevel, cmdLogToFile, cmdLogDir)
+	if err != nil {
+		return fmt.Errorf("failed to setup logger: %w", err)
+	}
+	defer func() { _ = logger.Sync() }()
+
+	// Validate format
+	if activityExportFormat != "json" && activityExportFormat != "csv" {
+		return outputActivityError(fmt.Errorf("invalid format '%s': must be 'json' or 'csv'", activityExportFormat), "INVALID_FORMAT")
+	}
+
+	// Load config - use explicit config file if provided via -c flag
+	cfg, err := loadActivityConfig()
+	if err != nil {
+		return outputActivityError(err, "CONFIG_ERROR")
+	}
+
+	// Resolve the daemon via the shared detection: socket first, then probed
+	// TCP fallback with the env>config API key (QA finding CLI-SOCKET).
+	endpoint, apiKey, ok := daemonEndpoint(cfg)
+	if !ok {
+		return outputActivityError(fmt.Errorf("mcpproxy daemon is not reachable. Start with: mcpproxy serve"), "CONNECTION_ERROR")
+	}
+	transport, baseURL := activityTransport(endpoint, logger.Sugar())
+	exportURL := baseURL + "/api/v1/activity/export"
+
+	exportURL += "?" + activityExportQueryParams().Encode()
+
+	// Create HTTP request
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, exportURL, nil)
+	if err != nil {
+		return outputActivityError(err, "REQUEST_ERROR")
+	}
+
+	// Add API key header (empty over socket — OS-level auth)
+	if apiKey != "" {
+		req.Header.Set("X-API-Key", apiKey)
+	}
+
+	client := &http.Client{Transport: transport}
+	resp, err := client.Do(req)
+	if err != nil {
+		return outputActivityError(err, "CONNECTION_ERROR")
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return outputActivityError(fmt.Errorf("server returned %d: %s", resp.StatusCode, string(body)), "EXPORT_ERROR")
+	}
+
+	// Determine output destination
+	var w io.Writer = os.Stdout
+	if activityExportOutput != "" {
+		f, err := os.Create(activityExportOutput)
+		if err != nil {
+			return outputActivityError(fmt.Errorf("failed to create output file: %w", err), "FILE_ERROR")
+		}
+		defer f.Close()
+		w = f
+	}
+
+	// Stream response to output
+	_, err = io.Copy(w, resp.Body)
+	if err != nil {
+		return outputActivityError(fmt.Errorf("failed to write output: %w", err), "WRITE_ERROR")
+	}
+
+	// Report success for file output
+	if activityExportOutput != "" {
+		fmt.Fprintf(os.Stderr, "Exported to %s\n", activityExportOutput)
+	}
+
+	return nil
+}
+
+// sessionQueryParam picks the right filter for a --session value.
+//
+// Spec 082: the user-facing "session" is a WORK session (one client, one
+// project, across reconnects) and its ids are prefixed "ws-". Raw MCP transport
+// session ids are still accepted, so existing scripts keep working.
+func sessionQueryParam(v string) string {
+	if strings.HasPrefix(v, "ws-") {
+		return "work_session_id"
+	}
+	return "session_id"
+}

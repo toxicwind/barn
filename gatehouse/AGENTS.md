@@ -39,3 +39,13 @@
 
 ## Recent Changes
 - 026-pii-detection: Added Go 1.24 (toolchain go1.24.10) + BBolt (storage), Chi router (HTTP), Zap (logging), regexp (stdlib), existing ActivityService
+
+<!-- delendai:begin -->
+
+# delendai host hints (auto-generated)
+
+See `docs/delendai/host-hints/agent-instructions.generated.md` for the live agent catalog.
+
+- Bootstrap §7 (repo-level rules) is in effect.
+
+<!-- delendai:end -->

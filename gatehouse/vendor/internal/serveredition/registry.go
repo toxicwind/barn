@@ -1,0 +1,95 @@
+//go:build server
+
+package serveredition
+
+import (
+	"fmt"
+
+	"github.com/go-chi/chi/v5"
+	"go.etcd.io/bbolt"
+	"go.uber.org/zap"
+
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/audit"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/config"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/contracts"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/httpapi"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/storage"
+)
+
+// Dependencies holds shared dependencies that server edition features need.
+// These are provided by the server during initialization and passed
+// to each feature's Setup function.
+type Dependencies struct {
+	Router  chi.Router
+	DB      *bbolt.DB
+	Logger  *zap.SugaredLogger
+	Config  *config.Config
+	DataDir string
+	// ConfigProvider returns the CURRENT configuration. Config above is the one
+	// that existed at setup time, and the configuration is hot-reloadable, so a
+	// feature that makes an authorisation decision from a boot-time snapshot
+	// silently stops seeing servers (and settings) added afterwards. Features
+	// must read through this and fall back to Config only when it is nil.
+	//
+	// The runtime publishes each configuration as an immutable snapshot behind
+	// an atomic pointer, so calling this is cheap and lock-free; the value it
+	// returns is READ-ONLY.
+	ConfigProvider    func() *config.Config
+	SetServerShared   func(string, bool) (*config.ServerConfig, error)
+	ManagementService interface{}      // management.Service - kept as interface{} to avoid circular imports
+	StorageManager    *storage.Manager // Shared storage manager for token operations
+
+	// InstallSessionPrincipalResolver, when non-nil, receives the
+	// session-principal resolver a feature builds (Spec 107 T084), so
+	// internal/server/serveredition_wire.go can install it on the
+	// httpapi.Server (httpAPIServer.SetSessionPrincipalResolver) without this
+	// package importing that Server type directly at the wiring call site.
+	// Only the multiuser-oauth feature sets it.
+	InstallSessionPrincipalResolver func(httpapi.SessionPrincipalResolver)
+
+	// ProjectActivity converts+masks a storage.ActivityRecord exactly as core
+	// GET /activity does (Spec 107 T086: httpapi.(*Server).ActivityProjector,
+	// supplied by serveredition_wire.go). GET /api/v1/user/activity injects
+	// it into UserActivityHandlers so that door emits the same JSON shape
+	// and the same masking as the core surface for the same record.
+	ProjectActivity func(*storage.ActivityRecord) contracts.ActivityRecord
+
+	// AuditSink is the Spec 107 audit line writer the server was built with
+	// (server.WithAuditSink), handed to the OAuth handler so PR-D's
+	// auth_event emitter (T107) shares the ONE sink the dispatch funnels
+	// write through. nil = no-op (audit_log off).
+	AuditSink audit.Sink
+}
+
+// Feature represents a server edition feature module that self-registers.
+type Feature struct {
+	Name  string
+	Setup func(deps Dependencies) error
+}
+
+var features []Feature
+
+// Register adds a server edition feature to the registry.
+// Called by feature packages in their init() functions.
+func Register(f Feature) {
+	features = append(features, f)
+}
+
+// SetupAll initializes all registered server edition features.
+func SetupAll(deps Dependencies) error {
+	for _, f := range features {
+		if err := f.Setup(deps); err != nil {
+			return fmt.Errorf("server feature %s: %w", f.Name, err)
+		}
+	}
+	return nil
+}
+
+// RegisteredFeatures returns the names of all registered features.
+func RegisteredFeatures() []string {
+	names := make([]string, len(features))
+	for i, f := range features {
+		names[i] = f.Name
+	}
+	return names
+}

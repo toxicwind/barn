@@ -1,0 +1,3400 @@
+package upstream
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"maps"
+	"os/exec"
+	"slices"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	uptransport "github.com/mark3labs/mcp-go/client/transport"
+	"github.com/mark3labs/mcp-go/mcp"
+	"go.uber.org/zap"
+
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/config"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/oauth"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/secret"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/shellwrap"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/storage"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/transport"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/upstream/core"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/upstream/limiter"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/upstream/managed"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/upstream/types"
+)
+
+// dockerResolverFn returns the absolute path to the docker binary, or "" with
+// an error if it cannot be resolved. Overridable in tests.
+//
+// The default implementation delegates to shellwrap.ResolveDockerPath which
+// (a) tries exec.LookPath, (b) probes well-known install locations
+// (/Applications/Docker.app/..., /usr/local/bin/docker, /opt/homebrew/bin/docker,
+// ~/.docker/bin, ~/.orbstack/bin, /opt/podman/bin, …), and (c) finally asks the
+// user's login shell `command -v docker` for non-standard installs (mise, asdf,
+// Colima). This matters when mcpproxy boots from a macOS .app bundle / LoginItem
+// where launchd hands the parent process a minimal PATH=/usr/bin:/bin:/usr/sbin:/sbin
+// — bare exec.Command("docker") fails with `executable file not found in $PATH`
+// even though docker is installed at a standard location.
+var dockerResolverFn = func(logger *zap.Logger) (string, error) {
+	return shellwrap.ResolveDockerPath(logger)
+}
+
+// Docker recovery constants - internal implementation defaults
+const (
+	dockerCheckInterval      = 30 * time.Second // How often to check Docker availability
+	dockerMaxRetries         = 10               // Maximum consecutive failures before giving up (0 = unlimited)
+	dockerRetryInterval1     = 2 * time.Second  // First retry - Docker might just be paused
+	dockerRetryInterval2     = 5 * time.Second  // Second retry
+	dockerRetryInterval3     = 10 * time.Second // Third retry
+	dockerRetryInterval4     = 30 * time.Second // Fourth retry
+	dockerRetryInterval5     = 60 * time.Second // Fifth+ retry (max backoff)
+	dockerHealthCheckTimeout = 3 * time.Second  // Timeout for docker info command
+)
+
+// freshenLoadedDockerRecoveryState clears per-process retry counters from a
+// recovery state loaded from persistent storage at process startup. The
+// persisted FailureCount / AttemptsSinceUp / RecoveryMode describe the previous
+// process's situation; the new process must not inherit them as a depleted
+// retry budget. Telemetry fields (LastSuccessfulAt, LastError, LastAttempt,
+// DockerAvailable) are preserved so operators can still see the prior state.
+func freshenLoadedDockerRecoveryState(state *storage.DockerRecoveryState) {
+	if state == nil {
+		return
+	}
+	state.FailureCount = 0
+	state.AttemptsSinceUp = 0
+	state.RecoveryMode = false
+}
+
+// getDockerRetryInterval returns the retry interval for a given attempt number (exponential backoff)
+func getDockerRetryInterval(attempt int) time.Duration {
+	switch {
+	case attempt <= 0:
+		return dockerRetryInterval1
+	case attempt == 1:
+		return dockerRetryInterval2
+	case attempt == 2:
+		return dockerRetryInterval3
+	case attempt == 3:
+		return dockerRetryInterval4
+	default:
+		return dockerRetryInterval5 // Max backoff
+	}
+}
+
+// Manager manages connections to multiple upstream MCP servers
+type Manager struct {
+	clients   map[string]*managed.Client
+	mu        sync.RWMutex
+	logger    *zap.Logger
+	logConfig *config.LogConfig
+	// globalConfig holds the proxy-wide config as an atomic pointer so a config
+	// hot-reload (SetGlobalConfig) can swap it lock-free while the construction
+	// paths and the Docker-recovery goroutine read it concurrently (spec 074:
+	// the new global health/discovery intervals must reach running clients).
+	globalConfig    atomic.Pointer[config.Config]
+	storage         *storage.BoltDB
+	notificationMgr *NotificationManager
+	secretResolver  *secret.Resolver
+
+	// lastSweptAt tracks, per server name, the last time the periodic
+	// tool-discovery sweep listed that server's tools. Used to honor per-server
+	// tool_discovery_interval overrides (spec 074 US3/SC-006/FR-005): the
+	// periodic sweep only re-lists a server once its own resolved interval has
+	// elapsed. Guarded by sweepMu.
+	sweepMu     sync.Mutex
+	lastSweptAt map[string]time.Time
+
+	// tokenReconnect keeps last reconnect trigger time per server when detecting
+	// newly available OAuth tokens without explicit DB events (e.g., when CLI
+	// cannot write due to DB lock). Prevents rapid retrigger loops.
+	tokenReconnect map[string]time.Time
+
+	// tokenFingerprints records which persisted token each server was last
+	// retried with, so the scan fires on a NEW token rather than on the mere
+	// presence of the stale one it already failed with (#1013). Same goroutine
+	// as tokenReconnect (the OAuth event monitor), so it needs no extra lock.
+	tokenFingerprints map[string]string
+
+	// Context for shutdown coordination
+	shutdownCtx    context.Context
+	shutdownCancel context.CancelFunc
+	shuttingDown   bool           // Flag to prevent reconnections during shutdown
+	shutdownWg     sync.WaitGroup // Tracks all background goroutines for clean shutdown
+
+	// Docker recovery state
+	dockerRecoveryMu     sync.RWMutex
+	dockerRecoveryActive bool
+	dockerRecoveryState  *storage.DockerRecoveryState
+	dockerRecoveryCancel context.CancelFunc
+	storageMgr           *storage.Manager // Reference to storage manager for Docker state persistence
+
+	// Tool discovery callback for notifications/tools/list_changed handling
+	toolDiscoveryCallback func(ctx context.Context, serverName string) error
+
+	// Prompts-changed callback for notifications/prompts/list_changed handling (F13)
+	promptsChangedCallback func(serverName string)
+
+	// limiters owns the spec-093 concurrency limiter instances (one per upstream
+	// plus the proxy-wide aggregate). Created once and never replaced — hot
+	// reload republishes limits INTO it so occupancy is shared across
+	// generations (FR-021).
+	limiters *limiter.Registry
+	// rejectObserver is the origin-independent shed seam (FR-012/FR-013),
+	// installed by the runtime. Stored as an atomic pointer because it is set
+	// after construction while clients may already exist.
+	rejectObserver atomic.Pointer[limiter.Observer]
+}
+
+func cloneServerConfig(cfg *config.ServerConfig) *config.ServerConfig {
+	if cfg == nil {
+		return nil
+	}
+
+	clone := *cfg
+
+	if cfg.Args != nil {
+		clone.Args = slices.Clone(cfg.Args)
+	}
+
+	if cfg.Env != nil {
+		clone.Env = maps.Clone(cfg.Env)
+	}
+
+	if cfg.Headers != nil {
+		clone.Headers = maps.Clone(cfg.Headers)
+	}
+
+	if cfg.OAuth != nil {
+		o := *cfg.OAuth
+		if cfg.OAuth.Scopes != nil {
+			o.Scopes = slices.Clone(cfg.OAuth.Scopes)
+		}
+		clone.OAuth = &o
+	}
+
+	if cfg.Isolation != nil {
+		iso := *cfg.Isolation
+		if cfg.Isolation.ExtraArgs != nil {
+			iso.ExtraArgs = slices.Clone(cfg.Isolation.ExtraArgs)
+		}
+		clone.Isolation = &iso
+	}
+
+	return &clone
+}
+
+// NewManager creates a new upstream manager
+func NewManager(logger *zap.Logger, globalConfig *config.Config, boltStorage *storage.BoltDB, secretResolver *secret.Resolver, storageMgr *storage.Manager) *Manager {
+	// Scope this process's Docker container-ownership instance ID to its data
+	// dir instead of a host-wide shared file, so concurrent mcpproxy
+	// processes on one host (which already require distinct data dirs, since
+	// BBolt locks config.db) get distinct IDs. Must happen before any code
+	// path calls core.GetInstanceID(), so it's done here, at the earliest
+	// point every entry point (serve, tray, CLI subcommands) has the loaded
+	// config available.
+	core.SetInstanceDataDir(globalConfig.DataDir)
+
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
+	manager := &Manager{
+		clients:           make(map[string]*managed.Client),
+		logger:            logger,
+		storage:           boltStorage,
+		notificationMgr:   NewNotificationManager(),
+		secretResolver:    secretResolver,
+		tokenReconnect:    make(map[string]time.Time),
+		tokenFingerprints: make(map[string]string),
+		lastSweptAt:       make(map[string]time.Time),
+		shutdownCtx:       shutdownCtx,
+		shutdownCancel:    shutdownCancel,
+		storageMgr:        storageMgr,
+		limiters:          limiter.NewRegistry(),
+	}
+	manager.globalConfig.Store(globalConfig)
+	// Spec 093: publish the initial limit generation. With no limits configured
+	// this allocates nothing and every admission is a passthrough (FR-006).
+	manager.applyConcurrencyLimits(globalConfig)
+
+	// Set up OAuth completion callback to trigger connection retries (in-process)
+	tokenManager := oauth.GetTokenStoreManager()
+	tokenManager.SetOAuthCompletionCallback(func(serverName string) {
+		logger.Info("OAuth completion callback triggered, attempting connection retry",
+			zap.String("server", serverName))
+		if err := manager.RetryConnection(serverName); err != nil {
+			logger.Warn("Failed to trigger connection retry after OAuth completion",
+				zap.String("server", serverName),
+				zap.Error(err))
+		}
+	})
+
+	// Surface OAuth failures that have no caller to return an error to — an
+	// undeliverable callback, a state mismatch, a background token exchange
+	// that failed. Without this the CLI kept reporting "OAuth authentication
+	// flow initiated successfully" while the flow had already died (issue #975).
+	tokenManager.SetOAuthFailureCallback(manager.recordOAuthFailure)
+
+	// Start database event monitor for cross-process OAuth completion notifications
+	if boltStorage != nil {
+		manager.shutdownWg.Add(1)
+		go manager.startOAuthEventMonitor(shutdownCtx)
+	}
+
+	// Start Docker recovery monitor only when Docker is actually in use
+	if storageMgr != nil && manager.shouldEnableDockerRecovery() {
+		manager.shutdownWg.Add(1)
+		go manager.startDockerRecoveryMonitor(shutdownCtx)
+	} else if storageMgr != nil {
+		manager.logger.Info("Docker recovery monitor disabled (docker isolation off or recovery disabled in config)")
+	}
+
+	return manager
+}
+
+// shouldEnableDockerRecovery returns true when Docker recovery should run based
+// on config: does this proxy depend on a working Docker daemon at all?
+//
+// It respects docker_recovery.enabled=false, and otherwise composes the
+// per-server config.ServerDependsOnDocker predicate into the per-manager
+// question the monitor actually asks. The two halves are deliberately
+// different shapes:
+//
+//   - The GLOBAL half is forward-looking. The monitor is started once, at
+//     manager construction, but servers are added at runtime — so a global
+//     resolved mode of "docker" means "anything stdio we launch from now on is
+//     containerised", regardless of which servers happen to be configured now
+//     (this is also why an empty Servers list under global docker still
+//     enables recovery).
+//   - The PER-SERVER half then covers the configs the global mode does not:
+//     a per-server `isolation.mode: "docker"` override wins outright even when
+//     the global mode is none, and a server whose own command invokes docker
+//     needs the daemon whatever isolation says.
+//
+// It replaced a hand-rolled mirror of the two LEGACY booleans that never
+// consulted isolation MODES, so `{mode:"docker", enabled:false}` (and a
+// per-server mode override under a legacy-off global) left recovery monitoring
+// off and let shutdown skip container cleanup, leaking containers — while a
+// legacy per-server `enabled:true` under a none global mode, which the resolver
+// IGNORES, switched the monitor on for containers that never exist (GH #1142).
+func (m *Manager) shouldEnableDockerRecovery() bool {
+	if m == nil {
+		return false
+	}
+	gc := m.globalConfig.Load()
+	if gc == nil {
+		return false
+	}
+
+	// Allow explicit opt-out via docker_recovery.enabled=false (defaults to enabled)
+	if gc.DockerRecovery != nil && !gc.DockerRecovery.IsEnabled() {
+		return false
+	}
+
+	// Global half: every stdio server, present or future, is containerised.
+	if gc.DockerIsolation.ResolvedMode() == config.IsolationModeDocker {
+		return true
+	}
+
+	// Per-server half: an override that resolves to docker, or a server whose
+	// own command is docker.
+	for _, srv := range gc.Servers {
+		if config.ServerDependsOnDocker(gc.DockerIsolation, srv) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// UsesDockerIsolation reports whether this manager could have launched
+// Docker containers (a global or per-server isolation mode that resolves to
+// docker, or a server whose own command is docker). When false, no container
+// cleanup verification is needed on shutdown — shelling out to `docker ps`
+// would be pure waste (and, in test processes, adds ~17s/Close via the
+// verification loop). Same predicate the Docker recovery monitor uses, so
+// behavior stays consistent.
+func (m *Manager) UsesDockerIsolation() bool {
+	return m.shouldEnableDockerRecovery()
+}
+
+// resolveConnectTimeout computes the deadline for an upstream's MCP `initialize`
+// handshake (MCP-3322 / GH #760). It resolves the per-server → global → 30s
+// default init_timeout via Config.ResolveInitTimeout. For servers that depend on
+// Docker — which may need to pull an image or install a package before
+// answering `initialize` — it keeps a 3-minute floor so a small init_timeout
+// never regresses the historical Docker grace period; a larger init_timeout
+// still wins. Un-isolated stdio servers (the bite in #760) now get the resolved
+// deadline instead of silently inheriting the caller's ~30s context.
+//
+// dependsOnDocker is managed.Client.DependsOnDocker: it covers BOTH "we
+// containerise it" and "its own command is docker". It is deliberately not the
+// launch-shape question — a server that already runs docker is never wrapped by
+// us, yet pays exactly the same image-pull latency (GH #1142).
+func (m *Manager) resolveConnectTimeout(serverConfig *config.ServerConfig, dependsOnDocker bool) time.Duration {
+	timeout := 30 * time.Second
+	if gc := m.globalConfig.Load(); gc != nil {
+		timeout = gc.ResolveInitTimeout(serverConfig)
+	}
+	if dependsOnDocker && timeout < 3*time.Minute {
+		timeout = 3 * time.Minute
+	}
+	return timeout
+}
+
+// SetLogConfig sets the logging configuration for upstream server loggers
+func (m *Manager) SetLogConfig(logConfig *config.LogConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.logConfig = logConfig
+}
+
+// SetGlobalConfig swaps the proxy-wide config the manager uses for newly created
+// clients and Docker-recovery decisions, and propagates it to every existing
+// managed client so their background health-check loops re-resolve the new
+// global interval on the next cycle (spec 074, FR-012/SC-002). Called from the
+// runtime on a config hot-reload (ApplyConfig). The atomic swap is lock-free;
+// the client fan-out snapshots under mu.RLock to avoid holding the lock while
+// touching each client.
+func (m *Manager) SetGlobalConfig(globalConfig *config.Config) {
+	m.globalConfig.Store(globalConfig)
+
+	// Spec 093 FR-021: republish one atomic generation of concurrency limits
+	// (global + per-server) into the SAME limiter instances, so running calls
+	// keep counting against the new caps and queued calls keep their original
+	// deadlines.
+	m.applyConcurrencyLimits(globalConfig)
+
+	m.mu.RLock()
+	clients := make([]*managed.Client, 0, len(m.clients))
+	for _, client := range m.clients {
+		if client != nil {
+			clients = append(clients, client)
+		}
+	}
+	m.mu.RUnlock()
+
+	for _, client := range clients {
+		client.SetGlobalConfig(globalConfig)
+	}
+}
+
+// GlobalConfig returns the proxy-wide config the manager currently uses for
+// newly created clients and Docker-recovery decisions (see SetGlobalConfig).
+// May be nil before the first Store.
+func (m *Manager) GlobalConfig() *config.Config {
+	return m.globalConfig.Load()
+}
+
+// AddNotificationHandler adds a notification handler to receive state change notifications
+func (m *Manager) AddNotificationHandler(handler NotificationHandler) {
+	m.notificationMgr.AddHandler(handler)
+}
+
+// SetToolDiscoveryCallback sets the callback for triggering tool re-indexing when
+// upstream servers send notifications/tools/list_changed notifications.
+// This callback will be passed to all new clients created by the manager.
+func (m *Manager) SetToolDiscoveryCallback(callback func(ctx context.Context, serverName string) error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.toolDiscoveryCallback = callback
+	m.logger.Debug("Tool discovery callback set on manager")
+}
+
+// SetPromptsChangedCallback sets the callback for triggering aggregated-prompt
+// refresh when an upstream sends notifications/prompts/list_changed (F13). It is
+// passed to all new clients created by the manager.
+func (m *Manager) SetPromptsChangedCallback(callback func(serverName string)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.promptsChangedCallback = callback
+	m.logger.Debug("Prompts-changed callback set on manager")
+}
+
+// AddServerConfig adds a server configuration without connecting
+func (m *Manager) AddServerConfig(id string, serverConfig *config.ServerConfig) error {
+	m.mu.Lock()
+
+	// Check if existing client exists and if config has changed
+	var clientToDisconnect *managed.Client
+	if existingClient, exists := m.clients[id]; exists {
+		existingConfig := existingClient.GetConfig()
+
+		// Compare configurations to determine if reconnection is needed
+		configChanged := existingConfig.URL != serverConfig.URL ||
+			existingConfig.Protocol != serverConfig.Protocol ||
+			existingConfig.Command != serverConfig.Command ||
+			!equalStringSlices(existingConfig.Args, serverConfig.Args) ||
+			!equalStringMaps(existingConfig.Env, serverConfig.Env) ||
+			!equalStringMaps(existingConfig.Headers, serverConfig.Headers) ||
+			existingConfig.Enabled != serverConfig.Enabled ||
+			existingConfig.Quarantined != serverConfig.Quarantined
+
+		if configChanged {
+			m.logger.Info("Server configuration changed, disconnecting existing client",
+				zap.String("id", id),
+				zap.String("name", serverConfig.Name),
+				zap.String("current_state", existingClient.GetState().String()),
+				zap.Bool("is_connected", existingClient.IsConnected()))
+
+			// Remove from map immediately to prevent new operations
+			delete(m.clients, id)
+			// Save reference to disconnect outside lock
+			clientToDisconnect = existingClient
+		} else {
+			m.logger.Debug("Server configuration unchanged, keeping existing client",
+				zap.String("id", id),
+				zap.String("name", serverConfig.Name),
+				zap.String("current_state", existingClient.GetState().String()),
+				zap.Bool("is_connected", existingClient.IsConnected()))
+			// Update the client's config reference to the new config but don't recreate the client
+			// Use thread-safe setter to avoid race with GetServerState()
+			m.mu.Unlock()
+			existingClient.SetConfig(serverConfig)
+			// Spec 093: the per-server limits may have changed even though the
+			// transport config did not.
+			m.applyServerConcurrency(serverConfig)
+			return nil
+		}
+	}
+
+	// Create new client but don't connect yet
+	client, err := managed.NewClient(id, serverConfig, m.logger, m.logConfig, m.globalConfig.Load(), m.storage, m.secretResolver)
+	if err != nil {
+		m.mu.Unlock()
+		// Disconnect old client if we failed to create new one
+		if clientToDisconnect != nil {
+			_ = clientToDisconnect.Disconnect()
+		}
+		return fmt.Errorf("failed to create client for server %s: %w", serverConfig.Name, err)
+	}
+
+	// Set up notification callback for state changes
+	if m.notificationMgr != nil {
+		notifierCallback := StateChangeNotifier(m.notificationMgr, serverConfig.Name)
+		// Combine with existing callback if present
+		existingCallback := client.StateManager.GetStateChangeCallback()
+		client.StateManager.SetStateChangeCallback(func(oldState, newState types.ConnectionState, info *types.ConnectionInfo) {
+			// Call existing callback first (for logging)
+			if existingCallback != nil {
+				existingCallback(oldState, newState, info)
+			}
+			// Then call notification callback
+			notifierCallback(oldState, newState, info)
+		})
+	}
+
+	// Set up tool discovery callback for notifications/tools/list_changed handling
+	if m.toolDiscoveryCallback != nil {
+		client.SetToolDiscoveryCallback(m.toolDiscoveryCallback)
+	}
+
+	// Set up prompts-changed callback for notifications/prompts/list_changed (F13)
+	if m.promptsChangedCallback != nil {
+		client.SetPromptsChangedCallback(m.promptsChangedCallback)
+	}
+
+	// Spec 093: install admission control before the client becomes reachable,
+	// so no dispatch can ever see a client without its limiter wiring.
+	client.SetAdmissionControl(m.limiters, m.currentRejectObserver())
+
+	m.clients[id] = client
+	m.logger.Info("Added upstream server configuration",
+		zap.String("id", id),
+		zap.String("name", serverConfig.Name))
+
+	// IMPORTANT: Release lock before disconnecting to prevent deadlock
+	m.mu.Unlock()
+
+	// Spec 093: publish this server's limits (or retire them when the server is
+	// disabled/quarantined, FR-009). Done off the lock — Retire wakes queued
+	// callers.
+	m.applyServerConcurrency(serverConfig)
+
+	// Disconnect old client outside lock to avoid blocking other operations
+	if clientToDisconnect != nil {
+		_ = clientToDisconnect.Disconnect()
+	}
+
+	return nil
+}
+
+// Helper functions for comparing slices and maps
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func equalStringMaps(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+// AddServer adds a new upstream server and connects to it (legacy method)
+func (m *Manager) AddServer(id string, serverConfig *config.ServerConfig) error {
+	if err := m.AddServerConfig(id, serverConfig); err != nil {
+		return err
+	}
+
+	if !serverConfig.Enabled {
+		m.logger.Debug("Skipping connection for disabled server",
+			zap.String("id", id),
+			zap.String("name", serverConfig.Name))
+		return nil
+	}
+
+	// Check if client exists and is already connected
+	if client, exists := m.GetClient(id); exists {
+		if client.IsConnected() {
+			m.logger.Debug("Server is already connected, skipping connection attempt",
+				zap.String("id", id),
+				zap.String("name", serverConfig.Name))
+			return nil
+		}
+
+		// Connect to server with the resolved init_timeout (MCP-3322) to prevent
+		// hanging while still honoring a per-server/global handshake deadline.
+		ctx, cancel := context.WithTimeout(context.Background(), m.resolveConnectTimeout(serverConfig, client.DependsOnDocker()))
+		defer cancel()
+		if err := client.Connect(ctx); err != nil {
+			// Check if this is an OAuth error - don't fail AddServer for OAuth
+			errStr := err.Error()
+			isOAuthError := strings.Contains(errStr, "OAuth") ||
+				strings.Contains(errStr, "oauth") ||
+				strings.Contains(errStr, "authorization required")
+
+			if isOAuthError {
+				m.logger.Info("Server requires OAuth authorization - connection will complete after OAuth login",
+					zap.String("id", id),
+					zap.String("name", serverConfig.Name),
+					zap.Error(err))
+				// Don't return error - server is added successfully, just needs OAuth
+				return nil
+			}
+
+			// For non-OAuth errors, still return error
+			return fmt.Errorf("failed to connect to server %s: %w", serverConfig.Name, err)
+		}
+	} else {
+		m.logger.Error("Client not found after AddServerConfig - this should not happen",
+			zap.String("id", id),
+			zap.String("name", serverConfig.Name))
+	}
+
+	return nil
+}
+
+// RemoveServer removes an upstream server
+func (m *Manager) RemoveServer(id string) {
+	// Get client reference while holding lock briefly
+	m.mu.Lock()
+	client, exists := m.clients[id]
+	if exists {
+		// Remove from map immediately to prevent new operations
+		delete(m.clients, id)
+	}
+	m.mu.Unlock()
+
+	// Spec 093 FR-009: tombstone the limiter first so queued calls fail
+	// immediately with the server-unavailable semantics instead of waiting out
+	// their queue deadline against a server that no longer exists.
+	name := id
+	if exists && client != nil {
+		if cfg := client.GetConfig(); cfg != nil && cfg.Name != "" {
+			name = cfg.Name
+		}
+	}
+	m.retireServerConcurrency(name)
+
+	// Disconnect outside the lock to avoid blocking other operations
+	if exists {
+		m.logger.Info("Removing upstream server",
+			zap.String("id", id),
+			zap.String("state", client.GetState().String()))
+		_ = client.Disconnect()
+		m.logger.Debug("upstream.Manager.RemoveServer: disconnect completed", zap.String("id", id))
+	}
+}
+
+// ShutdownAll disconnects all clients and ensures all Docker containers are stopped
+// This should be called during application shutdown to ensure clean exit
+func (m *Manager) ShutdownAll(ctx context.Context) error {
+	m.logger.Info("Shutting down all upstream servers")
+
+	// Cancel shutdown context to stop background goroutines (OAuth monitor, Docker recovery)
+	if m.shutdownCancel != nil {
+		m.shutdownCancel()
+	}
+
+	// Wait for background goroutines to exit (with timeout)
+	waitDone := make(chan struct{})
+	go func() {
+		m.shutdownWg.Wait()
+		close(waitDone)
+	}()
+
+	select {
+	case <-waitDone:
+		m.logger.Info("All background goroutines exited cleanly")
+	case <-time.After(3 * time.Second):
+		m.logger.Warn("Background goroutines did not exit within 3 seconds, proceeding with shutdown")
+	case <-ctx.Done():
+		m.logger.Warn("Shutdown context cancelled while waiting for goroutines", zap.Error(ctx.Err()))
+	}
+
+	// Set shutdown flag to prevent any reconnection attempts
+	m.mu.Lock()
+	m.shuttingDown = true
+	clientMap := make(map[string]*managed.Client, len(m.clients))
+	for id, client := range m.clients {
+		clientMap[id] = client
+	}
+	m.mu.Unlock()
+
+	if len(clientMap) == 0 {
+		m.logger.Debug("No upstream servers to shutdown")
+		return nil
+	}
+
+	m.logger.Info("Disconnecting all upstream servers (in parallel)",
+		zap.Int("count", len(clientMap)))
+
+	// Disconnect all clients in parallel using goroutines
+	// This ensures shutdown is fast even with many servers
+	var wg sync.WaitGroup
+	for id, client := range clientMap {
+		if client == nil {
+			continue
+		}
+
+		wg.Add(1)
+		// Launch goroutine immediately without calling GetConfig() first
+		// GetConfig() will be called inside goroutine but we'll use client.Disconnect()
+		// which handles locking internally and won't block the shutdown loop
+		go func(clientID string, c *managed.Client) {
+			defer wg.Done()
+
+			// Try to get server name, but use a fallback if it blocks
+			// This prevents the entire shutdown from hanging on one stuck server
+			serverName := clientID // Fallback to clientID
+			if cfg := c.GetConfig(); cfg != nil {
+				serverName = cfg.Name
+			}
+
+			m.logger.Debug("Disconnecting server",
+				zap.String("id", clientID),
+				zap.String("server", serverName))
+
+			if err := c.Disconnect(); err != nil {
+				m.logger.Warn("Error disconnecting server",
+					zap.String("id", clientID),
+					zap.String("server", serverName),
+					zap.Error(err))
+			} else {
+				m.logger.Debug("Successfully disconnected server",
+					zap.String("id", clientID),
+					zap.String("server", serverName))
+			}
+		}(id, client)
+	}
+
+	// Wait for all disconnections to complete (with timeout)
+	// Use a shorter timeout (5 seconds) for the disconnect phase
+	// If servers are stuck in "Connecting" state, their disconnection will hang
+	// In that case, we'll force-proceed to container cleanup which can handle it
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	disconnectTimeout := 5 * time.Second
+	disconnectTimer := time.NewTimer(disconnectTimeout)
+	defer disconnectTimer.Stop()
+
+	select {
+	case <-done:
+		m.logger.Info("All upstream servers disconnected successfully")
+	case <-disconnectTimer.C:
+		m.logger.Warn("Disconnect phase timed out after 5 seconds, forcing cleanup")
+		m.logger.Warn("Some servers may not have disconnected cleanly (likely stuck in Connecting state)")
+		// Don't wait for stuck goroutines - proceed with container cleanup anyway
+	case <-ctx.Done():
+		m.logger.Warn("Shutdown context cancelled, forcing cleanup",
+			zap.Error(ctx.Err()))
+		// Don't wait for stuck goroutines - proceed with container cleanup anyway
+	}
+
+	// Additional cleanup: Find and stop ALL mcpproxy-managed containers
+	// This catches any orphaned containers from previous crashes AND any containers
+	// from servers that were stuck in "Connecting" state and couldn't disconnect
+	m.logger.Info("Starting Docker container cleanup phase")
+	m.cleanupAllManagedContainers(ctx)
+
+	m.logger.Info("All upstream servers shut down successfully")
+	return nil
+}
+
+// managedContainerFormat is the `docker ps --format` both sweeps read: id,
+// name and the owner + instance labels, tab-separated, labels last so an
+// empty label leaves its column empty rather than shifting the others.
+const managedContainerFormat = "{{.ID}}\t{{.Names}}\t{{.Label \"com.mcpproxy.server\"}}\t{{.Label \"com.mcpproxy.instance\"}}"
+
+// managedContainer is one `docker ps` row of a sweep.
+type managedContainer struct {
+	ID       string
+	Name     string
+	Owner    string // the com.mcpproxy.server label value as Docker reported it
+	Instance string // the com.mcpproxy.instance label value as Docker reported it
+}
+
+// configuredServerNames returns the raw name of every configured server
+// (enabled or not) — the set of possible canonical owners for a sweep.
+func (m *Manager) configuredServerNames() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	names := make([]string, 0, len(m.clients))
+	for _, client := range m.clients {
+		if client == nil {
+			continue
+		}
+		if cfg := client.GetConfig(); cfg != nil {
+			names = append(names, cfg.Name)
+		}
+	}
+	return names
+}
+
+// sweepDocker is how the sweeps run docker: the bare name on PATH.
+func sweepDocker(ctx context.Context, args ...string) *exec.Cmd {
+	return exec.CommandContext(ctx, "docker", args...)
+}
+
+// readManagedContainers runs `docker ps [-a] --no-trunc` with the given
+// filters and returns every row — full id, name and owner label as Docker
+// reports them — with no ownership applied; a row the format could not be
+// parsed is returned with an empty name and owner so it fails the predicate.
+// includeStopped adds `-a`; without it only rows Docker reports as running
+// come back — the same includeStopped convention core.Client's own
+// listOwnedContainersFiltered uses (codex round 10, docker finding 1): a
+// caller that only cares whether something is CURRENTLY running, such as
+// HasDockerContainers, must not see an already-stopped row and misreport it
+// as still running.
+func (m *Manager) readManagedContainers(ctx context.Context, includeStopped bool, filters ...string) ([]managedContainer, error) {
+	args := []string{"ps"}
+	if includeStopped {
+		args = append(args, "-a")
+	}
+	args = append(args, "--no-trunc")
+	for _, filter := range filters {
+		args = append(args, "--filter", filter)
+	}
+	args = append(args, "--format", managedContainerFormat)
+	output, err := sweepDocker(ctx, args...).Output()
+	if err != nil {
+		return nil, err
+	}
+
+	// NOT strings.TrimSpace(output) before splitting, and no per-line
+	// "keep the rest" on a bad count (codex rounds 3 and 4: FR-007
+	// instance-scoping fix). Label VALUES have no tab- or
+	// newline-escaping, and this listing's own docker-side filter
+	// deliberately does NOT constrain com.mcpproxy.server (it must match
+	// ANY configured server, checked in Go by core.ContainerOwnedByAny) —
+	// so a container an attacker creates themselves, carrying
+	// com.mcpproxy.managed=true, can give that Owner label a value
+	// engineered to smuggle "<real-value>\t<junk>" past an exact-match
+	// comparison, or worse, containing a literal newline that splits what
+	// Docker rendered as ONE row into what looks like a second,
+	// independently well-formed line naming a DIFFERENT id, name, owner
+	// and instance of the attacker's choosing. A single malformed line
+	// proves this listing's line boundaries are untrustworthy, so ANY bad
+	// count discards the WHOLE listing (report nothing found) rather than
+	// keeping whichever rows still look well-formed.
+	var rows []managedContainer
+	for _, line := range strings.Split(string(output), "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, "\t")
+		if len(parts) != 4 {
+			m.logger.Warn("Discarding managed-container listing: a docker ps row did not parse to the expected field count")
+			return nil, nil
+		}
+		rows = append(rows, managedContainer{ID: parts[0], Name: parts[1], Owner: parts[2], Instance: parts[3]})
+	}
+	return rows, nil
+}
+
+// listOwnedManagedContainers runs `docker ps [-a]` with the given label
+// filters and returns only the rows canonically owned by a configured
+// server: com.mcpproxy.server=<raw> AND name
+// ^mcpproxy-<sanitised(raw)>-[a-z0-9]{4}$ for the SAME configured server
+// (core.ContainerOwnedByAny). The managed and instance labels a sweep
+// selects on are shared and copyable, so on their own they are not
+// ownership (Spec 105 FR-007 / D9, codex round 3): a foreign container
+// carrying them is neither mutated nor named. A row that fails the
+// predicate is also not counted: its label is untrusted (that is exactly
+// why it was rejected), so no owner can be attributed to it, and D8's
+// evidence rule requires every container count to carry the owner it
+// counts (codex round 11) — there is no non-fabricated owner to put on a
+// tally of rejected rows, so listOwnedManagedContainers logs nothing about
+// them at all. includeStopped is passed straight through to
+// readManagedContainers.
+func (m *Manager) listOwnedManagedContainers(ctx context.Context, includeStopped bool, filters ...string) ([]managedContainer, error) {
+	rows, err := m.readManagedContainers(ctx, includeStopped, filters...)
+	if err != nil {
+		return nil, err
+	}
+
+	configured := m.configuredServerNames()
+	var owned []managedContainer
+	for _, row := range rows {
+		if !core.ContainerOwnedByAny(configured, row.Name, row.Owner, row.Instance) {
+			continue
+		}
+		owned = append(owned, row)
+	}
+	return owned, nil
+}
+
+// logOwnerGroupedCounts writes one record per container_owner represented
+// in owned, each carrying that owner and how many rows it accounts for —
+// never a single aggregate. A sweep can select containers belonging to more
+// than one configured server, so one bare count cannot be bound to a
+// subject (Spec 105 D8, codex round 10 finding 2); level is m.logger.Info or
+// m.logger.Warn, matching the call site's own level for the record it
+// replaces.
+func (m *Manager) logOwnerGroupedCounts(msg string, level func(msg string, fields ...zap.Field), owned []managedContainer) {
+	counts := make(map[string]int, len(owned))
+	for _, row := range owned {
+		counts[row.Owner]++
+	}
+	for owner, count := range counts {
+		level(msg, zap.String("container_owner", owner), zap.Int("count", count))
+	}
+}
+
+// mutateOwnedManagedContainer runs op on one selected container through
+// core.ContainerMutator — the one verify-then-mutate implementation the
+// core client's cleanup paths use too (Spec 105 FR-007 / D9, codex rounds 5
+// and 6): the selection `docker ps` is a snapshot, and another Docker client
+// can rename or relabel the container between that listing and the
+// stop/kill/rm, so its full id, name and label are re-read immediately
+// before the command and core.ContainerOwnedByAny re-applied over the
+// configured servers. A refusal — the re-read failed, or the container no
+// longer satisfies the predicate — is recorded naming only the listing-time
+// server, never the id or name; the row handed back is the one read NOW, so
+// its Owner is what the mutation's records carry. intent is called with
+// that row right before the command.
+func (m *Manager) mutateOwnedManagedContainer(ctx context.Context, selected managedContainer, op core.ContainerMutation, intent func(core.ContainerRow)) core.MutationResult {
+	mutator := core.ContainerMutator{
+		Docker: sweepDocker,
+		Owns: func(containerName, ownerLabel, instanceLabel string) bool {
+			return core.ContainerOwnedByAny(m.configuredServerNames(), containerName, ownerLabel, instanceLabel)
+		},
+	}
+	res := mutator.Mutate(ctx, selected.ID, op, intent)
+	switch {
+	case res.Verified:
+	case res.Err != nil:
+		m.logger.Warn("Could not re-verify ownership of a selected container - leaving it alone",
+			zap.String("server", selected.Owner),
+			zap.String("operation", string(op)),
+			zap.Error(res.Err))
+	default:
+		m.logger.Warn("Selected container is no longer canonically owned by a configured server - leaving it alone",
+			zap.String("server", selected.Owner),
+			zap.String("operation", string(op)))
+	}
+	return res
+}
+
+// cleanupAllManagedContainers finds and stops this instance's Docker
+// containers managed by mcpproxy. The initial `docker ps` filter is the
+// shared, copyable com.mcpproxy.managed label only — deliberately broad —
+// but listOwnedManagedContainers' canonical-ownership check
+// (core.ContainerOwnedByAny) then keeps only the rows that ALSO carry this
+// process's own com.mcpproxy.instance label: a row from another live
+// mcpproxy instance (same host, a configured server with the same name) is
+// exactly as foreign as one with no label at all, and this shutdown path
+// must never stop or remove a container it does not own.
+func (m *Manager) cleanupAllManagedContainers(ctx context.Context) {
+	m.logger.Info("Cleaning up all mcpproxy-managed Docker containers")
+
+	// Find all containers with our management label
+	owned, err := m.listOwnedManagedContainers(ctx, true, "label=com.mcpproxy.managed=true")
+	if err != nil {
+		m.logger.Debug("No Docker containers found or Docker unavailable", zap.Error(err))
+		return
+	}
+
+	if len(owned) == 0 {
+		m.logger.Debug("No mcpproxy-managed containers found")
+		return
+	}
+
+	m.logOwnerGroupedCounts("Found mcpproxy-managed containers to cleanup", m.logger.Info, owned)
+
+	// Grace period for graceful shutdown
+	gracePeriod := 10 * time.Second
+	graceCtx, graceCancel := context.WithTimeout(ctx, gracePeriod)
+	defer graceCancel()
+
+	// Ownership is re-established right before each mutation
+	// (mutateOwnedManagedContainer), and every record below that names a
+	// container carries the owner Docker reported for it at that moment
+	// (container_owner), on the outcome records as well as the intent ones
+	// (Spec 105 D8/D9, codex rounds 4 and 5).
+	for _, selected := range owned {
+		// Try graceful stop first
+		res := m.mutateOwnedManagedContainer(graceCtx, selected, core.ContainerStop, func(container core.ContainerRow) {
+			m.logger.Info("Stopping container",
+				zap.String("container_id", container.ID),
+				zap.String("container_name", container.Name),
+				zap.String("server", container.Owner),
+				zap.String("container_owner", container.Owner))
+		})
+		if !res.Verified {
+			continue
+		}
+		if res.Err != nil {
+			m.logger.Warn("Graceful stop failed, will force kill",
+				zap.String("container_id", res.Container.ID),
+				zap.String("container_owner", res.Container.Owner),
+				zap.Error(res.Err))
+		} else {
+			m.logger.Info("Container stopped gracefully",
+				zap.String("container_id", res.Container.ID),
+				zap.String("container_owner", res.Container.Owner))
+		}
+	}
+
+	// Force kill any remaining containers after grace period
+	m.logger.Info("Force killing any remaining containers")
+
+	killCtx, killCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer killCancel()
+
+	for _, selected := range owned {
+		// Check if container is still running
+		psCmd := sweepDocker(killCtx, "ps", "-q", "--filter", "id="+selected.ID)
+		if output, err := psCmd.Output(); err == nil && len(strings.TrimSpace(string(output))) > 0 {
+			// Still running, force kill
+			res := m.mutateOwnedManagedContainer(killCtx, selected, core.ContainerKill, func(container core.ContainerRow) {
+				m.logger.Info("Force killing container",
+					zap.String("container_id", container.ID),
+					zap.String("container_owner", container.Owner))
+			})
+			if !res.Verified {
+				continue
+			}
+			if res.Err != nil {
+				m.logger.Error("Failed to force kill container",
+					zap.String("container_id", res.Container.ID),
+					zap.String("container_owner", res.Container.Owner),
+					zap.Error(res.Err))
+			} else {
+				m.logger.Info("Container force killed",
+					zap.String("container_id", res.Container.ID),
+					zap.String("container_owner", res.Container.Owner))
+			}
+		}
+	}
+
+	m.logger.Info("Container cleanup completed")
+}
+
+// ForceCleanupAllContainers is a public wrapper for emergency container cleanup
+// This is called when graceful shutdown fails and containers must be force-removed
+// Only removes containers owned by THIS instance (matching instance ID) AND
+// canonically owned by a configured server (listOwnedManagedContainers).
+func (m *Manager) ForceCleanupAllContainers() {
+	m.logger.Warn("Force cleanup requested - removing all managed containers for this instance")
+
+	// Create a short-lived context for force cleanup (30 seconds max)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Find all containers with our management label AND our instance ID
+	instanceID := core.GetInstanceID()
+	owned, err := m.listOwnedManagedContainers(ctx, true,
+		"label=com.mcpproxy.managed=true",
+		fmt.Sprintf("label=com.mcpproxy.instance=%s", instanceID))
+	if err != nil {
+		m.logger.Warn("Failed to list managed containers for force cleanup", zap.Error(err))
+		return
+	}
+
+	if len(owned) == 0 {
+		m.logger.Info("No managed containers found during force cleanup")
+		return
+	}
+
+	m.logOwnerGroupedCounts("Force removing managed containers", m.logger.Warn, owned)
+
+	// Force remove each container (skip graceful stop), re-establishing
+	// ownership right before the rm (D9 moment-of-mutation rule). Use docker
+	// rm -f to force remove (kills and removes in one step). The outcome
+	// records carry the owner read at mutation time (D8/D9).
+	for _, selected := range owned {
+		res := m.mutateOwnedManagedContainer(ctx, selected, core.ContainerRemove, func(container core.ContainerRow) {
+			m.logger.Warn("Force removing container",
+				zap.String("id", shortContainerID(container.ID)),
+				zap.String("name", container.Name),
+				zap.String("container_owner", container.Owner))
+		})
+		if !res.Verified {
+			continue
+		}
+		if res.Err != nil {
+			m.logger.Error("Failed to force remove container",
+				zap.String("id", shortContainerID(res.Container.ID)),
+				zap.String("name", res.Container.Name),
+				zap.String("container_owner", res.Container.Owner),
+				zap.Error(res.Err))
+		} else {
+			m.logger.Info("Container force removed successfully",
+				zap.String("id", shortContainerID(res.Container.ID)),
+				zap.String("name", res.Container.Name),
+				zap.String("container_owner", res.Container.Owner))
+		}
+	}
+
+	m.logger.Info("Force cleanup completed")
+}
+
+// shortContainerID renders the 12-character short form of a container id.
+func shortContainerID(id string) string {
+	if len(id) <= 12 {
+		return id
+	}
+	return id[:12]
+}
+
+// forceCleanupTarget is what forceCleanupClient needs from a managed client:
+// its configuration, the container id it tracks, and the ownership-checked
+// removal the core client performs.
+type forceCleanupTarget interface {
+	GetConfig() *config.ServerConfig
+	GetContainerID() string
+	ForceRemoveTrackedContainerIfOwned(ctx context.Context, containerID string) (owner string, owned bool, err error)
+}
+
+// forceCleanupClient forces cleanup of a specific client's Docker container
+// when its Disconnect timed out. The stored id is not removed blindly: the
+// core client re-establishes canonical ownership at the moment of the
+// mutation (Spec 105 FR-007 / D9, codex round 3), so a container renamed or
+// reused under that id since it was tracked is left alone. The manager's own
+// records name the container only once that verdict exists and with the
+// owner the core read back (D8 subject-evidence rule, codex round 5): before
+// it, and when the container was rejected or could not be verified, they
+// name the server alone.
+func (m *Manager) forceCleanupClient(client forceCleanupTarget) {
+	containerID := client.GetContainerID()
+	if containerID == "" {
+		m.logger.Debug("No container ID for force cleanup",
+			zap.String("server", client.GetConfig().Name))
+		return
+	}
+
+	m.logger.Warn("Force cleaning up container for client",
+		zap.String("server", client.GetConfig().Name))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	owner, owned, err := client.ForceRemoveTrackedContainerIfOwned(ctx, containerID)
+	switch {
+	case err != nil && owned:
+		m.logger.Error("Failed to force remove container",
+			zap.String("server", client.GetConfig().Name),
+			zap.String("container_id", shortContainerID(containerID)),
+			zap.String("container_owner", owner),
+			zap.Error(err))
+	case err != nil:
+		m.logger.Error("Could not verify ownership of the tracked container - left alone",
+			zap.String("server", client.GetConfig().Name),
+			zap.Error(err))
+	case !owned:
+		m.logger.Info("Tracked container not canonically owned by the client - left alone",
+			zap.String("server", client.GetConfig().Name))
+	default:
+		m.logger.Info("Container force removed successfully",
+			zap.String("server", client.GetConfig().Name),
+			zap.String("container_id", shortContainerID(containerID)),
+			zap.String("container_owner", owner))
+	}
+}
+
+// GetClient returns a client by ID
+func (m *Manager) GetClient(id string) (*managed.Client, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	client, exists := m.clients[id]
+	return client, exists
+}
+
+// GetAllClients returns all clients
+func (m *Manager) GetAllClients() map[string]*managed.Client {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	result := make(map[string]*managed.Client)
+	for id, client := range m.clients {
+		result[id] = client
+	}
+	return result
+}
+
+// GetAllServerNames returns a slice of all configured server names
+func (m *Manager) GetAllServerNames() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	names := make([]string, 0, len(m.clients))
+	for name := range m.clients {
+		names = append(names, name)
+	}
+	return names
+}
+
+// minEnabledInterval returns the smallest strictly-positive duration in vals and
+// whether any positive value existed. Used to pick the periodic tool-discovery
+// sweep tick from the global + per-server resolved intervals (spec 074): the
+// loop must tick at the fastest enabled cadence so a server with a short
+// override is re-listed on time; anyEnabled=false means every cadence is
+// disabled and the loop should idle.
+func minEnabledInterval(vals ...time.Duration) (tick time.Duration, anyEnabled bool) {
+	for _, d := range vals {
+		if d <= 0 {
+			continue
+		}
+		if !anyEnabled || d < tick {
+			tick = d
+			anyEnabled = true
+		}
+	}
+	return tick, anyEnabled
+}
+
+// ResolveToolDiscoverySweepTick computes how long the periodic indexing loop
+// should wait between sweeps: the smallest positive resolved tool-discovery
+// interval across the global default and every managed server. Per-server
+// configs are read through each client's thread-safe GetConfig() snapshot —
+// deliberately NOT by iterating globalCfg.Servers, which would race in-place
+// mutation of the shared (copy-on-write) config snapshot from the background
+// loop (the original cause of the MCP-1189 -race failure). anyEnabled is false
+// when every resolved interval is disabled (<=0), in which case the loop idles.
+func (m *Manager) ResolveToolDiscoverySweepTick(globalCfg *config.Config) (time.Duration, bool) {
+	if globalCfg == nil {
+		globalCfg = &config.Config{}
+	}
+	// Global default (server == nil) governs servers without an override.
+	vals := []time.Duration{globalCfg.ResolveToolDiscoveryInterval(nil)}
+
+	if m != nil {
+		m.mu.RLock()
+		for _, client := range m.clients {
+			if client == nil {
+				continue
+			}
+			// GetConfig() is a lock-free atomic read; safe to call under m.mu.RLock.
+			if sc := client.GetConfig(); sc != nil {
+				vals = append(vals, globalCfg.ResolveToolDiscoveryInterval(sc))
+			}
+		}
+		m.mu.RUnlock()
+	}
+
+	return minEnabledInterval(vals...)
+}
+
+// shouldSweepServer decides whether the periodic spec-074 tool-discovery sweep
+// should re-list a given server this cycle. A resolved interval <= 0 means the
+// per-server (or global) override disabled the periodic sweep for that server,
+// so it is skipped (connect-time + reactive list_changed discovery still keep it
+// fresh). Otherwise the server is swept only once its own interval has elapsed
+// since it was last listed; a server never listed before (no lastSwept) is due.
+// This is what makes a per-server tool_discovery_interval override actually take
+// effect at runtime (US3/SC-006/FR-005).
+func shouldSweepServer(interval time.Duration, lastSwept time.Time, hasSwept bool, now time.Time) bool {
+	if interval <= 0 {
+		return false
+	}
+	if !hasSwept {
+		return true
+	}
+	return now.Sub(lastSwept) >= interval
+}
+
+// markSwept records that the periodic sweep just listed serverName's tools, so
+// the per-server cadence gate (shouldSweepServer) can wait the server's own
+// interval before listing it again.
+func (m *Manager) markSwept(serverName string, now time.Time) {
+	m.sweepMu.Lock()
+	defer m.sweepMu.Unlock()
+	if m.lastSweptAt == nil {
+		m.lastSweptAt = make(map[string]time.Time)
+	}
+	m.lastSweptAt[serverName] = now
+}
+
+// lastSweptFor returns the last periodic-sweep time for serverName.
+func (m *Manager) lastSweptFor(serverName string) (time.Time, bool) {
+	m.sweepMu.Lock()
+	defer m.sweepMu.Unlock()
+	last, ok := m.lastSweptAt[serverName]
+	return last, ok
+}
+
+// pruneSweptState drops last-swept entries for servers no longer present so the
+// map can't grow unbounded as servers are added/removed (mirrors the lastGoodTools
+// pruning in the runtime indexing path).
+func (m *Manager) pruneSweptState(known map[string]struct{}) {
+	m.sweepMu.Lock()
+	defer m.sweepMu.Unlock()
+	for name := range m.lastSweptAt {
+		if _, ok := known[name]; !ok {
+			delete(m.lastSweptAt, name)
+		}
+	}
+}
+
+// DiscoverTools discovers all tools from all connected upstream servers.
+// Security: Tools from quarantined servers are NOT discovered to prevent
+// Tool Poisoning Attacks (TPA) from exposing potentially malicious tool descriptions.
+func (m *Manager) DiscoverTools(ctx context.Context) ([]*config.ToolMetadata, error) {
+	tools, _, err := m.discoverTools(ctx, false)
+	return tools, err
+}
+
+// DiscoverToolsReport is DiscoverTools / DiscoverToolsDue with the names of
+// the servers whose tools/list actually SUCCEEDED in this sweep, so a caller
+// can tell a server that listed zero tools (discovery completed, nothing
+// served) from one the sweep skipped or that failed to list (Spec 105
+// FR-009: the discovery-completed marker must be stamped for the former and
+// left alone for the latter).
+func (m *Manager) DiscoverToolsReport(ctx context.Context, dueOnly bool) ([]*config.ToolMetadata, []string, error) {
+	return m.discoverTools(ctx, dueOnly)
+}
+
+// DiscoverToolsDue is the periodic-sweep variant of DiscoverTools: it lists only
+// servers whose per-server tool_discovery_interval has elapsed and skips those
+// whose resolved interval disables the sweep (<=0). The background indexing loop
+// uses this so a per-server override changes how often that server is re-listed;
+// event-driven callers (connect, reload, manual refresh) use DiscoverTools for a
+// full sweep (spec 074, US3/SC-006/FR-005).
+func (m *Manager) DiscoverToolsDue(ctx context.Context) ([]*config.ToolMetadata, error) {
+	tools, _, err := m.discoverTools(ctx, true)
+	return tools, err
+}
+
+func (m *Manager) discoverTools(ctx context.Context, dueOnly bool) ([]*config.ToolMetadata, []string, error) {
+	type clientSnapshot struct {
+		id          string
+		name        string
+		enabled     bool
+		quarantined bool
+		cfg         *config.ServerConfig
+		client      *managed.Client
+	}
+
+	m.mu.RLock()
+	snapshots := make([]clientSnapshot, 0, len(m.clients))
+	for id, client := range m.clients {
+		name := ""
+		quarantined := false
+		enabled := false
+		var cfg *config.ServerConfig
+		// Read config through the thread-safe GetConfig() accessor — the reconcile
+		// add path (AddServerConfig) calls SetConfig (an atomic swap) off m.mu, so
+		// a direct config-field read would race with it (MCP-770).
+		if client != nil {
+			if cfg = client.GetConfig(); cfg != nil {
+				name = cfg.Name
+				quarantined = cfg.Quarantined
+				enabled = cfg.Enabled
+			}
+		}
+		snapshots = append(snapshots, clientSnapshot{
+			id:          id,
+			name:        name,
+			enabled:     enabled,
+			quarantined: quarantined,
+			cfg:         cfg,
+			client:      client,
+		})
+	}
+	m.mu.RUnlock()
+
+	// Resolve per-server discovery cadence against the current global config.
+	gc := m.globalConfig.Load()
+	if gc == nil {
+		gc = &config.Config{}
+	}
+	now := time.Now()
+
+	var allTools []*config.ToolMetadata
+	var listed []string
+	connectedCount := 0
+	skippedNotDue := 0
+	known := make(map[string]struct{}, len(snapshots))
+
+	for _, snapshot := range snapshots {
+		client := snapshot.client
+		if client == nil {
+			continue
+		}
+		if snapshot.name != "" {
+			known[snapshot.name] = struct{}{}
+		}
+
+		if !snapshot.enabled {
+			continue
+		}
+
+		// Security: Skip quarantined servers to prevent TPA exposure
+		if snapshot.quarantined {
+			m.logger.Debug("Skipping quarantined client for tool discovery",
+				zap.String("id", snapshot.id),
+				zap.String("server", snapshot.name))
+			continue
+		}
+
+		if !client.IsConnected() {
+			m.logger.Debug("Skipping disconnected client",
+				zap.String("id", snapshot.id),
+				zap.String("server", snapshot.name),
+				zap.String("state", client.GetState().String()))
+			continue
+		}
+
+		// Honor per-server tool_discovery_interval on the periodic sweep: skip
+		// servers that are disabled (<=0) or not yet due for a re-list.
+		if dueOnly {
+			interval := gc.ResolveToolDiscoveryInterval(snapshot.cfg)
+			last, hasSwept := m.lastSweptFor(snapshot.name)
+			if !shouldSweepServer(interval, last, hasSwept, now) {
+				m.logger.Debug("Skipping client not due for periodic tool sweep",
+					zap.String("id", snapshot.id),
+					zap.String("server", snapshot.name),
+					zap.Duration("interval", interval))
+				skippedNotDue++
+				continue
+			}
+		}
+
+		connectedCount++
+
+		tools, err := client.ListTools(ctx)
+		if err != nil {
+			// Warn, not Error: markSwept below is deliberately skipped so the
+			// next sweep retries this server. A failure the code already plans
+			// to retry is not an error — and on a healthy install with several
+			// stdio servers this fired ~1x/min each, forever, which is what
+			// made main.log rotate every couple of hours.
+			m.logger.Warn("Failed to list tools from client",
+				zap.String("id", snapshot.id),
+				zap.String("server", snapshot.name),
+				zap.Error(err))
+			continue
+		}
+
+		// Record the sweep only after a successful list so a transient failure
+		// retries on the next cycle rather than waiting a full interval.
+		m.markSwept(snapshot.name, now)
+		if snapshot.name != "" {
+			listed = append(listed, snapshot.name)
+		}
+
+		if tools != nil {
+			allTools = append(allTools, tools...)
+		}
+	}
+
+	// Keep the per-server sweep-time map bounded as servers come and go.
+	m.pruneSweptState(known)
+
+	m.logger.Info("Discovered tools from upstream servers",
+		zap.Int("total_tools", len(allTools)),
+		zap.Int("connected_servers", connectedCount),
+		zap.Bool("due_only", dueOnly),
+		zap.Int("skipped_not_due", skippedNotDue))
+
+	return allTools, listed, nil
+}
+
+// tryReconnectOnUse attempts a single synchronous reconnect for a disconnected
+// client when reconnect_on_use is enabled and the server is eligible (not
+// user-logged-out, not quarantined). It returns true only if the client is
+// connected after the attempt. No manager lock is held here (Spec 093 FR-008):
+// the caller must have snapshotted and released m.mu first so a slow reconnect
+// cannot block server management.
+//
+// Extracted from CallTool's inline reconnect block so GetPrompt can recover a
+// reconnect_on_use server identically for prompts/get (Finding F15). CallTool
+// keeps its own inline copy for now; unifying that hot path is a follow-up.
+func (m *Manager) tryReconnectOnUse(ctx context.Context, client *managed.Client, serverName, target string) bool {
+	cfg := client.GetConfig()
+	if cfg == nil || !cfg.ReconnectOnUse || client.IsUserLoggedOut() || cfg.Quarantined {
+		return false
+	}
+
+	m.logger.Info("reconnect_on_use: attempting reconnect",
+		zap.String("server", serverName),
+		zap.String("target", target),
+		zap.String("state", client.GetState().String()))
+
+	reconnectCtx, reconnectCancel := context.WithTimeout(ctx, 15*time.Second)
+	reconnectErr := client.TryReconnectSync(reconnectCtx)
+	reconnectCancel()
+
+	if reconnectErr != nil {
+		m.logger.Warn("reconnect_on_use: reconnect failed, falling through to error",
+			zap.String("server", serverName),
+			zap.Error(reconnectErr))
+		return false
+	}
+	if client.IsConnected() {
+		m.logger.Info("reconnect_on_use: reconnect succeeded",
+			zap.String("server", serverName),
+			zap.String("target", target))
+		return true
+	}
+	return false
+}
+
+// CallTool calls a tool on the appropriate upstream server
+func (m *Manager) CallTool(ctx context.Context, toolName string, args map[string]interface{}) (interface{}, error) {
+	return m.callTool(ctx, toolName, args, nil)
+}
+
+// CallToolOnEpoch is CallTool pinned to the connection generation the caller
+// certified the tool identity against (Spec 105 FR-009 "stale generation";
+// codex r3 D2): the dispatch reaches the upstream on exactly that generation
+// of the server's live client (managed.Client.CallToolOnEpoch) or is refused
+// with managed.ErrConnectionGenerationChanged and zero upstream calls. The
+// reconnect_on_use branch is deliberately NOT taken for a pinned call — a
+// reconnect is a new generation by construction, whose tool set the caller
+// never certified — so a client found disconnected is refused the same way.
+// The refusal is returned verbatim, never enriched, so errors.Is holds.
+func (m *Manager) CallToolOnEpoch(ctx context.Context, toolName string, args map[string]interface{}, expectedEpoch int64) (interface{}, error) {
+	return m.callTool(ctx, toolName, args, &expectedEpoch)
+}
+
+// callTool is the shared body of CallTool and CallToolOnEpoch; expectedEpoch
+// nil means unpinned (reconnect_on_use applies).
+func (m *Manager) callTool(ctx context.Context, toolName string, args map[string]interface{}, expectedEpoch *int64) (interface{}, error) {
+	m.logger.Debug("CallTool: starting",
+		zap.String("tool_name", toolName),
+		zap.Any("args", args))
+
+	// Parse tool name to extract server and tool components
+	parts := strings.SplitN(toolName, ":", 2)
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("invalid tool name format: %s (expected server:tool)", toolName)
+	}
+
+	serverName := parts[0]
+	actualToolName := parts[1]
+
+	m.logger.Debug("CallTool: parsed tool name",
+		zap.String("server_name", serverName),
+		zap.String("actual_tool_name", actualToolName))
+
+	// Spec 093 FR-008: resolve the target client under the manager lock and
+	// RELEASE it before anything that can block — the reconnect-on-use attempt,
+	// limiter admission inside the managed client, and the upstream call
+	// itself. Holding m.mu.RLock across a queued call would make a saturated
+	// upstream stall every server add/remove/disable and every config reload.
+	m.mu.RLock()
+	clientCount := len(m.clients)
+
+	// Find the client for this server
+	var targetClient *managed.Client
+	for _, client := range m.clients {
+		if client.GetConfig().Name == serverName {
+			targetClient = client
+			break
+		}
+	}
+	m.mu.RUnlock()
+
+	m.logger.Debug("CallTool: resolved client under read lock",
+		zap.String("server_name", serverName),
+		zap.Int("total_clients", clientCount))
+
+	if targetClient == nil {
+		m.logger.Error("CallTool: no client found",
+			zap.String("server_name", serverName))
+		return nil, fmt.Errorf("no client found for server: %s", serverName)
+	}
+
+	m.logger.Debug("CallTool: client found",
+		zap.String("server_name", serverName),
+		zap.Bool("enabled", targetClient.GetConfig().Enabled),
+		zap.Bool("connected", targetClient.IsConnected()),
+		zap.String("state", targetClient.GetState().String()))
+
+	if !targetClient.GetConfig().Enabled {
+		return nil, fmt.Errorf("client for server %s is disabled", serverName)
+	}
+
+	// Check connection status and provide detailed error information
+	if !targetClient.IsConnected() {
+		state := targetClient.GetState()
+		if targetClient.IsConnecting() {
+			return nil, fmt.Errorf("server '%s' is currently connecting - please wait for connection to complete (state: %s)", serverName, state.String())
+		}
+
+		// A pinned dispatch never reconnects: the generation the caller
+		// certified is closed (Disconnect bumped it), and a reconnect would
+		// open one the caller never certified.
+		if expectedEpoch != nil {
+			return nil, managed.ErrConnectionGenerationChanged
+		}
+
+		// Attempt reconnect-on-use if enabled for this server
+		reconnected := false
+		if targetClient.GetConfig().ReconnectOnUse &&
+			!targetClient.IsUserLoggedOut() &&
+			!targetClient.GetConfig().Quarantined {
+			m.logger.Info("reconnect_on_use: attempting reconnect for tool call",
+				zap.String("server", serverName),
+				zap.String("tool", actualToolName),
+				zap.String("state", state.String()))
+
+			// No manager lock is held here (FR-008): the client was snapshotted
+			// above and released, so a slow reconnect cannot block server
+			// management.
+			reconnectCtx, reconnectCancel := context.WithTimeout(ctx, 15*time.Second)
+			reconnectErr := targetClient.TryReconnectSync(reconnectCtx)
+			reconnectCancel()
+
+			if reconnectErr != nil {
+				m.logger.Warn("reconnect_on_use: reconnect failed, falling through to error",
+					zap.String("server", serverName),
+					zap.Error(reconnectErr))
+			} else if targetClient.IsConnected() {
+				m.logger.Info("reconnect_on_use: reconnect succeeded, proceeding with tool call",
+					zap.String("server", serverName),
+					zap.String("tool", actualToolName))
+				reconnected = true
+			}
+		}
+
+		if !reconnected {
+			// Include last error if available with enhanced context
+			if lastError := targetClient.GetLastError(); lastError != nil {
+				// Enrich OAuth-related errors at source
+				lastErrStr := lastError.Error()
+				if strings.Contains(lastErrStr, "OAuth authentication failed") ||
+					strings.Contains(lastErrStr, "Dynamic Client Registration") ||
+					strings.Contains(lastErrStr, "authorization required") {
+					return nil, fmt.Errorf("server '%s' requires OAuth authentication but is not properly configured. OAuth setup failed: %s. Please configure OAuth credentials manually or use a Personal Access Token - check mcpproxy logs for detailed setup instructions", serverName, lastError.Error())
+				}
+
+				if strings.Contains(lastErrStr, "OAuth metadata unavailable") {
+					return nil, fmt.Errorf("server '%s' does not provide valid OAuth configuration endpoints. This server may not support OAuth or requires manual authentication setup: %s", serverName, lastError.Error())
+				}
+
+				return nil, fmt.Errorf("server '%s' is not connected (state: %s) - connection failed with error: %s", serverName, state.String(), lastError.Error())
+			}
+
+			return nil, fmt.Errorf("server '%s' is not connected (state: %s) - use 'upstream_servers' tool to check server configuration", serverName, state.String())
+		}
+	}
+
+	m.logger.Debug("CallTool: calling client.CallTool",
+		zap.String("server_name", serverName),
+		zap.String("actual_tool_name", actualToolName))
+
+	// Call the tool on the upstream server with enhanced error handling
+	dispatch := targetClient.CallTool
+	if expectedEpoch != nil {
+		pinned := *expectedEpoch
+		dispatch = func(ctx context.Context, toolName string, args map[string]interface{}) (*mcp.CallToolResult, error) {
+			return targetClient.CallToolOnEpoch(ctx, toolName, args, pinned)
+		}
+	}
+	result, err := dispatch(ctx, actualToolName, args)
+
+	m.logger.Debug("CallTool: client.CallTool returned",
+		zap.String("server_name", serverName),
+		zap.String("actual_tool_name", actualToolName),
+		zap.Error(err),
+		zap.Bool("has_result", result != nil))
+	if err != nil {
+		// Spec 093 FR-011: a limiter rejection is a typed identity that must
+		// survive end-to-end (MCP isError text, REST 429 + Retry-After). Return
+		// it verbatim — its message is already caller-ready and the string
+		// enrichment below would both mangle it and mis-classify it (a
+		// queue-full shed is not an upstream rate limit).
+		var limitErr *limiter.LimitError
+		if errors.As(err, &limitErr) {
+			return nil, err
+		}
+		// Spec 105 FR-009 (codex r3 D2): the generation refusal is a typed
+		// identity the dispatch paths map onto their own unresolved-identity
+		// body; return it verbatim so errors.Is survives.
+		if errors.Is(err, managed.ErrConnectionGenerationChanged) {
+			return nil, err
+		}
+
+		// Enrich errors at source with server context
+		errStr := err.Error()
+
+		// OAuth-related errors
+		if strings.Contains(errStr, "OAuth authentication failed") ||
+			strings.Contains(errStr, "authorization required") ||
+			strings.Contains(errStr, "invalid_token") ||
+			strings.Contains(errStr, "Unauthorized") {
+			return nil, fmt.Errorf("server '%s' authentication failed for tool '%s'. OAuth/token authentication required but not properly configured. Check server authentication settings and ensure valid credentials are available: %w", serverName, actualToolName, err)
+		}
+
+		// Permission/scope errors
+		if strings.Contains(errStr, "insufficient_scope") || strings.Contains(errStr, "access_denied") {
+			return nil, fmt.Errorf("server '%s' denied access to tool '%s' due to insufficient permissions or scopes. Check OAuth scopes configuration or token permissions: %w", serverName, actualToolName, err)
+		}
+
+		// Rate limiting
+		if strings.Contains(errStr, "429") || strings.Contains(errStr, "rate limit") || strings.Contains(errStr, "too many requests") {
+			return nil, fmt.Errorf("server '%s' rate limit exceeded for tool '%s'. Please wait before making more requests or check API quotas: %w", serverName, actualToolName, err)
+		}
+
+		// Connection issues
+		if strings.Contains(errStr, "connection refused") || strings.Contains(errStr, "no such host") {
+			return nil, fmt.Errorf("server '%s' connection failed for tool '%s'. Check if the server URL is correct and the server is running: %w", serverName, actualToolName, err)
+		}
+
+		// Tool-specific errors
+		if strings.Contains(errStr, "tool not found") || strings.Contains(errStr, "unknown tool") {
+			return nil, fmt.Errorf("tool '%s' not found on server '%s'. Use 'retrieve_tools' to see available tools: %w", actualToolName, serverName, err)
+		}
+
+		// Generic error with helpful context
+		return nil, fmt.Errorf("tool '%s' on server '%s' failed: %w. Check server configuration, authentication, and tool parameters", actualToolName, serverName, err)
+	}
+
+	return result, nil
+}
+
+// ConnectAll connects to all configured servers that should retry
+func (m *Manager) ConnectAll(ctx context.Context) error {
+	// Check if we're shutting down - prevent reconnections during shutdown
+	m.mu.RLock()
+	if m.shuttingDown {
+		m.mu.RUnlock()
+		m.logger.Debug("Skipping ConnectAll - manager is shutting down")
+		return nil
+	}
+	clients := make(map[string]*managed.Client)
+	for id, client := range m.clients {
+		clients[id] = client
+	}
+	m.mu.RUnlock()
+
+	m.logger.Debug("ConnectAll starting",
+		zap.Int("total_clients", len(clients)))
+
+	var wg sync.WaitGroup
+	for id, client := range clients {
+		m.logger.Debug("Evaluating client for connection",
+			zap.String("id", id),
+			zap.String("name", client.GetConfig().Name),
+			zap.Bool("enabled", client.GetConfig().Enabled),
+			zap.Bool("is_connected", client.IsConnected()),
+			zap.Bool("is_connecting", client.IsConnecting()),
+			zap.String("current_state", client.GetState().String()),
+			zap.Bool("quarantined", client.GetConfig().Quarantined))
+
+		if !client.GetConfig().Enabled {
+			m.logger.Debug("Skipping disabled client",
+				zap.String("id", id),
+				zap.String("name", client.GetConfig().Name))
+
+			if client.IsConnected() {
+				m.logger.Info("Disconnecting disabled client", zap.String("id", id), zap.String("name", client.GetConfig().Name))
+				_ = client.Disconnect()
+			}
+			continue
+		}
+
+		if client.GetConfig().Quarantined {
+			m.logger.Info("Skipping quarantined client",
+				zap.String("id", id),
+				zap.String("name", client.GetConfig().Name))
+			continue
+		}
+
+		// Skip clients where user explicitly logged out (waiting for manual re-login)
+		if client.IsUserLoggedOut() {
+			m.logger.Debug("Skipping client - user explicitly logged out, waiting for manual login",
+				zap.String("id", id),
+				zap.String("name", client.GetConfig().Name))
+			continue
+		}
+
+		// Check connection eligibility with detailed logging
+		if client.IsConnected() {
+			m.logger.Debug("Client already connected, skipping",
+				zap.String("id", id),
+				zap.String("name", client.GetConfig().Name))
+			continue
+		}
+
+		if client.IsConnecting() {
+			m.logger.Debug("Client already connecting, skipping",
+				zap.String("id", id),
+				zap.String("name", client.GetConfig().Name))
+			continue
+		}
+
+		// Same retry policy the supervisor's reconcile honors: plain backoff,
+		// the coarse OAuth ladder, escalating probes after give-up, no redial at
+		// all for a server parked awaiting login, and none for one whose failure
+		// was proven permanent (GH #1145). ConnectAll runs on
+		// every config reload, so gating only on StateError+ShouldRetry (as it
+		// used to) let a reload re-dial servers their own client had paused
+		// (#1013). A user-driven config change for THIS server still reconnects
+		// it — the supervisor plans ActionReconnect, which bypasses the gate.
+		if info := client.GetConnectionInfo(); !info.ShouldAutoReconnect(time.Now()) {
+			m.logger.Debug("Client backoff active, skipping connect attempt",
+				zap.String("id", id),
+				zap.String("name", client.GetConfig().Name),
+				zap.String("state", info.State.String()),
+				zap.Int("retry_count", info.RetryCount),
+				zap.Time("last_retry_time", info.LastRetryTime))
+			continue
+		}
+
+		// #1148: the configured upstream URL can carry its credential in the
+		// query (`?token=…`) or the userinfo (`user:pass@`), and this line runs
+		// on every connect attempt, so the raw form would be written to
+		// main.log on a loop. Redacted through the same helper the core client
+		// and the HTTP transport use.
+		m.logger.Info("Attempting to connect client",
+			zap.String("id", id),
+			zap.String("name", client.GetConfig().Name),
+			zap.String("url", oauth.LiveRedaction.URLValue(client.GetConfig().URL)),
+			zap.String("command", client.GetConfig().Command),
+			zap.String("protocol", client.GetConfig().Protocol))
+
+		wg.Add(1)
+		go func(id string, c *managed.Client) {
+			defer wg.Done()
+
+			// Apply the resolved init_timeout (MCP-3322) as the connect deadline.
+			// Previously only Docker-isolated servers were wrapped (3min) and
+			// un-isolated stdio servers silently inherited the caller's ~30s
+			// context — the #760 bite. resolveConnectTimeout keeps the 3min floor
+			// for Docker isolation while honoring a per-server/global override.
+			connectCtx, cancel := context.WithTimeout(ctx, m.resolveConnectTimeout(c.GetConfig(), c.DependsOnDocker()))
+			defer cancel()
+
+			if err := c.Connect(connectCtx); err != nil {
+				m.logger.Error("Failed to connect to upstream server",
+					zap.String("id", id),
+					zap.String("name", c.GetConfig().Name),
+					zap.String("state", c.GetState().String()),
+					zap.Error(err))
+			} else {
+				m.logger.Info("Successfully initiated connection to upstream server",
+					zap.String("id", id),
+					zap.String("name", c.GetConfig().Name))
+			}
+		}(id, client)
+	}
+
+	wg.Wait()
+	return nil
+}
+
+// DisconnectAll disconnects from all servers
+func (m *Manager) DisconnectAll() error {
+	// Cancel shutdown context to stop OAuth event monitor and Docker recovery
+	if m.shutdownCancel != nil {
+		m.shutdownCancel()
+	}
+
+	// Wait for background goroutines to exit
+	m.shutdownWg.Wait()
+
+	m.mu.RLock()
+	clients := make([]*managed.Client, 0, len(m.clients))
+	for _, client := range m.clients {
+		clients = append(clients, client)
+	}
+	m.mu.RUnlock()
+
+	if len(clients) == 0 {
+		m.logger.Debug("No clients to disconnect")
+		return nil
+	}
+
+	m.logger.Info("Disconnecting all clients in parallel", zap.Int("count", len(clients)))
+
+	// NEW: Disconnect all clients in PARALLEL for faster shutdown
+	var wg sync.WaitGroup
+	errChan := make(chan error, len(clients))
+
+	for _, client := range clients {
+		if client == nil {
+			continue
+		}
+
+		wg.Add(1)
+		go func(c *managed.Client) {
+			defer wg.Done()
+
+			serverName := c.GetConfig().Name
+			m.logger.Debug("Disconnecting client", zap.String("server", serverName))
+
+			// NEW: Create per-client timeout context (10 seconds max per client)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			// Try to disconnect with timeout
+			done := make(chan error, 1)
+			go func() {
+				done <- c.Disconnect()
+			}()
+
+			select {
+			case err := <-done:
+				if err != nil {
+					m.logger.Warn("Client disconnect failed",
+						zap.String("server", serverName),
+						zap.Error(err))
+					errChan <- fmt.Errorf("disconnect %s: %w", serverName, err)
+				} else {
+					m.logger.Debug("Client disconnected successfully",
+						zap.String("server", serverName))
+				}
+			case <-ctx.Done():
+				m.logger.Error("Client disconnect timeout - forcing cleanup",
+					zap.String("server", serverName))
+				// Force cleanup for this client if it has a container
+				if c.IsDockerCommand() {
+					m.forceCleanupClient(c)
+				}
+				errChan <- fmt.Errorf("disconnect %s: timeout", serverName)
+			}
+		}(client)
+	}
+
+	// Wait for all disconnections to complete
+	wg.Wait()
+	close(errChan)
+
+	// Collect errors
+	var errs []error
+	for err := range errChan {
+		errs = append(errs, err)
+	}
+
+	m.logger.Info("All clients disconnected",
+		zap.Int("total", len(clients)),
+		zap.Int("errors", len(errs)))
+
+	if len(errs) > 0 {
+		return fmt.Errorf("disconnect errors: %v", errs)
+	}
+	return nil
+}
+
+// HasDockerContainers reports whether any RUNNING Docker container this
+// instance manages (com.mcpproxy.managed=true, com.mcpproxy.instance=<this
+// instance>) is also canonically owned by a configured server —
+// core.ContainerOwnedByAny over listOwnedManagedContainers, the same
+// selection the shutdown and emergency sweeps apply. The instance/managed
+// labels alone are shared and copyable (Spec 105 D9): a foreign container
+// that copies them, or one whose owning server was since removed from
+// config, must not be reported as still running — that false positive drove
+// the runtime/server shutdown path into its 15-second cleanup-verification
+// wait, a second force-clean, and a false "still running after force
+// cleanup" report for a container mcpproxy neither started nor can act on
+// (codex round 10, docker finding 1). includeStopped is false: an
+// already-stopped row must not read as still running either.
+func (m *Manager) HasDockerContainers() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	instanceID := core.GetInstanceID()
+	owned, err := m.listOwnedManagedContainers(ctx, false,
+		"label=com.mcpproxy.managed=true",
+		fmt.Sprintf("label=com.mcpproxy.instance=%s", instanceID))
+	if err != nil {
+		// Docker not available or error listing - assume no containers
+		return false
+	}
+
+	return len(owned) > 0
+}
+
+// GetStats returns statistics about upstream connections
+// GetStats returns statistics about all managed clients.
+// Phase 6 Fix: Lock-free implementation to prevent deadlock with async operations.
+//
+// Issue #1148, round 4: this map is not an internal counter — it is served
+// verbatim as `upstream_stats` on GET /api/v1/status, on the /api/v1/servers
+// response, and on every SSE `status` event, and it is what the tray renders.
+// Its per-server entries therefore sit behind the same trust boundary as the
+// server list on those same payloads, which httpapi.redactServerSecrets and
+// Runtime.redactServerSecrets already mask. Leaving `url` and `last_error` raw
+// here meant one half of a single response was masked and the other half was
+// not. Mask them at the point they are written.
+//
+// Issue #1167: unconditionally, with no reveal_secret_headers opt-out. This
+// producer takes no ctx and neither does its consumer chain, so there is no
+// caller identity to AND the operator flag with - and the flag alone handed a
+// scoped agent token every server's raw url and last_error on /api/v1/status
+// and on every SSE status event. Same rule, same reason, as the StateView
+// implementation in internal/server.Server.GetUpstreamStats, which is the one
+// that actually runs.
+func (m *Manager) GetStats() map[string]interface{} {
+	const revealSecrets = false
+
+	// Phase 6: Copy client references while holding lock briefly
+	m.mu.RLock()
+	clientsCopy := make(map[string]*managed.Client, len(m.clients))
+	for id, client := range m.clients {
+		clientsCopy[id] = client
+	}
+	totalCount := len(m.clients)
+	m.mu.RUnlock()
+
+	// Now process clients without holding lock to avoid deadlock
+	connectedCount := 0
+	connectingCount := 0
+	quarantinedCount := 0
+	serverStatus := make(map[string]interface{})
+
+	for id, client := range clientsCopy {
+		// Skip nil clients (can happen during shutdown)
+		if client == nil {
+			continue
+		}
+
+		// Get detailed connection info from state manager
+		connectionInfo := client.GetConnectionInfo()
+
+		// Read config through the thread-safe accessor to avoid racing with
+		// SetConfig on the reconcile add path (MCP-770).
+		name, url, protocol := "", "", ""
+		quarantined, enabled := false, false
+		if cfg := client.GetConfig(); cfg != nil {
+			name, url, protocol = cfg.Name, cfg.URL, cfg.Protocol
+			quarantined = cfg.Quarantined
+			enabled = cfg.Enabled
+			if cfg.Quarantined {
+				quarantinedCount++
+			}
+		}
+
+		status := map[string]interface{}{
+			"enabled":      enabled,
+			"state":        connectionInfo.State.String(),
+			"connected":    connectionInfo.State == types.StateReady,
+			"connecting":   client.IsConnecting(),
+			"retry_count":  connectionInfo.RetryCount,
+			"should_retry": client.ShouldRetry(),
+			"name":         name,
+			"url":          url,
+			"protocol":     protocol,
+			// Emitted by BOTH upstream_stats producers (see the twin in
+			// internal/server.Server.GetUpstreamStats): every consumer that
+			// recomputes `quarantined_servers` from the entries — the
+			// scoped-caller filter and contracts.ConvertUpstreamStatsToServerStats
+			// — keys on it, and neither producer used to write it.
+			"quarantined": quarantined,
+		}
+
+		if connectionInfo.State == types.StateReady {
+			connectedCount++
+		}
+
+		if client.IsConnecting() {
+			connectingCount++
+		}
+
+		if !connectionInfo.LastRetryTime.IsZero() {
+			status["last_retry_time"] = connectionInfo.LastRetryTime
+		}
+
+		if connectionInfo.LastError != nil {
+			// Masked below by oauth.RedactUpstreamStats, at the one wire
+			// boundary both upstream_stats implementations pass through.
+			status["last_error"] = connectionInfo.LastError.Error()
+		}
+
+		if connectionInfo.ServerName != "" {
+			status["server_name"] = connectionInfo.ServerName
+		}
+
+		if connectionInfo.ServerVersion != "" {
+			status["server_version"] = connectionInfo.ServerVersion
+		}
+
+		// Only call GetServerInfo() for connected clients.
+		// GetServerInfo() acquires core.Client.mu.RLock() which blocks if Connect() holds
+		// core.Client.mu.Lock() during slow OAuth flows — preventing HTTP server startup.
+		if connectionInfo.State == types.StateReady {
+			if serverInfo := client.GetServerInfo(); serverInfo != nil && serverInfo.ProtocolVersion != "" {
+				status["protocol_version"] = serverInfo.ProtocolVersion
+			}
+		}
+
+		// Round 8 finding 1: `url` and `last_error` are masked by the ONE
+		// shared rule (oauth.RedactUpstreamStatsEntry), not by name-only
+		// redactors chosen here — the server list in the SAME response applies
+		// exactly that rule to exactly these two strings.
+		if !revealSecrets {
+			oauth.RedactUpstreamStatsEntry(status)
+		}
+
+		serverStatus[id] = status
+	}
+
+	// Call GetTotalToolCount without holding manager lock
+	totalTools := m.GetTotalToolCount()
+
+	return map[string]interface{}{
+		"connected_servers":   connectedCount,
+		"connecting_servers":  connectingCount,
+		"quarantined_servers": quarantinedCount,
+		"total_servers":       totalCount,
+		"servers":             serverStatus,
+		"total_tools":         totalTools,
+	}
+}
+
+// GetTotalToolCount returns the total number of tools across all servers.
+// Uses cached counts to avoid excessive network calls (2-minute cache per server).
+// Phase 6 Fix: Lock-free implementation to prevent deadlock.
+func (m *Manager) GetTotalToolCount() int {
+	// Phase 6: Copy client references while holding lock briefly
+	m.mu.RLock()
+	clientsCopy := make([]*managed.Client, 0, len(m.clients))
+	for _, client := range m.clients {
+		clientsCopy = append(clientsCopy, client)
+	}
+	m.mu.RUnlock()
+
+	// Now process clients without holding lock
+	totalTools := 0
+	for _, client := range clientsCopy {
+		if client == nil {
+			continue
+		}
+		// Read config through the thread-safe accessor (MCP-770).
+		cfg := client.GetConfig()
+		// #1064: a quarantined server stays dialed for security inspection, so
+		// IsConnected() is true and its cached count is still the pre-quarantine
+		// number -- exclude it explicitly.
+		if cfg == nil || !cfg.ContributesTools() || !client.IsConnected() {
+			continue
+		}
+
+		// Use non-blocking cached count to avoid stalling API handlers
+		totalTools += client.GetCachedToolCountNonBlocking()
+	}
+	return totalTools
+}
+
+// ListServers returns information about all registered servers
+func (m *Manager) ListServers() map[string]*config.ServerConfig {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	servers := make(map[string]*config.ServerConfig)
+	for id, client := range m.clients {
+		// Read config through the thread-safe accessor (MCP-770).
+		servers[id] = client.GetConfig()
+	}
+	return servers
+}
+
+// recordOAuthFailure stamps an unattended OAuth failure onto the server's
+// connection status so it shows up in `mcpproxy upstream list`, the REST status
+// payload and the tray — the same place other auth failures land (issue #975).
+//
+// A server that is currently Ready is left alone: a late or orphaned callback
+// must never knock a working connection into Error.
+func (m *Manager) recordOAuthFailure(serverName string, cause error) {
+	if cause == nil {
+		return
+	}
+
+	m.mu.RLock()
+	client, exists := m.clients[serverName]
+	m.mu.RUnlock()
+	if !exists {
+		m.logger.Warn("OAuth failure reported for unknown server",
+			zap.String("server", serverName),
+			zap.Error(cause))
+		return
+	}
+
+	if client.StateManager.IsReady() {
+		m.logger.Warn("Ignoring OAuth failure for a server that is already connected",
+			zap.String("server", serverName),
+			zap.Error(cause))
+		return
+	}
+
+	m.logger.Warn("Recording OAuth failure on server status",
+		zap.String("server", serverName),
+		zap.Error(cause))
+	client.StateManager.SetOAuthError(cause)
+}
+
+// RetryConnection triggers a connection retry for a specific server
+// This is typically called after OAuth completion to immediately use new tokens
+func (m *Manager) RetryConnection(serverName string) error {
+	m.mu.RLock()
+	// Check if we're shutting down - prevent reconnections during shutdown
+	if m.shuttingDown {
+		m.mu.RUnlock()
+		m.logger.Debug("Skipping RetryConnection - manager is shutting down",
+			zap.String("server", serverName))
+		return nil
+	}
+	client, exists := m.clients[serverName]
+	m.mu.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("server not found: %s", serverName)
+	}
+
+	// If the client is already connected or connecting, do not force a
+	// reconnect. This prevents Ready→Disconnected flapping when duplicate
+	// OAuth completion events arrive.
+	if client.IsConnected() {
+		m.logger.Info("Skipping retry: client already connected",
+			zap.String("server", serverName),
+			zap.String("state", client.GetState().String()))
+		return nil
+	}
+	if client.IsConnecting() {
+		m.logger.Info("Skipping retry: client already connecting",
+			zap.String("server", serverName),
+			zap.String("state", client.GetState().String()))
+		return nil
+	}
+
+	// Log detailed state prior to retry and token availability in persistent store
+	// This helps diagnose cases where the core client reports "already connected"
+	// while the managed state is Error/Disconnected.
+	state := client.GetState().String()
+	isConnected := client.IsConnected()
+	isConnecting := client.IsConnecting()
+
+	// Check persistent token presence (daemon uses BBolt-backed token store)
+	var hasToken bool
+	var tokenExpires time.Time
+	if m.storage != nil {
+		ts := oauth.NewPersistentTokenStore(client.GetConfig().Name, client.GetConfig().URL, m.storage)
+		if tok, err := ts.GetToken(context.Background()); err == nil && tok != nil {
+			hasToken = true
+			tokenExpires = tok.ExpiresAt
+		}
+	}
+
+	m.logger.Info("Triggering connection retry after OAuth completion",
+		zap.String("server", serverName),
+		zap.String("state", state),
+		zap.Bool("is_connected", isConnected),
+		zap.Bool("is_connecting", isConnecting),
+		zap.Bool("has_persistent_token", hasToken),
+		zap.Time("token_expires_at", tokenExpires))
+
+	// Trigger connection attempt in background to avoid blocking
+	go func() {
+		// Honor the resolved init_timeout (MCP-3322) on the post-OAuth retry too,
+		// with a 2-minute floor so this path never regresses below its historical
+		// grace period.
+		retryTimeout := m.resolveConnectTimeout(client.GetConfig(), client.DependsOnDocker())
+		if retryTimeout < 2*time.Minute {
+			retryTimeout = 2 * time.Minute
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), retryTimeout)
+		defer cancel()
+
+		// #1317 round 6: this Disconnect()+Connect() sequence is a fourth
+		// automatic reconnect path (OAuth completion, config-change and
+		// token-monitor triggers all reach RetryConnection) that bypasses
+		// tryReconnect/Connect/TryReconnectSync's own guard entirely. A
+		// transient/ambiguous error elsewhere on this client must not kill a
+		// genuinely healthy, still in-flight call here either. Skipping is a
+		// delay, not an abandoned retry: the health loop and the periodic
+		// backgroundConnections sweep both retry this same client later.
+		if client.GuardReconnectAgainstInFlightCall() {
+			m.logger.Info("Connection retry deferred: a tool call is still in flight",
+				zap.String("server", serverName))
+			return
+		}
+
+		// Important: Ensure a clean reconnect only if not already connected.
+		// Managed state guards above should make this idempotent.
+		if derr := client.Disconnect(); derr != nil {
+			m.logger.Debug("Disconnect before retry returned",
+				zap.String("server", serverName),
+				zap.Error(derr))
+		}
+
+		if err := client.Connect(ctx); err != nil {
+			m.logger.Warn("Connection retry after OAuth failed",
+				zap.String("server", serverName),
+				zap.Error(err))
+		} else {
+			m.logger.Info("Connection retry after OAuth succeeded",
+				zap.String("server", serverName))
+		}
+	}()
+
+	return nil
+}
+
+// verifyContainerHealthy checks if a Docker container is actually running and responsive
+// This is critical for detecting "zombie" containers where the socket is open but the process is frozen
+func (m *Manager) verifyContainerHealthy(client *managed.Client) (bool, error) {
+	// Only check Docker-based servers
+	if !client.IsDockerCommand() {
+		return true, nil // Non-Docker servers don't need container health check
+	}
+
+	containerID := client.GetContainerID()
+	if containerID == "" {
+		return false, fmt.Errorf("no container ID available")
+	}
+
+	serverName := ""
+	if cfg := client.GetConfig(); cfg != nil {
+		serverName = cfg.Name
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	return m.verifyDockerContainerHealthy(ctx, sweepDocker, serverName, containerID)
+}
+
+// verifyDockerContainerHealthy is the pure implementation verifyContainerHealthy
+// delegates to. `docker inspect <id>` answers by id alone, regardless of
+// name or label, so trusting it directly on the tracked id let a container
+// another Docker client relabelled or renamed after tracking still read as
+// Running and skip ForceReconnectAll's recovery even though it is no longer
+// this server's (codex round 8). Ownership is re-established first, through
+// the same read+predicate ContainerMutator.Verify uses before every
+// mutation: a container that fails the predicate now is NOT healthy —
+// recovery (the caller's rebuild) proceeds — and the refusal names no id,
+// only the server. Only a container ownership confirms is named, and then
+// with the container_owner read back at that same moment, never the
+// requesting server's name.
+//
+// Running state is decided from that SAME read, never a follow-up `docker
+// inspect` (codex round 16 finding 1): a second, separately timed command by
+// id alone reports whatever container holds that id AT THAT LATER MOMENT —
+// which can by then belong to someone else — while this function kept
+// treating it as healthy for serverName. ContainerRow.Running derives it
+// from the ps row Verify already read; row.Status (its human STATUS text)
+// is what the log/error messages below report.
+func (m *Manager) verifyDockerContainerHealthy(ctx context.Context, docker core.DockerCommand, serverName, containerID string) (bool, error) {
+	mutator := core.ContainerMutator{
+		Docker: docker,
+		Owns: func(containerName, ownerLabel, instanceLabel string) bool {
+			return core.ContainerOwnedByAny([]string{serverName}, containerName, ownerLabel, instanceLabel)
+		},
+	}
+	row, ok, err := mutator.Verify(ctx, containerID)
+	if err != nil {
+		m.logger.Warn("Could not verify container ownership before health check - treating as unhealthy",
+			zap.String("server", serverName),
+			zap.Error(err))
+		return false, fmt.Errorf("could not verify container ownership: %w", err)
+	}
+	if !ok {
+		m.logger.Warn("Tracked container is no longer canonically owned by this server - treating as lost",
+			zap.String("server", serverName))
+		return false, fmt.Errorf("tracked container is no longer canonically owned by this server")
+	}
+
+	// Container exists and is canonically owned NOW: check it is running,
+	// from the row this same Verify read — not a second command.
+	running := row.Running()
+	status := row.Status
+
+	if !running {
+		return false, fmt.Errorf("container not running (status: %s)", status)
+	}
+
+	m.logger.Debug("Container health check passed",
+		zap.String("server", serverName),
+		zap.String("container_id", row.ID),
+		zap.String("container_owner", row.Owner),
+		zap.String("status", status))
+
+	return true, nil
+}
+
+// ReconnectResult tracks the results of a ForceReconnectAll operation
+type ReconnectResult struct {
+	TotalServers      int
+	AttemptedServers  int
+	SuccessfulServers []string
+	FailedServers     map[string]error
+	SkippedServers    map[string]string // server name -> skip reason
+}
+
+// ForceReconnectAll triggers reconnection attempts for all managed clients.
+// For Docker-based servers, this includes container health verification to catch frozen containers.
+// Returns detailed results about which servers were reconnected, skipped, or failed.
+func (m *Manager) ForceReconnectAll(reason string) *ReconnectResult {
+	result := &ReconnectResult{
+		SuccessfulServers: []string{},
+		FailedServers:     make(map[string]error),
+		SkippedServers:    make(map[string]string),
+	}
+	m.mu.RLock()
+	clientMap := make(map[string]*managed.Client, len(m.clients))
+	for id, client := range m.clients {
+		clientMap[id] = client
+	}
+	m.mu.RUnlock()
+
+	result.TotalServers = len(clientMap)
+
+	if len(clientMap) == 0 {
+		m.logger.Debug("ForceReconnectAll: no managed clients registered")
+		return result
+	}
+
+	m.logger.Info("ForceReconnectAll: processing managed clients",
+		zap.Int("client_count", len(clientMap)),
+		zap.String("reason", reason))
+
+	for id, client := range clientMap {
+		if client == nil {
+			result.SkippedServers[id] = "nil client"
+			continue
+		}
+
+		// CRITICAL: For Docker servers, verify container health even if connected
+		// This catches frozen containers when Docker is paused/resumed
+		if client.IsConnected() {
+			if client.IsDockerCommand() {
+				healthy, err := m.verifyContainerHealthy(client)
+				if !healthy {
+					m.logger.Warn("Container unhealthy despite active connection - forcing reconnect",
+						zap.String("server", id),
+						zap.Error(err))
+					// Fall through to reconnect logic
+				} else {
+					result.SkippedServers[id] = "container healthy"
+					m.logger.Debug("Skipping reconnect - container healthy",
+						zap.String("server", id))
+					continue
+				}
+			} else {
+				// Non-Docker server, connection state is sufficient
+				result.SkippedServers[id] = "already connected"
+				m.logger.Debug("Skipping reconnect - already connected",
+					zap.String("server", id))
+				continue
+			}
+		}
+
+		// Filter: Only reconnect Docker-based servers (skip HTTP/SSE/non-Docker stdio)
+		if !client.IsDockerCommand() {
+			result.SkippedServers[id] = "not a Docker server"
+			m.logger.Debug("Skipping reconnect - not a Docker server",
+				zap.String("server", id),
+				zap.String("reason", reason))
+			continue
+		}
+
+		cfg := cloneServerConfig(client.GetConfig())
+		if cfg == nil {
+			result.SkippedServers[id] = "failed to clone config"
+			continue
+		}
+
+		if !cfg.Enabled {
+			result.SkippedServers[id] = "server disabled"
+			m.logger.Debug("Skipping reconnect - server disabled",
+				zap.String("server", id))
+			continue
+		}
+
+		result.AttemptedServers++
+
+		m.logger.Info("ForceReconnectAll: rebuilding Docker client",
+			zap.String("server", cfg.Name),
+			zap.String("id", id),
+			zap.String("reason", reason))
+
+		m.RemoveServer(id)
+
+		// Small delay to allow container/process cleanup before restart
+		time.Sleep(200 * time.Millisecond)
+
+		if err := m.AddServer(id, cfg); err != nil {
+			result.FailedServers[id] = err
+			m.logger.Error("ForceReconnectAll: failed to rebuild client",
+				zap.String("server", cfg.Name),
+				zap.String("id", id),
+				zap.Error(err))
+		} else {
+			result.SuccessfulServers = append(result.SuccessfulServers, id)
+			m.logger.Info("ForceReconnectAll: successfully rebuilt client",
+				zap.String("server", cfg.Name),
+				zap.String("id", id))
+		}
+	}
+
+	m.logger.Info("ForceReconnectAll completed",
+		zap.Int("total", result.TotalServers),
+		zap.Int("attempted", result.AttemptedServers),
+		zap.Int("successful", len(result.SuccessfulServers)),
+		zap.Int("failed", len(result.FailedServers)),
+		zap.Int("skipped", len(result.SkippedServers)))
+
+	return result
+}
+
+// startOAuthEventMonitor monitors the database for OAuth completion events from CLI processes
+func (m *Manager) startOAuthEventMonitor(ctx context.Context) {
+	defer m.shutdownWg.Done()
+	m.logger.Info("Starting OAuth event monitor for cross-process notifications")
+
+	ticker := time.NewTicker(5 * time.Second) // Check every 5 seconds
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			m.logger.Info("OAuth event monitor stopped due to context cancellation")
+			return
+		case <-ticker.C:
+			// Check if context was cancelled before processing
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			if err := m.processOAuthEvents(); err != nil {
+				m.logger.Warn("Failed to process OAuth events", zap.Error(err))
+			}
+
+			// Also scan for newly available tokens to handle cases where the CLI
+			// could not write a DB event due to a lock. If we see a persisted
+			// token for an errored OAuth server, trigger a reconnect once.
+			m.scanForNewTokens()
+		}
+	}
+}
+
+// processOAuthEvents checks for and processes unprocessed OAuth completion events
+func (m *Manager) processOAuthEvents() error {
+	if m.storage == nil {
+		m.logger.Debug("processOAuthEvents: no storage available, skipping")
+		return nil
+	}
+
+	m.logger.Debug("processOAuthEvents: checking for OAuth completion events...")
+	events, err := m.storage.GetUnprocessedOAuthCompletionEvents()
+	if err != nil {
+		m.logger.Error("processOAuthEvents: failed to get events", zap.Error(err))
+		return fmt.Errorf("failed to get OAuth completion events: %w", err)
+	}
+
+	if len(events) == 0 {
+		m.logger.Debug("processOAuthEvents: no unprocessed events found")
+		return nil
+	}
+
+	m.logger.Info("processOAuthEvents: found unprocessed OAuth completion events", zap.Int("count", len(events)))
+
+	for _, event := range events {
+		m.logger.Info("Processing OAuth completion event from database",
+			zap.String("server", event.ServerName),
+			zap.Time("completed_at", event.CompletedAt))
+
+		// Skip retry if client is already connected/connecting to avoid flapping
+		m.mu.RLock()
+		c, exists := m.clients[event.ServerName]
+		m.mu.RUnlock()
+		if exists && (c.IsConnected() || c.IsConnecting()) {
+			m.logger.Info("Skipping retry for OAuth event: client already connected/connecting",
+				zap.String("server", event.ServerName),
+				zap.String("state", c.GetState().String()))
+		} else {
+			// Trigger connection retry
+			if err := m.RetryConnection(event.ServerName); err != nil {
+				m.logger.Warn("Failed to retry connection for OAuth completion event",
+					zap.String("server", event.ServerName),
+					zap.Error(err))
+			} else {
+				m.logger.Info("Successfully triggered connection retry for OAuth completion event",
+					zap.String("server", event.ServerName))
+			}
+		}
+
+		// Mark event as processed
+		if err := m.storage.MarkOAuthCompletionEventProcessed(event.ServerName, event.CompletedAt); err != nil {
+			m.logger.Error("Failed to mark OAuth completion event as processed",
+				zap.String("server", event.ServerName),
+				zap.Error(err))
+		}
+
+		// Clean up old events periodically (when processing events)
+		if err := m.storage.CleanupOldOAuthCompletionEvents(); err != nil {
+			m.logger.Warn("Failed to cleanup old OAuth completion events", zap.Error(err))
+		}
+	}
+
+	return nil
+}
+
+// scanForNewTokens checks persistent token store for each client in Error state
+// and triggers a reconnect if a token is present. This complements DB-based
+// events and handles DB lock scenarios.
+func (m *Manager) scanForNewTokens() {
+	if m.storage == nil {
+		return
+	}
+
+	m.mu.RLock()
+	clients := make(map[string]*managed.Client, len(m.clients))
+	for id, c := range m.clients {
+		clients[id] = c
+	}
+	m.mu.RUnlock()
+
+	now := time.Now()
+	for id, c := range clients {
+		// Get config in a thread-safe manner to avoid race conditions
+		cfg := c.GetConfig()
+
+		// Only consider enabled, HTTP/SSE servers not currently connected
+		if !cfg.Enabled || c.IsConnected() {
+			continue
+		}
+
+		state := c.GetState()
+		// Focus on states that a freshly persisted token can unblock: a plain
+		// Error (likely OAuth/authorization) and PendingAuth, where the client is
+		// parked waiting for exactly this token (#1013).
+		if state != types.StateError && state != types.StatePendingAuth {
+			continue
+		}
+
+		// Rate-limit triggers per server
+		if last, ok := m.tokenReconnect[id]; ok && now.Sub(last) < 10*time.Second {
+			continue
+		}
+
+		// Check for a persisted token
+		ts := oauth.NewPersistentTokenStore(cfg.Name, cfg.URL, m.storage)
+		tok, err := ts.GetToken(context.Background())
+		if err != nil || tok == nil {
+			continue
+		}
+
+		// Only a token we have NOT already retried with is news. The failing
+		// server usually still has its (expired/revoked/rejected) token in the
+		// store, so triggering on mere presence redialed it every scan — a 5s
+		// loop that outpaces the supervisor's and defeats the PendingAuth park
+		// (#1013). The fingerprint changes exactly when a login/refresh writes a
+		// new token, which is the event this scan exists to catch.
+		//
+		// The write timestamp is part of the identity, not just the token
+		// content: a provider re-issuing a byte-identical token would otherwise
+		// leave the fingerprint unchanged and permanently suppress this wake —
+		// and for a CLI login that could not persist its completion event, this
+		// scan is the only one left.
+		var writtenAt time.Time
+		if rec, recErr := m.storage.GetOAuthToken(oauth.GenerateServerKey(cfg.Name, cfg.URL)); recErr == nil && rec != nil {
+			writtenAt = rec.Updated
+		}
+		fingerprint := tokenFingerprint(tok, writtenAt)
+		if seen, ok := m.tokenFingerprints[id]; ok && seen == fingerprint {
+			continue
+		}
+
+		m.logger.Info("Detected new persisted OAuth token; triggering reconnect",
+			zap.String("server", cfg.Name),
+			zap.Time("token_expires_at", tok.ExpiresAt))
+
+		// Remember trigger time + which token we tried, then retry connection
+		m.tokenReconnect[id] = now
+		m.tokenFingerprints[id] = fingerprint
+		_ = m.RetryConnection(cfg.Name)
+	}
+}
+
+// tokenFingerprint identifies a persisted OAuth token without retaining it: a
+// truncated SHA-256 over the access token, refresh token, expiry and the time
+// the record was last written, so any re-issue compares different while the
+// same untouched token compares equal. Never log or persist the raw token to
+// make this comparison.
+func tokenFingerprint(tok *uptransport.Token, writtenAt time.Time) string {
+	if tok == nil {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(strings.Join([]string{
+		tok.AccessToken,
+		tok.RefreshToken,
+		tok.ExpiresAt.UTC().Format(time.RFC3339Nano),
+		writtenAt.UTC().Format(time.RFC3339Nano),
+	}, "\x00")))
+	return hex.EncodeToString(sum[:8])
+}
+
+// StartManualOAuth performs an in-process OAuth flow for the given server.
+// This avoids cross-process DB locking by using the daemon's storage directly.
+func (m *Manager) StartManualOAuth(serverName string, force bool) error {
+	m.mu.RLock()
+	client, exists := m.clients[serverName]
+	m.mu.RUnlock()
+	if !exists {
+		return fmt.Errorf("server not found: %s", serverName)
+	}
+
+	cfg := client.GetConfig()
+	m.logger.Info("Starting in-process manual OAuth",
+		zap.String("server", cfg.Name),
+		zap.Bool("force", force))
+
+	// Preflight: if server does not appear to require OAuth, avoid starting
+	// OAuth flow and return an informative error (tray will show it).
+	// Attempt a short no-auth initialize to confirm.
+	if !oauth.ShouldUseOAuth(cfg) && !force {
+		m.logger.Info("OAuth not applicable based on config (no headers, protocol)", zap.String("server", cfg.Name))
+		return fmt.Errorf("OAuth is not supported or not required for server '%s'", cfg.Name)
+	}
+
+	// Create a transient core client that uses the daemon's storage
+	coreClient, err := core.NewClientWithOptions(cfg.Name, cfg, m.logger, m.logConfig, m.globalConfig.Load(), m.storage, false, m.secretResolver)
+	if err != nil {
+		return fmt.Errorf("failed to create core client for OAuth: %w", err)
+	}
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
+
+		if force {
+			coreClient.ClearOAuthState()
+		}
+
+		// Preflight no-auth check: try a quick connect without OAuth to
+		// determine if authorization is actually required. If initialize
+		// succeeds, inform and return early.
+		if !force {
+			cpy := *cfg
+			cpy.Headers = cfg.Headers // preserve headers
+			// Try HTTP/SSE path with no OAuth
+			noAuthTransport := transport.DetermineTransportType(&cpy)
+			if noAuthTransport == "http" || noAuthTransport == "streamable-http" || noAuthTransport == "sse" {
+				m.logger.Info("Running preflight no-auth initialize to check OAuth requirement", zap.String("server", cfg.Name))
+				testClient, err2 := core.NewClientWithOptions(cfg.Name, &cpy, m.logger, m.logConfig, m.globalConfig.Load(), m.storage, false, m.secretResolver)
+				if err2 == nil {
+					tctx, tcancel := context.WithTimeout(ctx, 10*time.Second)
+					_ = testClient.Connect(tctx)
+					tcancel()
+					if testClient.GetServerInfo() != nil {
+						m.logger.Info("Preflight succeeded without OAuth; skipping OAuth flow", zap.String("server", cfg.Name))
+						return
+					}
+				}
+			}
+		}
+
+		m.logger.Info("Triggering OAuth flow (in-process)", zap.String("server", cfg.Name))
+		if err := coreClient.ForceOAuthFlow(ctx); err != nil {
+			m.logger.Warn("In-process OAuth flow failed",
+				zap.String("server", cfg.Name),
+				zap.Error(err))
+			return
+		}
+		m.logger.Info("In-process OAuth flow completed successfully",
+			zap.String("server", cfg.Name))
+		// Immediately attempt reconnect with new tokens
+		if err := m.RetryConnection(cfg.Name); err != nil {
+			m.logger.Warn("Failed to trigger reconnect after in-process OAuth",
+				zap.String("server", cfg.Name),
+				zap.Error(err))
+		}
+	}()
+
+	return nil
+}
+
+// StartManualOAuthQuick starts OAuth and returns browser status immediately.
+// Unlike StartManualOAuth (fully async, no result) or StartManualOAuthWithInfo (fully sync, blocks),
+// this returns browser status quickly but continues the OAuth callback handling in background.
+//
+// This is the recommended method for API endpoints that need to return browser_opened status.
+func (m *Manager) StartManualOAuthQuick(serverName string) (*core.OAuthStartResult, error) {
+	m.mu.RLock()
+	client, exists := m.clients[serverName]
+	m.mu.RUnlock()
+	if !exists {
+		return nil, fmt.Errorf("server not found: %s", serverName)
+	}
+
+	cfg := client.GetConfig()
+	m.logger.Info("Starting quick OAuth flow (returns browser status immediately)",
+		zap.String("server", cfg.Name))
+
+	// Preflight: if server does not appear to require OAuth, return error
+	if !oauth.ShouldUseOAuth(cfg) {
+		m.logger.Info("OAuth not applicable based on config", zap.String("server", cfg.Name))
+		return nil, fmt.Errorf("OAuth is not supported or not required for server '%s'", cfg.Name)
+	}
+
+	// Create a transient core client that uses the daemon's storage
+	coreClient, err := core.NewClientWithOptions(cfg.Name, cfg, m.logger, m.logConfig, m.globalConfig.Load(), m.storage, false, m.secretResolver)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create core client for OAuth: %w", err)
+	}
+
+	// Use a long-running context for the OAuth callback (30 minutes)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+
+	// Clear OAuth state for fresh flow
+	coreClient.ClearOAuthState()
+
+	// Snapshot BEFORE the flow starts so a completion can never precede it
+	// (the watcher below detects completion as a change from this value).
+	before := m.storedAccessToken(cfg)
+
+	// Start the quick OAuth flow - this returns immediately with browser status
+	result, err := coreClient.StartOAuthFlowQuick(ctx)
+	if err != nil {
+		cancel()
+		return result, err
+	}
+
+	// Set up reconnection after OAuth completes (in background).
+	//
+	// The watcher owns the login context: its deferred cancel ends the
+	// callback wait. It therefore must only finish when THIS login is over —
+	// a new token landed, or the 30-minute deadline passed. It used to stop
+	// after 2 minutes, or after ~2 s when HasRecentOAuthCompletion was already
+	// true from an earlier sign-in (the re-login a declared-OAuth server now
+	// permits, GH #1271), and the browser callback then found nobody waiting
+	// ("mcpproxy is not waiting for this sign-in"). Completion is detected as
+	// a CHANGE of the stored access token, snapshotted before the flow; the
+	// watcher also ends with the manager so it never outlives a shutdown.
+	go func() {
+		defer cancel()
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-m.shutdownCtx.Done():
+				return
+			case <-ticker.C:
+			}
+			if tok := m.storedAccessToken(cfg); tok != "" && tok != before {
+				m.logger.Info("OAuth token obtained, triggering reconnect",
+					zap.String("server", cfg.Name))
+				if err := m.RetryConnection(cfg.Name); err != nil {
+					m.logger.Warn("Failed to trigger reconnect after OAuth",
+						zap.String("server", cfg.Name),
+						zap.Error(err))
+				}
+				return
+			}
+		}
+	}()
+
+	return result, nil
+}
+
+// storedAccessToken returns the access token persisted for the server, or ""
+// when there is none (or no storage).
+func (m *Manager) storedAccessToken(cfg *config.ServerConfig) string {
+	if m.storage == nil {
+		return ""
+	}
+	record, err := m.storage.GetOAuthToken(oauth.GenerateServerKey(cfg.Name, cfg.URL))
+	if err != nil || record == nil {
+		return ""
+	}
+	return record.AccessToken
+}
+
+// StartManualOAuthWithInfo performs an in-process OAuth flow and returns the auth URL and browser status.
+// This is used by Phase 3 (Spec 020) to return structured information about the OAuth flow start.
+// Unlike StartManualOAuth, this method waits for the auth URL to be obtained before returning.
+func (m *Manager) StartManualOAuthWithInfo(serverName string, force bool) (*core.OAuthStartResult, error) {
+	m.mu.RLock()
+	client, exists := m.clients[serverName]
+	m.mu.RUnlock()
+	if !exists {
+		return nil, fmt.Errorf("server not found: %s", serverName)
+	}
+
+	cfg := client.GetConfig()
+	m.logger.Info("Starting in-process manual OAuth with info tracking",
+		zap.String("server", cfg.Name),
+		zap.Bool("force", force))
+
+	// Preflight: if server does not appear to require OAuth, avoid starting
+	if !oauth.ShouldUseOAuth(cfg) && !force {
+		m.logger.Info("OAuth not applicable based on config (no headers, protocol)", zap.String("server", cfg.Name))
+		return nil, fmt.Errorf("OAuth is not supported or not required for server '%s'", cfg.Name)
+	}
+
+	// Create a transient core client that uses the daemon's storage
+	coreClient, err := core.NewClientWithOptions(cfg.Name, cfg, m.logger, m.logConfig, m.globalConfig.Load(), m.storage, false, m.secretResolver)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create core client for OAuth: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+
+	if force {
+		coreClient.ClearOAuthState()
+	}
+
+	// Preflight no-auth check
+	if !force {
+		cpy := *cfg
+		cpy.Headers = cfg.Headers
+		noAuthTransport := transport.DetermineTransportType(&cpy)
+		if noAuthTransport == "http" || noAuthTransport == "streamable-http" || noAuthTransport == "sse" {
+			m.logger.Info("Running preflight no-auth initialize to check OAuth requirement", zap.String("server", cfg.Name))
+			testClient, err2 := core.NewClientWithOptions(cfg.Name, &cpy, m.logger, m.logConfig, m.globalConfig.Load(), m.storage, false, m.secretResolver)
+			if err2 == nil {
+				tctx, tcancel := context.WithTimeout(ctx, 10*time.Second)
+				_ = testClient.Connect(tctx)
+				tcancel()
+				if testClient.GetServerInfo() != nil {
+					m.logger.Info("Preflight succeeded without OAuth; skipping OAuth flow", zap.String("server", cfg.Name))
+					cancel()
+					return &core.OAuthStartResult{
+						BrowserOpened: false,
+						CorrelationID: fmt.Sprintf("oauth-%s-%d", cfg.Name, time.Now().UnixNano()),
+					}, nil
+				}
+			}
+		}
+	}
+
+	m.logger.Info("Triggering OAuth flow with result tracking (in-process)", zap.String("server", cfg.Name))
+
+	// Run the OAuth flow synchronously to get the result
+	result, err := coreClient.ForceOAuthFlowWithResult(ctx)
+	cancel()
+
+	if err != nil {
+		m.logger.Warn("In-process OAuth flow failed",
+			zap.String("server", cfg.Name),
+			zap.Error(err))
+		return result, err
+	}
+
+	m.logger.Info("In-process OAuth flow completed successfully",
+		zap.String("server", cfg.Name),
+		zap.String("correlation_id", result.CorrelationID))
+
+	// Immediately attempt reconnect with new tokens
+	if reconnErr := m.RetryConnection(cfg.Name); reconnErr != nil {
+		m.logger.Warn("Failed to trigger reconnect after in-process OAuth",
+			zap.String("server", cfg.Name),
+			zap.Error(reconnErr))
+	}
+
+	return result, nil
+}
+
+// InvalidateAllToolCountCaches invalidates tool count caches for all clients
+// This should be called when tools are known to have changed (e.g., after indexing)
+func (m *Manager) InvalidateAllToolCountCaches() {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	for _, client := range m.clients {
+		client.InvalidateToolCountCache()
+	}
+
+	m.logger.Debug("Invalidated tool count caches for all clients",
+		zap.Int("client_count", len(m.clients)))
+}
+
+// Docker Recovery Methods
+
+// startDockerRecoveryMonitor monitors Docker availability and triggers recovery when needed
+func (m *Manager) startDockerRecoveryMonitor(ctx context.Context) {
+	defer m.shutdownWg.Done()
+	m.logger.Info("Starting Docker recovery monitor")
+
+	// Load existing recovery state (always persist for reliability) but reset
+	// per-process retry counters. The persisted FailureCount belongs to the
+	// previous process — if it bled out at the retry limit, the new process
+	// would otherwise hit `attempt >= maxRetries` on its very first probe and
+	// give up without ever sleeping, producing the "10 attempts in 5ms" log
+	// pattern. A fresh boot deserves a fresh retry budget; the loaded state
+	// is kept only for telemetry (LastSuccessfulAt, LastError).
+	if m.storageMgr != nil {
+		if state, err := m.storageMgr.LoadDockerRecoveryState(); err == nil && state != nil {
+			previousFailureCount := state.FailureCount
+			freshenLoadedDockerRecoveryState(state)
+			m.dockerRecoveryMu.Lock()
+			m.dockerRecoveryState = state
+			m.dockerRecoveryMu.Unlock()
+			m.logger.Info("Loaded existing Docker recovery state",
+				zap.Int("previous_failure_count", previousFailureCount),
+				zap.Int("failure_count", state.FailureCount),
+				zap.Bool("docker_available", state.DockerAvailable),
+				zap.Time("last_attempt", state.LastAttempt))
+		}
+	}
+
+	// Initial check
+	if err := m.checkDockerAvailability(ctx); err != nil {
+		// Check if context was cancelled before logging
+		if ctx.Err() != nil {
+			return
+		}
+
+		m.logger.Warn("Docker unavailable on startup, starting recovery", zap.Error(err))
+		go m.handleDockerUnavailable(ctx)
+		return
+	}
+
+	// Periodic monitoring
+	ticker := time.NewTicker(dockerCheckInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			m.logger.Info("Docker recovery monitor shutting down")
+			return
+		case <-ticker.C:
+			if err := m.checkDockerAvailability(ctx); err != nil {
+				// Check if context was cancelled before logging
+				if ctx.Err() != nil {
+					return
+				}
+
+				m.logger.Warn("Docker became unavailable, starting recovery", zap.Error(err))
+				go m.handleDockerUnavailable(ctx)
+				return // Exit monitor, handleDockerUnavailable will restart it
+			}
+		}
+	}
+}
+
+// checkDockerAvailability checks if Docker daemon is running and responsive.
+//
+// Resolves the docker binary via dockerResolverFn (shellwrap-backed by default)
+// rather than relying on the parent process's $PATH. This is essential when
+// mcpproxy is launched from a macOS .app bundle / LoginItem: launchd hands the
+// process PATH=/usr/bin:/bin:/usr/sbin:/sbin and a bare exec.Command("docker")
+// would fail with `executable file not found in $PATH` even though docker is
+// installed at /Applications/Docker.app/... or /usr/local/bin/docker.
+func (m *Manager) checkDockerAvailability(ctx context.Context) error {
+	checkCtx, cancel := context.WithTimeout(ctx, dockerHealthCheckTimeout)
+	defer cancel()
+
+	dockerBin, resolveErr := dockerResolverFn(m.logger)
+	if resolveErr != nil || dockerBin == "" {
+		// Fall back to bare "docker" — exec will surface the same lookup error
+		// the previous code path would have produced, preserving error behaviour
+		// when shellwrap also cannot find a docker binary anywhere.
+		dockerBin = "docker"
+	}
+
+	cmd := exec.CommandContext(checkCtx, dockerBin, "info", "--format", "{{json .ServerVersion}}")
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("docker unavailable: %w", err)
+	}
+	return nil
+}
+
+// handleDockerUnavailable handles Docker unavailability with exponential backoff
+func (m *Manager) handleDockerUnavailable(ctx context.Context) {
+	m.dockerRecoveryMu.Lock()
+	if m.dockerRecoveryActive {
+		m.dockerRecoveryMu.Unlock()
+		return // Already in recovery
+	}
+	m.dockerRecoveryActive = true
+
+	// Initialize state if needed
+	if m.dockerRecoveryState == nil {
+		m.dockerRecoveryState = &storage.DockerRecoveryState{
+			LastAttempt:     time.Now(),
+			FailureCount:    0,
+			DockerAvailable: false,
+			RecoveryMode:    true,
+		}
+	}
+	m.dockerRecoveryMu.Unlock()
+
+	defer func() {
+		m.dockerRecoveryMu.Lock()
+		m.dockerRecoveryActive = false
+		m.dockerRecoveryMu.Unlock()
+	}()
+
+	// Use internal constants for retry logic
+	maxRetries := dockerMaxRetries
+
+	m.dockerRecoveryMu.RLock()
+	attempt := m.dockerRecoveryState.FailureCount
+	m.dockerRecoveryMu.RUnlock()
+
+	m.logger.Info("Docker recovery started",
+		zap.Int("resumed_from_attempt", attempt),
+		zap.Int("max_retries", maxRetries))
+
+	recoveryCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	m.dockerRecoveryMu.Lock()
+	m.dockerRecoveryCancel = cancel
+	m.dockerRecoveryMu.Unlock()
+
+	startTime := time.Now()
+
+	for {
+		// Check if max retries exceeded
+		if maxRetries > 0 && attempt >= maxRetries {
+			m.logger.Error("Docker recovery max retries exceeded",
+				zap.Int("attempts", attempt),
+				zap.Int("max_retries", maxRetries))
+			m.saveDockerRecoveryState(&storage.DockerRecoveryState{
+				LastAttempt:      time.Now(),
+				FailureCount:     attempt,
+				DockerAvailable:  false,
+				RecoveryMode:     false,
+				LastError:        "max retries exceeded",
+				AttemptsSinceUp:  attempt,
+				LastSuccessfulAt: time.Time{},
+			})
+			return
+		}
+
+		// Get retry interval based on attempt number (exponential backoff)
+		currentInterval := getDockerRetryInterval(attempt)
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(currentInterval):
+			// Check if context was cancelled while waiting
+			if ctx.Err() != nil {
+				return
+			}
+
+			attempt++
+
+			err := m.checkDockerAvailability(recoveryCtx)
+			if err == nil {
+				// Check before logging success
+				if ctx.Err() != nil {
+					return
+				}
+
+				// Docker is back!
+				elapsed := time.Since(startTime)
+				m.logger.Info("Docker recovery successful",
+					zap.Int("total_attempts", attempt),
+					zap.Duration("total_duration", elapsed))
+
+				// Clear recovery state
+				m.dockerRecoveryMu.Lock()
+				m.dockerRecoveryState = nil
+				m.dockerRecoveryMu.Unlock()
+
+				if m.storageMgr != nil {
+					_ = m.storageMgr.ClearDockerRecoveryState()
+				}
+
+				// Trigger reconnection of Docker-based servers
+				go func() {
+					// Check if context was cancelled before reconnecting
+					if ctx.Err() != nil {
+						return
+					}
+
+					result := m.ForceReconnectAll("docker_recovered")
+
+					// Check again before logging
+					if ctx.Err() != nil {
+						return
+					}
+
+					if len(result.FailedServers) > 0 {
+						m.logger.Warn("Some servers failed to reconnect after Docker recovery",
+							zap.Int("error_count", len(result.FailedServers)))
+					} else {
+						m.logger.Info("Successfully reconnected servers after Docker recovery",
+							zap.Int("reconnected", len(result.SuccessfulServers)))
+					}
+				}()
+
+				// Restart monitoring
+				m.shutdownWg.Add(1)
+				go m.startDockerRecoveryMonitor(ctx)
+				return
+			}
+
+			// Check if context was cancelled before logging retry
+			if ctx.Err() != nil {
+				return
+			}
+
+			// Still unavailable, save state
+			m.logger.Info("Docker recovery retry",
+				zap.Int("attempt", attempt),
+				zap.Duration("elapsed", time.Since(startTime)),
+				zap.Duration("next_retry_in", getDockerRetryInterval(attempt)),
+				zap.Error(err))
+
+			m.saveDockerRecoveryState(&storage.DockerRecoveryState{
+				LastAttempt:      time.Now(),
+				FailureCount:     attempt,
+				DockerAvailable:  false,
+				RecoveryMode:     true,
+				LastError:        err.Error(),
+				AttemptsSinceUp:  attempt,
+				LastSuccessfulAt: time.Time{},
+			})
+		}
+	}
+}
+
+// saveDockerRecoveryState saves recovery state to persistent storage
+func (m *Manager) saveDockerRecoveryState(state *storage.DockerRecoveryState) {
+	m.dockerRecoveryMu.Lock()
+	m.dockerRecoveryState = state
+	m.dockerRecoveryMu.Unlock()
+
+	if m.storageMgr != nil {
+		if err := m.storageMgr.SaveDockerRecoveryState(state); err != nil {
+			m.logger.Warn("Failed to save Docker recovery state", zap.Error(err))
+		}
+	}
+}
+
+// GetDockerRecoveryStatus returns the current Docker recovery status
+func (m *Manager) GetDockerRecoveryStatus() *storage.DockerRecoveryState {
+	// Short-circuit when Docker recovery is disabled (e.g., docker isolation off)
+	if !m.shouldEnableDockerRecovery() {
+		return &storage.DockerRecoveryState{
+			LastAttempt:      time.Now(),
+			FailureCount:     0,
+			DockerAvailable:  true,  // Considered available because Docker isn't required
+			RecoveryMode:     false, // Never enter recovery when disabled
+			LastSuccessfulAt: time.Now(),
+		}
+	}
+
+	m.dockerRecoveryMu.RLock()
+	defer m.dockerRecoveryMu.RUnlock()
+
+	if m.dockerRecoveryState == nil {
+		// Check current Docker availability
+		if err := m.checkDockerAvailability(context.Background()); err == nil {
+			return &storage.DockerRecoveryState{
+				LastAttempt:      time.Now(),
+				FailureCount:     0,
+				DockerAvailable:  true,
+				RecoveryMode:     false,
+				LastSuccessfulAt: time.Now(),
+			}
+		}
+		return &storage.DockerRecoveryState{
+			LastAttempt:     time.Now(),
+			FailureCount:    0,
+			DockerAvailable: false,
+			RecoveryMode:    false,
+		}
+	}
+
+	// Return copy of current state
+	stateCopy := *m.dockerRecoveryState
+	return &stateCopy
+}
+
+// ClearOAuthToken clears the OAuth token for a specific server.
+// This is called by the OAuth logout flow to remove stored credentials.
+// Works for both explicit OAuth config and discovered OAuth (server-announced OAuth).
+func (m *Manager) ClearOAuthToken(serverName string) error {
+	m.mu.RLock()
+	client, exists := m.clients[serverName]
+	m.mu.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("server not found: %s", serverName)
+	}
+
+	// Get the server config for logging (but don't require explicit OAuth config)
+	serverConfig := client.GetConfig()
+	hasExplicitOAuth := serverConfig != nil && serverConfig.OAuth != nil
+
+	// Clear token from persistent storage
+	// This works for both explicit OAuth config and discovered OAuth (server-announced)
+	if m.storageMgr != nil {
+		if err := m.storageMgr.ClearOAuthState(serverName); err != nil {
+			m.logger.Warn("Failed to clear OAuth state from storage",
+				zap.String("server", serverName),
+				zap.Bool("has_explicit_oauth", hasExplicitOAuth),
+				zap.Error(err))
+			// Continue - storage might not have the token
+		}
+	}
+
+	// Note: We don't need to clear in-memory OAuth state on the managed client
+	// because the managed client will pick up the cleared state from storage
+	// on the next connection attempt via DisconnectServer + reconnection flow.
+
+	m.logger.Info("OAuth token cleared",
+		zap.String("server", serverName),
+		zap.Bool("has_explicit_oauth", hasExplicitOAuth))
+
+	return nil
+}
+
+// DisconnectServer disconnects a specific server without removing its configuration.
+// This is used after OAuth logout to force re-authentication on next connect.
+func (m *Manager) DisconnectServer(serverName string) error {
+	m.mu.RLock()
+	client, exists := m.clients[serverName]
+	m.mu.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("server not found: %s", serverName)
+	}
+
+	// Disconnect the client
+	if err := client.Disconnect(); err != nil {
+		m.logger.Warn("Error during server disconnect",
+			zap.String("server", serverName),
+			zap.Error(err))
+		// Continue - we want to mark as disconnected regardless
+	}
+
+	m.logger.Info("Server disconnected",
+		zap.String("server", serverName))
+
+	return nil
+}
+
+// SetUserLoggedOut marks a server as explicitly logged out by the user.
+// This prevents automatic reconnection until the user explicitly logs in again.
+func (m *Manager) SetUserLoggedOut(serverName string, loggedOut bool) error {
+	m.mu.RLock()
+	client, exists := m.clients[serverName]
+	m.mu.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("server not found: %s", serverName)
+	}
+
+	client.SetUserLoggedOut(loggedOut)
+
+	m.logger.Info("Server user logged out state changed",
+		zap.String("server", serverName),
+		zap.Bool("logged_out", loggedOut))
+
+	return nil
+}
+
+// RefreshOAuthToken triggers a token refresh for a specific server.
+// This is called by the RefreshManager for proactive token refresh.
+//
+// OAuth detection checks both:
+// 1. Static config (serverConfig.OAuth) - for servers with pre-configured OAuth
+// 2. Database tokens - for servers using dynamic OAuth discovery (Protected Resource Metadata)
+func (m *Manager) RefreshOAuthToken(serverName string) error {
+	m.mu.RLock()
+	client, exists := m.clients[serverName]
+	m.mu.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("server not found: %s", serverName)
+	}
+
+	// Check if server uses OAuth via either static config or dynamic discovery
+	serverConfig := client.GetConfig()
+	hasStaticOAuth := serverConfig != nil && serverConfig.OAuth != nil
+
+	// Also check for OAuth tokens in the database (dynamic OAuth discovery)
+	// Servers like atlassian-remote, slack discover OAuth requirements at runtime
+	// via Protected Resource Metadata and store tokens without OAuth in static config
+	hasStoredTokens := false
+	if m.storage != nil && serverConfig != nil {
+		// IMPORTANT: Use GenerateServerKey to match how PersistentTokenStore stores tokens.
+		// Tokens are stored with key = SHA256(serverName|serverURL)[:16], not just serverName.
+		serverKey := oauth.GenerateServerKey(serverName, serverConfig.URL)
+		token, err := m.storage.GetOAuthToken(serverKey)
+		if err == nil && token != nil && token.RefreshToken != "" {
+			hasStoredTokens = true
+			m.logger.Debug("Found OAuth token in database for dynamic OAuth server",
+				zap.String("server", serverName),
+				zap.String("server_key", serverKey),
+				zap.Bool("has_refresh_token", token.RefreshToken != ""))
+		}
+	}
+
+	if !hasStaticOAuth && !hasStoredTokens {
+		return fmt.Errorf("server does not use OAuth: %s", serverName)
+	}
+
+	// Use direct token refresh to bypass ForceReconnect's early return when connected.
+	// ForceReconnect returns early if client is already connected, but we need to
+	// refresh the token proactively before it expires.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	err := client.RefreshOAuthTokenDirect(ctx)
+	if err != nil {
+		m.logger.Warn("Direct OAuth refresh failed, falling back to reconnect",
+			zap.String("server", serverName),
+			zap.Error(err))
+		// Fall back to reconnect for cases where direct refresh isn't available
+		// (e.g., server not connected, no OAuth handler)
+		client.ForceReconnect("oauth_token_refresh_fallback")
+		return err
+	}
+
+	m.logger.Info("OAuth token refresh completed successfully",
+		zap.String("server", serverName),
+		zap.Bool("has_static_oauth", hasStaticOAuth),
+		zap.Bool("has_stored_tokens", hasStoredTokens))
+
+	return nil
+}

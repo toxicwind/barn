@@ -161,3 +161,13 @@ tail -f ~/Library/Logs/mcpproxy/main.log  # main log (macOS; Linux: ~/.mcpproxy/
 - 098-tools-preflight: Added Go 1.24 module toolchain (repo builds with local Go 1.25) + existing only — chi (httpapi), bbolt (storage), Bleve (index), zap (logging), Cobra (CLI), swaggo/swag v2 (contract regen). **No new dependencies.**
 - 097-stored-scripts: Added Go 1.25 (os.Root/Root.ReadFile available — R1) + stdlib only (os.Root). **No new dependencies.**
 - 096-batched-call-tools: Added Go 1.24 module toolchain (repo builds with local Go 1.25) + existing only — goja (sandbox), mark3labs/mcp-go (tool surface), zap. **No new dependencies.**
+
+<!-- delendai:begin -->
+
+# delendai host hints (auto-generated)
+
+See `docs/delendai/host-hints/agent-instructions.generated.md` for the live agent catalog.
+
+- Bootstrap §8.2 (keep the main thread cheap) is in effect.
+
+<!-- delendai:end -->

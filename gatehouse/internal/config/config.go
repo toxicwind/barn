@@ -237,16 +237,6 @@ type Config struct {
 	CallToolTimeout    Duration `json:"call_tool_timeout" mapstructure:"call-tool-timeout" swaggertype:"string"`
 	MaxResultSizeChars int      `json:"max_result_size_chars,omitempty" mapstructure:"max-result-size-chars"` // Advertised on every tool as `_meta.anthropic/maxResultSizeChars`; raises Claude Code's inline-response ceiling from 50k to up to 500k chars. Set to 0 to disable.
 
-	// ToolsAllowDestructiveViaGenericCall lets a generic `call_tool` (and
-	// call_tool_write) invoke tools the server marks destructiveHint=true,
-	// instead of forcing the call through call_tool_destructive. This is the
-	// "just call the tool" knob for self-hosted/proprietary servers where the
-	// destructive-variant split is noise. When true, the intent-declaration
-	// mismatch that would otherwise reject a non-destructive variant on a
-	// destructive tool is skipped (a warning is still logged). Default: false,
-	// preserving upstream mcpproxy behavior. (estate fork: Gatehouse)
-	ToolsAllowDestructiveViaGenericCall bool `json:"tools_allow_destructive_via_generic_call,omitempty" mapstructure:"tools-allow-destructive-via-generic-call"`
-
 	// Concurrency limits (spec 093, GH #955). Scope (a) of FR-020: the GLOBAL
 	// AGGREGATE limiter — one proxy-wide cap on concurrently running upstream
 	// tool calls, with its own bounded wait queue. Tri-state pointers: absent =

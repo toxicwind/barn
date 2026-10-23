@@ -5848,7 +5848,7 @@ func (p *MCPProxyServer) validateIntentAgainstServer(
 	strict := p.config.IntentDeclaration.IsStrictServerValidation()
 
 	// Validate against server annotations
-	if err := intent.ValidateAgainstServerAnnotations(toolVariant, fmt.Sprintf("%s:%s", serverName, toolName), annotations, strict, p.config.ToolsAllowDestructiveViaGenericCall); err != nil {
+	if err := intent.ValidateAgainstServerAnnotations(toolVariant, fmt.Sprintf("%s:%s", serverName, toolName), annotations, strict); err != nil {
 		if strict {
 			return mcp.NewToolResultError(err.Message)
 		}
