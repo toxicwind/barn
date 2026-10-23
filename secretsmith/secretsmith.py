@@ -25,6 +25,7 @@ import base64
 import copy
 import json
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -704,6 +705,50 @@ def cmd_check(svc, a, registry, as_json):
     return 0 if result["ok"] else 1
 
 
+_SHELL_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _shell_quote(s):
+    return "'" + s.replace("'", "'\\''") + "'"
+
+
+def cmd_env(svc, a, registry, as_json):
+    """Drop-in env loader: emit `NAME='value'` exports for the app's keyring
+    secrets so `set -a; eval \"$(secretsmith env --app X)\"` auto-loads them
+    into an app's environment. `--app <service>` filters on the item's
+    `service=` attribute; extra `--attr k=v` narrow further. With no `--app`,
+    every item whose label is a valid shell identifier is exported (backward
+    compatible with the old dump-all helper). Labels that aren't valid shell
+    identifiers are skipped. Output is single-quoted and empty-safe."""
+    filters = {}
+    if getattr(a, "app", None):
+        filters["service"] = a.app
+    for k, v in parse_attrs(getattr(a, "attr", [])).items():
+        filters[k] = v
+    found = svc.search(filters, collection=getattr(a, "collection", None))
+    found = [it for it in found if _SHELL_IDENT.match(it.get("label") or "")]
+    if found:
+        svc.ensure_unlocked_items(found)
+    exports = {}
+    for it in found:
+        label = it["label"]
+        try:
+            secret, _ct = svc.get_secret(it["path"])
+        except SecretsmithError:
+            continue
+        try:
+            exports[label] = secret.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+    if as_json:
+        print(json.dumps({"app": getattr(a, "app", None), "count": len(exports),
+                          "exports": exports}, indent=2))
+    else:
+        for label in sorted(exports):
+            print("%s=%s" % (label, _shell_quote(exports[label])))
+    return 0 if exports else 1
+
+
 def cmd_chromium_key(svc, a, registry, as_json):
     secret, info = chromium_key_bytes(svc, registry)
     cands = _key_candidates(secret)
@@ -906,6 +951,14 @@ def build_parser():
     u.set_defaults(func=cmd_unlock)
 
     sub.add_parser("schemas", help="list the known-schema registry").set_defaults(func=cmd_schemas)
+    env = sub.add_parser("env", parents=[common],
+                         help="drop-in env loader: emit NAME='value' exports for an app's keyring secrets")
+    env.add_argument("--app", default="",
+                     help="filter items by their `service=` attribute (the app name); omit to dump all")
+    env.add_argument("--attr", action="append", default=[], metavar="k=v",
+                     help="additional attribute filter (repeatable)")
+    env.add_argument("--collection", help="collection label or path")
+    env.set_defaults(func=cmd_env)
     sub.add_parser("check", help="health check").set_defaults(func=cmd_check)
 
     ck = sub.add_parser("chromium-key", help="Chromium os_crypt key lookup via registry")

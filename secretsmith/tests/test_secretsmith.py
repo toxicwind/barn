@@ -86,6 +86,121 @@ class TestSafety(unittest.TestCase):
             ssm.parse_attrs(["bare"])
 
 
+class _FakeSvc:
+    """In-memory stub of SecretService for the env-loader unit test."""
+
+    def __init__(self, items):
+        self._items = items
+
+    def search(self, filters, collection=None):
+        out = []
+        for it in self._items:
+            if all(it["attributes"].get(k) == v for k, v in filters.items()):
+                out.append(it)
+        return out
+
+    def ensure_unlocked_items(self, items):
+        return
+
+    def get_secret(self, item_path):
+        for it in self._items:
+            if it["path"] == item_path:
+                return it["_secret"], "text/plain"
+        raise ssm.SecretsmithError("no such item")
+
+
+def _fake_item(label, secret, attrs=None):
+    return {
+        "label": label,
+        "path": "/x/" + label,
+        "locked": False,
+        "attributes": attrs or {},
+        "_secret": secret,
+    }
+
+
+def _env_args(app="", attr=(), as_json=False):
+    import types
+
+    a = types.SimpleNamespace(app=app, attr=list(attr), collection=None)
+    return a, as_json
+
+
+class TestEnvLoader(unittest.TestCase):
+    def test_app_filters_on_service_and_emits_exports(self):
+        a, as_json = _env_args(app="kappa")
+        svc = _FakeSvc([
+            _fake_item("KAPPA_SERVER_PASSWORD", b"s3cr3t", {"service": "kappa"}),
+            _fake_item("OTHER", b"x", {"service": "else"}),
+        ])
+        with _capture_stdout() as out:
+            rc = ssm.cmd_env(svc, a, ssm.load_registry(), as_json)
+        text = out.getvalue()
+        self.assertEqual(rc, 0)
+        self.assertIn("KAPPA_SERVER_PASSWORD='s3cr3t'", text)
+        self.assertNotIn("OTHER", text)
+        self.assertNotIn("else", text)
+
+    def test_invalid_identifier_label_skipped(self):
+        a, as_json = _env_args(app="kappa")
+        svc = _FakeSvc([
+            _fake_item("kappa-freeinference", b"x", {"service": "kappa"}),
+        ])
+        with _capture_stdout() as out:
+            rc = ssm.cmd_env(svc, a, ssm.load_registry(), as_json)
+        self.assertEqual(rc, 1)
+        self.assertEqual(out.getvalue(), "")
+
+    def test_quote_escaping(self):
+        a, as_json = _env_args()
+        svc = _FakeSvc([
+            _fake_item("QUOTED", b"it's got 'quotes'", {}),
+        ])
+        with _capture_stdout() as out:
+            rc = ssm.cmd_env(svc, a, ssm.load_registry(), as_json)
+        self.assertEqual(rc, 0)
+        self.assertEqual(out.getvalue(), "QUOTED='it'\\''s got '\\''quotes'\\'''\n")
+
+    def test_nontext_secret_skipped(self):
+        a, as_json = _env_args()
+        svc = _FakeSvc([
+            _fake_item("BINARY", b"\xff\xfe\x00secret", {}),
+        ])
+        with _capture_stdout() as out:
+            rc = ssm.cmd_env(svc, a, ssm.load_registry(), as_json)
+        self.assertEqual(rc, 1)
+        self.assertEqual(out.getvalue(), "")
+
+    def test_extra_attr_narrows(self):
+        a, as_json = _env_args(app="kappa", attr=["scope=prod"])
+        svc = _FakeSvc([
+            _fake_item("A", b"1", {"service": "kappa", "scope": "prod"}),
+            _fake_item("B", b"2", {"service": "kappa", "scope": "dev"}),
+        ])
+        with _capture_stdout() as out:
+            rc = ssm.cmd_env(svc, a, ssm.load_registry(), as_json)
+        text = out.getvalue()
+        self.assertEqual(rc, 0)
+        self.assertIn("A='1'", text)
+        self.assertNotIn("B", text)
+
+
+class _capture_stdout:
+    """Context manager capturing writes to sys.stdout."""
+
+    def __enter__(self):
+        import io
+
+        self._buf = io.StringIO()
+        self._old = sys.stdout
+        sys.stdout = self._buf
+        return self._buf
+
+    def __exit__(self, *exc):
+        sys.stdout = self._old
+        return False
+
+
 class TestKeyringIntegration(unittest.TestCase):
     """Live D-Bus integration against the real (unlocked) login collection.
     Gated on SSM_TEST_KEYRING=1. Uses a uniquely-named item, deletes it after.
