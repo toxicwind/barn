@@ -14,7 +14,11 @@ This tool reimplements and maximalizes secret-tool's D-Bus semantics in Python
   * Chromium/Chrome os_crypt pipeline: key lookup + Login Data / Cookies
     decryption (the real use case that started this)
   * safe defaults: secrets never printed without --show; values redacted in
-    listings and logs
+    listings and logs; os_crypt key material (secret_is_key schemas) is
+    never printed on any path -- check/attrs are metadata-only
+  * `exec` subcommand: run a command with secrets injected as env vars
+    (secrets never printed)
+  * `env` subcommand: resolve keyring items to env vars with alias expansion
   * `check` health command
 
 Exit codes: 0 ok, 1 runtime error, 2 usage error.
@@ -28,6 +32,7 @@ import os
 import re
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
@@ -70,6 +75,31 @@ def resolve_schema(name, registry):
         return entry["xdg:schema"], entry
     # raw schema string passthrough (warned at call site)
     return name, {"xdg:schema": name, "description": "unregistered raw schema"}
+
+
+def protected_schemas(registry):
+    """xdg:schema strings whose secrets must NEVER be printed.
+
+    Driven by the registry: any schema entry with secret_is_key: true
+    (Chromium's os_crypt Safe Storage entry) is display-protected on every
+    output path -- get --show, search --show, human and JSON alike. The key
+    is consumed internally by decrypt operations only; no flag can print it.
+    """
+    out = set()
+    for _name, entry in registry.get("schemas", {}).items():
+        if isinstance(entry, dict) and entry.get("secret_is_key"):
+            xs = entry.get("xdg:schema")
+            if xs:
+                out.add(xs)
+    return out
+
+
+def _refuse_protected(item, registry):
+    schema = (item.get("attributes") or {}).get("xdg:schema", "")
+    if schema in protected_schemas(registry):
+        raise SecretsmithError(
+            "refusing to display secret for schema %r: os_crypt key material "
+            "is never printed (check/attrs report metadata only)" % schema)
 
 
 def redact(nbytes):
@@ -405,6 +435,81 @@ def chromium_cookies(svc, registry, profile_dir):
                     "value": dec, "decrypted": ok, "source": "encrypted"})
     return out
 
+# -- Alias map ----------------------------------------------------------------
+
+def _load_alias_map(config_dir=None):
+    """Load alias map from ~/.config/secretsmith/aliases.toml (or TOML/json).
+
+    Format: [aliases]  GH_TOKEN = "GITHUB_TOKEN"  etc.
+    Returns dict {alias_name: canonical_label}.
+    """
+    if config_dir is None:
+        config_dir = os.path.join(os.path.expanduser("~"), ".config", "secretsmith")
+    for fname in ("aliases.toml", "aliases.json"):
+        fpath = os.path.join(config_dir, fname)
+        if not os.path.exists(fpath):
+            continue
+        try:
+            with open(fpath, "rb" if fname.endswith(".toml") else "r") as f:
+                data = json.load(f) if fname.endswith(".json") else _load_toml(fpath)
+            aliases = data.get("aliases", {})
+            if not isinstance(aliases, dict):
+                aliases = {}
+            return aliases
+        except (OSError, ValueError) as e:
+            print("warning: cannot load alias map %s: %s" % (fpath, e), file=sys.stderr)
+            return {}
+    return {}
+
+
+def _load_toml(fpath):
+    """Minimal TOML loader for aliases.toml (handles [aliases] + key = "value")."""
+    import importlib
+    try:
+        tomllib = importlib.import_module("tomllib")  # 3.11+
+    except ImportError:
+        try:
+            import tomli as _tl
+            tomllib = _tl
+        except ImportError:
+            # Fallback: simple parser for flat [aliases] sections
+            return _simple_toml_load(fpath)
+    with open(fpath, "rb") as f:
+        return tomllib.load(f)
+
+
+def _simple_toml_load(fpath):
+    """Minimal TOML parser for the aliases.toml format."""
+    import re
+    aliases = {}
+    in_aliases = False
+    with open(fpath) as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith("[") and line.endswith("]"):
+                in_aliases = (line[1:-1].strip() == "aliases")
+                continue
+            if in_aliases and "=" in line and not line.startswith("#"):
+                key, _, val = line.partition("=")
+                key = key.strip()
+                val = val.strip().strip('"').strip("'")
+                if key and val:
+                    aliases[key] = val
+    return {"aliases": aliases}
+
+
+def _resolve_alias(aliases, env_name):
+    """Resolve an env var name through the alias map.
+
+    Returns (canonical_label, is_alias).
+    If env_name is in aliases, returns (aliases[env_name], True).
+    Otherwise returns (env_name, False).
+    """
+    if env_name in aliases:
+        return aliases[env_name], True
+    return env_name, False
+
+
 # -- CLI ------------------------------------------------------------------------
 
 def parse_attrs(pairs):
@@ -446,6 +551,8 @@ def cmd_search(svc, a, registry, as_json):
     found = svc.search(filters, collection=a.collection,
                        label=getattr(a, "label", None), query=getattr(a, "query", None))
     if a.show:
+        for it in found:
+            _refuse_protected(it, registry)
         svc.ensure_unlocked_items(found)
         for it in found:
             secret, _ct = svc.get_secret(it["path"])
@@ -480,14 +587,14 @@ def _is_text(b):
 
 def cmd_get(svc, a, registry, as_json):
     filters = parse_attrs(a.attr)
-    if not filters and not getattr(a, "label", None):
-        raise SecretsmithError("specify --label or at least one --attr k=v")
     found = svc.search(filters, collection=a.collection, label=getattr(a, "label", None))
     if not found:
         raise SecretsmithError("no item matches %r" % filters)
     if len(found) > 1:
         raise SecretsmithError("%d items match %r — refine attributes" % (len(found), filters))
     it = found[0]
+    if a.show:
+        _refuse_protected(it, registry)
     svc.ensure_unlocked_items([it])
     secret, content_type = svc.get_secret(it["path"])
     if as_json:
@@ -510,6 +617,7 @@ def cmd_get(svc, a, registry, as_json):
         else:
             print("secret: %s  (use --show to print)" % redact(len(secret)))
     return 0
+
 
 def read_secret_input(a):
     if a.secret_file:
@@ -535,7 +643,16 @@ def cmd_set(svc, a, registry, as_json):
         if not colls:
             raise SecretsmithError("no collections exist — create one first")
         collection = colls[0]["label"]
-    path = svc.set_item(collection, a.label, attrs, secret, replace=a.replace)
+    # `--replace` means "replace by LABEL", not "replace by identical attributes".
+    # libsecret's CreateItem(replace=True) only overwrites an item whose
+    # attributes EXACTLY match the incoming ones; when they differ it creates a
+    # fresh item, silently leaving a duplicate label (the 2026-10-24
+    # GITHUB_TOKEN duplication root cause). Delete existing same-label items
+    # first, then create one fresh item with the caller's attributes.
+    if a.replace:
+        for it in svc.search({}, collection=collection, label=a.label):
+            svc.delete_item(it["path"])
+    path = svc.set_item(collection, a.label, attrs, secret, replace=False)
     if as_json:
         print(json.dumps({"stored": True, "path": path, "label": a.label,
                           "attributes": attrs}, indent=2))
@@ -546,8 +663,6 @@ def cmd_set(svc, a, registry, as_json):
 
 def cmd_delete(svc, a, registry, as_json):
     filters = parse_attrs(a.attr)
-    if not filters and not getattr(a, "label", None):
-        raise SecretsmithError("specify --label or at least one --attr k=v")
     found = svc.search(filters, collection=a.collection, label=getattr(a, "label", None))
     if not found:
         raise SecretsmithError("no item matches %r" % filters)
@@ -609,7 +724,6 @@ def _resolve_targets(svc, targets, kind):
     paths = []
     for t in targets:
         if kind == "collection" or not t.startswith("/"):
-            # allow item paths too for lock/unlock
             try:
                 paths.append(svc.resolve_collection(t))
                 continue
@@ -713,40 +827,178 @@ def _shell_quote(s):
 
 
 def cmd_env(svc, a, registry, as_json):
-    """Drop-in env loader: emit `NAME='value'` exports for the app's keyring
-    secrets so `set -a; eval \"$(secretsmith env --app X)\"` auto-loads them
-    into an app's environment. `--app <service>` filters on the item's
-    `service=` attribute; extra `--attr k=v` narrow further. With no `--app`,
-    every item whose label is a valid shell identifier is exported (backward
-    compatible with the old dump-all helper). Labels that aren't valid shell
-    identifiers are skipped. Output is single-quoted and empty-safe."""
-    filters = {}
-    if getattr(a, "app", None):
-        filters["service"] = a.app
-    for k, v in parse_attrs(getattr(a, "attr", [])).items():
-        filters[k] = v
-    found = svc.search(filters, collection=getattr(a, "collection", None))
-    found = [it for it in found if _SHELL_IDENT.match(it.get("label") or "")]
-    if found:
-        svc.ensure_unlocked_items(found)
+    """Drop-in env loader with alias expansion support.
+
+    If --env specs are given, resolves each VAR=k=v[,k2=v2...] against the keyring.
+    With --alias-map (default: ~/.config/secretsmith/aliases.toml), env names that
+    are aliases expand to their canonical label and are injected too.
+    With --all (and no --env), exports every keyring item whose label is a valid
+    shell identifier, expanded through the alias map.
+    """
+    aliases = _load_alias_map(getattr(a, "alias_map", None) or None)
     exports = {}
-    for it in found:
-        label = it["label"]
-        try:
+
+    if getattr(a, "env", None):
+        # --env mode: resolve explicit VAR=k=v specs
+        for spec in a.env:
+            if "=" not in spec:
+                raise SecretsmithError("env spec must be VAR=k=v[,k2=v2...], got %r" % spec)
+            var, attrspec = spec.split("=", 1)
+            if not var.isidentifier():
+                raise SecretsmithError("env var name %r is not a valid identifier" % var)
+            canonical, is_alias = _resolve_alias(aliases, var)
+            filters = parse_attrs(attrspec.split(","))
+            found = svc.search(filters, collection=getattr(a, "collection", None), label=canonical)
+            if not found:
+                raise SecretsmithError("no item matches %r" % filters)
+            if len(found) > 1:
+                raise SecretsmithError("%d items match %r — refine attributes" % (len(found), filters))
+            it = found[0]
+            _refuse_protected(it, registry)
+            svc.ensure_unlocked_items([it])
             secret, _ct = svc.get_secret(it["path"])
-        except SecretsmithError:
-            continue
-        try:
-            exports[label] = secret.decode("utf-8")
-        except UnicodeDecodeError:
-            continue
+            value = secret.decode("utf-8", "replace")
+            exports[var] = value
+            # Also inject the canonical name if not already present
+            if canonical != var and canonical not in exports:
+                exports[canonical] = value
+            # Inject all other aliases that point to the same canonical
+            for alias_name, alias_canon in aliases.items():
+                if alias_canon == canonical and alias_name != var and alias_name not in exports:
+                    exports[alias_name] = value
+    elif getattr(a, "all", False):
+        # --all mode: every keyring item, expanded through alias map
+        found = svc.search({}, collection=getattr(a, "collection", None))
+        found = [it for it in found if _SHELL_IDENT.match(it.get("label") or "")]
+        if found:
+            svc.ensure_unlocked_items(found)
+        for it in found:
+            label = it["label"]
+            if label in aliases:
+                continue  # skip alias labels
+            try:
+                secret, _ct = svc.get_secret(it["path"])
+            except SecretsmithError:
+                continue
+            try:
+                exports[label] = secret.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            # Inject aliases for this canonical label
+            for alias_name, alias_canon in aliases.items():
+                if alias_canon == label and alias_name not in exports:
+                    exports[alias_name] = secret.decode("utf-8")
+    else:
+        # Backward compatible: dump all items with valid identifier labels
+        found = svc.search({}, collection=getattr(a, "collection", None))
+        filters = parse_attrs(getattr(a, "attr", []))
+        if filters:
+            found = [it for it in found if all(
+                it["attributes"].get(k) == v for k, v in filters.items())]
+        if getattr(a, "app", None):
+            found = [it for it in found if it["attributes"].get("service") == a.app]
+        found = [it for it in found if _SHELL_IDENT.match(it.get("label") or "")]
+        if found:
+            svc.ensure_unlocked_items(found)
+        for it in found:
+            label = it["label"]
+            try:
+                secret, _ct = svc.get_secret(it["path"])
+            except SecretsmithError:
+                continue
+            try:
+                exports[label] = secret.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            for alias_name, alias_canon in aliases.items():
+                if alias_canon == label and alias_name not in exports:
+                    exports[alias_name] = secret.decode("utf-8")
+
     if as_json:
-        print(json.dumps({"app": getattr(a, "app", None), "count": len(exports),
-                          "exports": exports}, indent=2))
+        print(json.dumps({"count": len(exports), "exports": exports}, indent=2))
     else:
         for label in sorted(exports):
             print("%s=%s" % (label, _shell_quote(exports[label])))
     return 0 if exports else 1
+
+
+def cmd_exec(svc, a, registry, as_json):
+    """Run cmd with secrets injected as env vars. Secrets are never printed."""
+    aliases = _load_alias_map(getattr(a, "alias_map", None) or None)
+    env = dict(os.environ)
+
+    if getattr(a, "env", None):
+        # --env mode: resolve explicit VAR=k=v specs
+        for spec in a.env:
+            if "=" not in spec:
+                raise SecretsmithError("env spec must be VAR=k=v[,k2=v2...], got %r" % spec)
+            var, attrspec = spec.split("=", 1)
+            if not var.isidentifier():
+                raise SecretsmithError("env var name %r is not a valid identifier" % var)
+            canonical, is_alias = _resolve_alias(aliases, var)
+            filters = parse_attrs(attrspec.split(","))
+            found = svc.search(filters, collection=getattr(a, "collection", None), label=canonical)
+            if not found:
+                raise SecretsmithError("no item matches %r" % filters)
+            if len(found) > 1:
+                raise SecretsmithError("%d items match %r — refine attributes" % (len(found), filters))
+            it = found[0]
+            _refuse_protected(it, registry)
+            svc.ensure_unlocked_items([it])
+            secret, _ct = svc.get_secret(it["path"])
+            value = secret.decode("utf-8", "replace")
+            env[var] = value
+            if canonical != var and canonical not in env:
+                env[canonical] = value
+            for alias_name, alias_canon in aliases.items():
+                if alias_canon == canonical and alias_name != var and alias_name not in env:
+                    env[alias_name] = value
+    elif getattr(a, "only", None):
+        # --only NAME… mode: inject specific env names from the alias map
+        for env_name in a.only:
+            canonical, _is_alias = _resolve_alias(aliases, env_name)
+            found = svc.search({}, collection=getattr(a, "collection", None), label=canonical)
+            if not found:
+                print("warning: no item for %r (label=%r), skipping" % (env_name, canonical),
+                      file=sys.stderr)
+                continue
+            it = found[0]
+            svc.ensure_unlocked_items([it])
+            secret, _ct = svc.get_secret(it["path"])
+            env[env_name] = secret.decode("utf-8", "replace")
+    elif getattr(a, "all", False):
+        # --all mode: inject every keyring item expanded through alias map
+        found = svc.search({}, collection=getattr(a, "collection", None))
+        found = [it for it in found if _SHELL_IDENT.match(it.get("label") or "")]
+        if found:
+            svc.ensure_unlocked_items(found)
+        for it in found:
+            label = it["label"]
+            if label in aliases:
+                continue
+            try:
+                secret, _ct = svc.get_secret(it["path"])
+            except SecretsmithError:
+                continue
+            env[label] = secret.decode("utf-8", "replace")
+            for alias_name, alias_canon in aliases.items():
+                if alias_canon == label and alias_name not in env:
+                    env[alias_name] = secret.decode("utf-8", "replace")
+    else:
+        raise SecretsmithError("specify --env VAR=k=v, --only NAME, or --all")
+
+    if getattr(a, "print_env_names", False):
+        for name in sorted(env.keys()):
+            if name in os.environ and env[name] == os.environ[name]:
+                continue
+            print(name)
+        return 0
+
+    try:
+        proc = subprocess.run(a.command, env=env)
+    except FileNotFoundError as e:
+        raise SecretsmithError("cannot exec %r: %s" % (a.command[0], e))
+    return proc.returncode
 
 
 def cmd_chromium_key(svc, a, registry, as_json):
@@ -809,7 +1061,6 @@ def cmd_chromium_cookies(svc, a, registry, as_json):
 
 
 def cmd_bitwarden_status(svc, a, registry, as_json):
-    """Query Bitwarden CLI status."""
     import subprocess
     try:
         res = subprocess.run(["bw", "status"], capture_output=True, text=True, timeout=5)
@@ -824,7 +1075,6 @@ def cmd_bitwarden_status(svc, a, registry, as_json):
 
 
 def cmd_bitwarden_get(svc, a, registry, as_json):
-    """Retrieve an item from Bitwarden CLI, falling back to Secret Service."""
     import subprocess
     session = os.environ.get("BW_SESSION")
     cmd = ["bw", "get", a.item_type, a.id_or_name]
@@ -843,8 +1093,6 @@ def cmd_bitwarden_get(svc, a, registry, as_json):
             err = res.stderr.strip()
     except Exception as e:
         err = str(e)
-
-    # Fallback to Secret Service
     items = svc.search({"name": a.id_or_name})
     if not items:
         print("secretsmith: bitwarden/secrets error: %s" % err, file=sys.stderr)
@@ -859,7 +1107,6 @@ def cmd_bitwarden_get(svc, a, registry, as_json):
 
 
 def cmd_cookie_vault_sync(svc, a, registry, as_json):
-    """Synchronize Firefox and Keeper cookies via cookie-vault utility."""
     import subprocess
     cookie_vault_bin = "/home/toxic/estate/ranch/barn/browserless/bin/cookie-vault.ts"
     subcmd = a.vault_action or "sync"
@@ -881,10 +1128,7 @@ def build_parser():
                                 description="maximal freedesktop Secret Service CLI")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    # Common flags live in a parent parser so they work BOTH before the
-    # subcommand (secretsmith --show get ...) and after it (secretsmith get
-    # ... --show). Previously they were only on the root parser, so the
-    # natural post-subcommand placement died with "unrecognized arguments".
+    # Common flags work BOTH before and after the subcommand
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--bus", help="D-Bus session bus address (default: $DBUS_SESSION_BUS_ADDRESS)")
     common.add_argument("--json", action="store_true", help="JSON output for everything")
@@ -896,7 +1140,7 @@ def build_parser():
                    help="print secret values (never printed without this flag)")
 
     s = sub.add_parser("search", parents=[common],
-                       help="search items by attributes / label / free-text query (all schemas by default)")
+                       help="search items by attributes / label / free-text query")
     s.add_argument("query", nargs="?", help="free-text match against label and attributes")
     s.add_argument("--schema", help="friendly schema name from registry (or raw xdg:schema)")
     s.add_argument("--label", help="exact item label match")
@@ -951,14 +1195,39 @@ def build_parser():
     u.set_defaults(func=cmd_unlock)
 
     sub.add_parser("schemas", help="list the known-schema registry").set_defaults(func=cmd_schemas)
-    env = sub.add_parser("env", parents=[common],
-                         help="drop-in env loader: emit NAME='value' exports for an app's keyring secrets")
-    env.add_argument("--app", default="",
-                     help="filter items by their `service=` attribute (the app name); omit to dump all")
-    env.add_argument("--attr", action="append", default=[], metavar="k=v",
-                     help="additional attribute filter (repeatable)")
-    env.add_argument("--collection", help="collection label or path")
-    env.set_defaults(func=cmd_env)
+
+    # env subcommand: drop-in env loader with alias expansion
+    env_p = sub.add_parser("env", parents=[common],
+                         help="drop-in env loader: emit NAME='value' exports")
+    env_p.add_argument("--env", action="append", metavar="VAR=k=v[,k2=v2...]",
+                       help="resolve one keyring item to an env var; repeatable")
+    env_p.add_argument("--app", default="",
+                       help="filter items by their `service=` attribute (only without --env)")
+    env_p.add_argument("--attr", action="append", default=[], metavar="k=v",
+                       help="additional attribute filter (only without --env)")
+    env_p.add_argument("--collection", help="collection label or path")
+    env_p.add_argument("--all", action="store_true",
+                       help="export every keyring item (expanded through alias map)")
+    env_p.add_argument("--alias-map", default="",
+                       help="path to aliases.toml/json config dir (default: ~/.config/secretsmith)")
+    env_p.set_defaults(func=cmd_env)
+
+    # exec subcommand: run a command with secrets injected as env vars
+    exec_p = sub.add_parser("exec", help="run a command with secrets injected as env vars (secrets never printed)")
+    exec_p.add_argument("--env", action="append", metavar="VAR=k=v[,k2=v2...]",
+                       help="resolve one keyring item to an env var; repeatable")
+    exec_p.add_argument("--only", action="append", metavar="NAME",
+                       help="inject only these env var names (expanded through alias map)")
+    exec_p.add_argument("--all", action="store_true",
+                       help="inject every keyring item (expanded through alias map)")
+    exec_p.add_argument("--collection", help="restrict search to a collection")
+    exec_p.add_argument("--alias-map", default="",
+                       help="path to aliases.toml/json config dir (default: ~/.config/secretsmith)")
+    exec_p.add_argument("--print-env-names", action="store_true",
+                       help="print only the env var names that would be injected (diagnostics)")
+    exec_p.add_argument("command", nargs="+", help="command to run with the injected environment")
+    exec_p.set_defaults(func=cmd_exec)
+
     sub.add_parser("check", help="health check").set_defaults(func=cmd_check)
 
     ck = sub.add_parser("chromium-key", help="Chromium os_crypt key lookup via registry")
@@ -972,16 +1241,14 @@ def build_parser():
     cc2.add_argument("--profile-dir", default="")
     cc2.set_defaults(func=cmd_chromium_cookies)
 
-    # First-class Bitwarden integration
     bw_p = sub.add_parser("bw-status", help="check Bitwarden vault status")
     bw_p.set_defaults(func=cmd_bitwarden_status)
 
-    bw_g = sub.add_parser("bw-get", help="retrieve Bitwarden secret (password/item/username) with Secret Service fallback")
+    bw_g = sub.add_parser("bw-get", help="retrieve Bitwarden secret with Secret Service fallback")
     bw_g.add_argument("item_type", choices=["password", "username", "item", "totp", "notes"])
     bw_g.add_argument("id_or_name", help="item name or ID")
     bw_g.set_defaults(func=cmd_bitwarden_get)
 
-    # First-class Cookie Vault integration
     cv = sub.add_parser("cookie-vault", help="cookie-vault sync/grab/restore integration")
     cv.add_argument("vault_action", nargs="?", default="sync", choices=["sync", "grab-firefox", "grab-keeper", "restore-keeper", "status"])
     cv.set_defaults(func=cmd_cookie_vault_sync)
@@ -991,8 +1258,7 @@ def build_parser():
 
 def main(argv=None):
     a = build_parser().parse_args(argv)
-    # Reconcile flags given BEFORE the subcommand with those given AFTER it:
-    # subparser defaults would otherwise clobber the root-parsed values.
+    # Reconcile flags given BEFORE the subcommand with those given AFTER it
     a.bus = getattr(a, "bus", None) or getattr(a, "root_bus", None)
     a.json = getattr(a, "json", None) or getattr(a, "root_json", False)
     a.show = getattr(a, "show", None) or getattr(a, "root_show", False)

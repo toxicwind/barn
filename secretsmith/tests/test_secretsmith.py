@@ -6,6 +6,7 @@ import base64
 import json
 import os
 import sys
+import types
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -92,11 +93,16 @@ class _FakeSvc:
     def __init__(self, items):
         self._items = items
 
-    def search(self, filters, collection=None):
+    def search(self, filters, collection=None, label=None):
         out = []
         for it in self._items:
-            if all(it["attributes"].get(k) == v for k, v in filters.items()):
-                out.append(it)
+            # Handle "label" in filters by checking item["label"] not attributes
+            eff = {k: v for k, v in filters.items() if k != "label"}
+            if not all(it["attributes"].get(k) == v for k, v in eff.items()):
+                continue
+            if label is not None and it.get("label") != label:
+                continue
+            out.append(it)
         return out
 
     def ensure_unlocked_items(self, items):
@@ -120,7 +126,6 @@ def _fake_item(label, secret, attrs=None):
 
 
 def _env_args(app="", attr=(), as_json=False):
-    import types
 
     a = types.SimpleNamespace(app=app, attr=list(attr), collection=None)
     return a, as_json
@@ -185,6 +190,136 @@ class TestEnvLoader(unittest.TestCase):
         self.assertNotIn("B", text)
 
 
+class TestAliasMap(unittest.TestCase):
+    """Test the alias map loading and resolution."""
+
+    def test_resolve_alias_identity(self):
+        aliases = {}
+        self.assertEqual(ssm._resolve_alias(aliases, "GITHUB_TOKEN"), ("GITHUB_TOKEN", False))
+
+    def test_resolve_alias_map(self):
+        aliases = {"GH_TOKEN": "GITHUB_TOKEN", "GITHUB_PAT": "GITHUB_TOKEN"}
+        self.assertEqual(ssm._resolve_alias(aliases, "GH_TOKEN"), ("GITHUB_TOKEN", True))
+        self.assertEqual(ssm._resolve_alias(aliases, "GITHUB_PAT"), ("GITHUB_TOKEN", True))
+        self.assertEqual(ssm._resolve_alias(aliases, "GITHUB_TOKEN"), ("GITHUB_TOKEN", False))
+
+    def test_simple_toml_load(self):
+        import tempfile
+        content = '[aliases]\nGH_TOKEN = "GITHUB_TOKEN"\nGITHUB_PAT = "GITHUB_TOKEN"\n'
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.toml', delete=False) as f:
+            f.write(content)
+            tmp = f.name
+        try:
+            result = ssm._simple_toml_load(tmp)
+            self.assertEqual(result, {"aliases": {"GH_TOKEN": "GITHUB_TOKEN", "GITHUB_PAT": "GITHUB_TOKEN"}})
+        finally:
+            os.unlink(tmp)
+
+
+class TestProtectedSchema(unittest.TestCase):
+    """Test that os_crypt key secrets are never printed."""
+
+    def test_refuse_protected(self):
+        reg = ssm.load_registry()
+        item = {"attributes": {"xdg:schema": "chrome_libsecret_os_crypt_password_v2"}}
+        with self.assertRaises(ssm.SecretsmithError) as ctx:
+            ssm._refuse_protected(item, reg)
+        self.assertIn("os_crypt key material", str(ctx.exception))
+
+    def test_refuse_protected_unregistered_schema_passes(self):
+        reg = ssm.load_registry()
+        item = {"attributes": {"xdg:schema": "org.freedesktop.Secret.Generic"}}
+        ssm._refuse_protected(item, reg)
+
+
+class TestEnvAliasExpansion(unittest.TestCase):
+    """Test that --env mode expands aliases and injects canonical + all aliases."""
+
+    def test_env_alias_injects_canonical_and_alias(self):
+        a = types.SimpleNamespace(
+            env=["GH_TOKEN=label=GITHUB_TOKEN"], collection=None, app="", attr=[],
+            all=False, alias_map=None
+        )
+        svc = _FakeSvc([_fake_item("GITHUB_TOKEN", b"token123", {})])
+        with _capture_stdout() as out:
+            rc = ssm.cmd_env(svc, a, ssm.load_registry(), False)
+        self.assertEqual(rc, 0)
+        text = out.getvalue()
+        self.assertIn("GH_TOKEN=", text)
+        self.assertIn("GITHUB_TOKEN=", text)
+        self.assertIn("token123", text)
+
+    def test_env_canonical_injects_aliases(self):
+        a = types.SimpleNamespace(
+            env=["GITHUB_TOKEN=label=GITHUB_TOKEN"], collection=None, app="", attr=[],
+            all=False, alias_map=None
+        )
+        svc = _FakeSvc([_fake_item("GITHUB_TOKEN", b"token123", {})])
+        with _capture_stdout() as out:
+            rc = ssm.cmd_env(svc, a, ssm.load_registry(), False)
+        self.assertEqual(rc, 0)
+        text = out.getvalue()
+        self.assertIn("GITHUB_TOKEN=", text)
+
+    def test_env_alias_map_inject_all_aliases(self):
+        import tempfile, shutil
+        td = tempfile.mkdtemp()
+        with open(os.path.join(td, "aliases.toml"), "w") as f:
+            f.write('[aliases]\nGH_TOKEN = "GITHUB_TOKEN"\nGITHUB_PAT = "GITHUB_TOKEN"\n')
+        try:
+            a = types.SimpleNamespace(
+                env=["GH_TOKEN=label=GITHUB_TOKEN"], collection=None, app="", attr=[],
+                all=False, alias_map=td
+            )
+            svc = _FakeSvc([_fake_item("GITHUB_TOKEN", b"token123", {})])
+            with _capture_stdout() as out:
+                rc = ssm.cmd_env(svc, a, ssm.load_registry(), False)
+            self.assertEqual(rc, 0)
+            text = out.getvalue()
+            self.assertIn("GH_TOKEN=", text)
+            self.assertIn("GITHUB_TOKEN=", text)
+            self.assertIn("GITHUB_PAT=", text)
+            self.assertIn("token123", text)
+        finally:
+            shutil.rmtree(td)
+
+
+class TestExecMode(unittest.TestCase):
+    """Test exec mode alias resolution and diagnostic output."""
+
+    def test_exec_resolve_alias(self):
+        aliases = {"MY_VAR": "GITHUB_TOKEN"}
+        canonical, is_alias = ssm._resolve_alias(aliases, "MY_VAR")
+        self.assertEqual(canonical, "GITHUB_TOKEN")
+        self.assertTrue(is_alias)
+
+    def test_print_env_names_works(self):
+        a = types.SimpleNamespace(
+            env=["GITHUB_TOKEN=label=GITHUB_TOKEN"],
+            collection=None, only=None, all=False,
+            print_env_names=True, alias_map=None, command=["echo"]
+        )
+        svc = _FakeSvc([_fake_item("GITHUB_TOKEN", b"secret", {})])
+        with _capture_stdout() as out:
+            rc = ssm.cmd_exec(svc, a, ssm.load_registry(), False)
+        self.assertEqual(rc, 0)
+        self.assertIn("GITHUB_TOKEN", out.getvalue())
+
+
+class TestBackwardCompat(unittest.TestCase):
+    """Ensure old cmd_env calls (without --env, --all, --alias_map) still work."""
+
+    def test_legacy_env_dump_still_works(self):
+        a = types.SimpleNamespace(app="test", attr=[], collection=None)
+        svc = _FakeSvc([
+            _fake_item("TEST_API_KEY", b"abc123", {"service": "test"}),
+        ])
+        with _capture_stdout() as out:
+            rc = ssm.cmd_env(svc, a, ssm.load_registry(), False)
+        self.assertEqual(rc, 0)
+        self.assertIn("TEST_API_KEY='abc123'", out.getvalue())
+
+
 class _capture_stdout:
     """Context manager capturing writes to sys.stdout."""
 
@@ -236,7 +371,6 @@ class TestKeyringIntegration(unittest.TestCase):
     def test_chromium_entry_visible(self):
         schema, _ = ssm.resolve_schema("chromium", self.reg)
         found = self.svc.search({"xdg:schema": schema})
-        # the estate's Chromium Safe Storage entry must be findable via registry
         self.assertTrue(found, "Chromium Safe Storage entry not found via registry")
 
     def test_collection_create_delete(self):
