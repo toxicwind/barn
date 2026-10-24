@@ -35,6 +35,31 @@ Fork lineage: [GNOME/libsecret](https://github.com/GNOME/libsecret)
   delete, prompt-aware unlock waits
 - **JSON mode for everything** — pipe any command into `jq`
 
+## Autoload: secrets into a command, without printing them
+
+The keyring is the SSOT for credentials. Two primitives inject a secret into a
+single command's environment — nothing is ever printed to stdout:
+
+```bash
+secretsmith exec --only GITHUB_TOKEN -- git push origin main
+secret-run GITHUB_TOKEN -- git push origin main     # shell helper (bash-2s-shim.sh)
+```
+
+Resolution happens on **every** invocation — there is no TTL cache, so a rotated
+or expired token can never be resurrected from a stale cache file.
+
+`--env VAR=label=VALUE` selects one item by attribute filter (`label=` matches the
+item's label, `service=` matches its `service` attribute). `--only NAME` resolves
+NAME through the alias map first, then looks it up by canonical label. `--all`
+injects every item whose label is a valid shell identifier.
+
+Rotating a token? Use the label-scoped `--replace`, which deletes every same-label
+item before creating one:
+
+```bash
+printf '%s' "$NEW_TOKEN" | secretsmith set --label GITHUB_TOKEN --replace
+```
+
 ## Architecture
 
 ```mermaid
@@ -52,7 +77,7 @@ flowchart LR
 
 ```bash
 # install (single file + launcher)
-ln -sf /home/toxic/estate/ranch/barn/secretsmith/bin/secretsmith ~/.local/bin/secretsmith
+ln -sf /home/toxic/pens/barn/secretsmith/bin/secretsmith ~/.local/bin/secretsmith
 
 # deps: python3, dbus-python, cryptography (Chromium pipeline only)
 secretsmith check          # all green = service up, keyring unlocked, Chromium readable
@@ -87,6 +112,21 @@ secretsmith --json get --label "my api key"     # ...and before it
 # store (secret from stdin or --secret-file; never from argv)
 echo -n "s3cr3t" | secretsmith set --label "my api key" --attr service=example
 secretsmith set --label k --attr service=ex --secret-file /run/key --replace
+
+# label-scoped --replace: deletes EVERY same-label item, then creates one.
+# Use this to rotate a token without leaving a duplicate behind.
+printf '%s' "$NEW_TOKEN" | secretsmith set --label GITHUB_TOKEN --replace
+
+# env: dump the keyring as shell-safe NAME='value' lines (alias-expanded)
+secretsmith env --all                 # every item with a valid identifier label
+secretsmith env --env GH_TOKEN=label=GITHUB_TOKEN   # one item, explicit attrs
+set -a; eval "$(secretsmith env --all)"; set +a
+
+# exec: run a command with secrets injected as env vars (never printed)
+secretsmith exec --only GITHUB_TOKEN -- git push origin main
+secretsmith exec --env GH_TOKEN=label=GITHUB_TOKEN -- gh api user
+secretsmith exec --all -- ./my-tool
+secretsmith exec --print-env-names --only GITHUB_TOKEN -- env   # diagnostics
 
 # delete (two-step unless --yes)
 secretsmith delete --attr service=example --yes
@@ -128,6 +168,7 @@ secretsmith --json search --schema chromium
 | Schema registry | `schemas.json` | friendly names → `xdg:schema`; `chrome` aliases `chromium`; unregistered schemas work but warn |
 | Keyring | GNOME Keyring / `org.freedesktop.secrets` | must be unlocked for secret reads (CLI waits ≤15 s for unlock) |
 | Chromium profiles | `~/.config/chromium` | override with `--profile-dir` |
+| Alias map | `~/.config/secretsmith/aliases.toml` | `[aliases]` section maps a name to a canonical label, e.g. `GH_TOKEN = "GITHUB_TOKEN"`. `--only`/`--env`/`--all` expand through it; `--alias-map DIR` overrides the location |
 
 ## Development
 
