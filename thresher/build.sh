@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # build.sh — vendored gatehouse (mcpproxy-go) build.
-# Produces bin/gatehouse (the `serve` gateway binary) from the vendored
+# Produces bin/thresher (the `serve` gateway binary) from the vendored
 # mcpproxy-go source under ./vendor. No pinned fork binary: the estate
 # gateway is built from the vendored source, forward-only.
 set -euo pipefail
@@ -14,7 +14,7 @@ VENDOR="${1:-vendor}"
 mkdir -p "$VENDOR/web/frontend/dist"
 touch "$VENDOR/web/frontend/dist/.gitkeep"
 
-echo "building gatehouse from vendored mcpproxy-go..."
-(cd "$VENDOR" && go build -o "$(readlink -f ..)/bin/gatehouse" ./cmd/mcpproxy)
-echo "done: bin/gatehouse ($(du -h bin/gatehouse | cut -f1))"
-bin/gatehouse --version
+echo "building thresher from vendored mcpproxy-go..."
+(cd "$VENDOR" && go build -o "$(readlink -f ..)/bin/thresher" ./cmd/mcpproxy)
+echo "done: bin/thresher ($(du -h bin/thresher | cut -f1))"
+bin/thresher --version
