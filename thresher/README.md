@@ -1,7 +1,7 @@
 # thresher — estate MCP federation fork (barn product)
 
 **Thresher** is the estate's fork of [`smart-mcp-proxy/mcpproxy-go`](https://github.com/smart-mcp-proxy/mcpproxy-go)
-(the upstream project historically branded *MCPProxy* / *Nexus*). It is the
+(the upstream project originally shipped as MCPProxy). It is the
 MCP control surface for the whole box: it federates ~55 upstream MCP servers,
 discovers their tools with BM25, enforces auth/quarantine policy, and serves
 the `:25127/mcp` endpoint every MCP client on the estate talks to.

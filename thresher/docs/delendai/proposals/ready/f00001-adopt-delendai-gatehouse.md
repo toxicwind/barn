@@ -5,7 +5,7 @@ type: proposal
 track: adoption-migration
 date: 2026-10-21
 kind: feat
-title: Adopt delendai workflow (gatehouse)
+title: Adopt delendai workflow (thresher)
 shipped-in: []
 recan: []
 related:
@@ -21,7 +21,7 @@ acceptance:
     - { command: bun run validate, expect: exit0 }
 ---
 
-# f00001 — Adopt delendai (gatehouse)
+# f00001 — Adopt delendai (thresher)
 
 ## goal
 

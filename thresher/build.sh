@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# build.sh — vendored gatehouse (mcpproxy-go) build.
+# build.sh — vendored mcpproxy-go (thresher fork) build.
 # Produces bin/thresher (the `serve` gateway binary) from the vendored
 # mcpproxy-go source under ./vendor. No pinned fork binary: the estate
 # gateway is built from the vendored source, forward-only.
