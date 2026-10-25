@@ -1,0 +1,7 @@
+#!/usr/bin/env bun
+/**
+ * delend-working-dirty — delend-first snapshot/restore around disruptive operations.
+ * Thin shim over the @delendai/work-refs plugin (DelendAI first-class plugin).
+ */
+import { workingDirtyMain } from "/home/toxic/pens/barn/corral/delendai/plugins/work-refs/src/index.ts";
+if (import.meta.main) process.exit(workingDirtyMain(process.argv.slice(2)));

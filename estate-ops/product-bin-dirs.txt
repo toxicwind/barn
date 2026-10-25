@@ -1,0 +1,10 @@
+# Product bin/ directories to scan for manifest entries
+# One relative path from $HOME per line
+pens/barn/estate-ops/bin
+pens/barn/forge/bin
+pens/barn/secretsmith/bin
+pens/barn/thresher/bin
+pens/ranch/dualspace-ast-bm25-hybrid/bin
+pens/ranch/ffs-diff/bin
+pens/ranch/hatch/kite-cli/scripts
+pens/ranch/ego-lite/package/ego-browser/dist/out

@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# direnv-auto-shim — universally setup direnv across estate & ranch repos
+set -euo pipefail
+
+ESTATE_DIR="/home/toxic/estate"
+RANCH_DIR="${ESTATE_DIR}/ranch"
+
+echo "⚡ [direnv-shim] Applying universal direnv shims..."
+
+# 1. Ensure estate root .envrc is allowed
+if command -v direnv >/dev/null 2>&1; then
+  direnv allow "$ESTATE_DIR" 2>/dev/null || true
+fi
+
+# 2. Walk ranch repos and link or source parent .envrc
+COUNT=0
+for d in "$RANCH_DIR"/*; do
+  if [[ -d "$d" && -d "$d/.git" ]]; then
+    ENVRC="$d/.envrc"
+    if [[ ! -f "$ENVRC" ]]; then
+      echo "source_env_if_exists \"$ESTATE_DIR/.envrc\"" > "$ENVRC"
+      echo "dotenv_if_exists .env.local" >> "$ENVRC"
+      if command -v direnv >/dev/null 2>&1; then
+        direnv allow "$d" 2>/dev/null || true
+      fi
+      COUNT=$((COUNT + 1))
+    fi
+  fi
+done
+
+echo "✅ [direnv-shim] Configured and allowed direnv across $COUNT ranch repos."

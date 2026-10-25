@@ -1,0 +1,146 @@
+#!/usr/bin/env python3
+"""isleep — interruptible sleep that other agents can query.
+
+A sleep that never sleeps blind: it polls an observable condition (an
+interrupt flag file) every tick, so any agent or process can wake it early.
+Replaces `sleep N` / `timeout` binaries (banned by standing rule) with a
+queryable, interruptible primitive.
+
+Usage:
+  isleep SECONDS --name NAME [--tick SECS]
+      Sleep up to SECONDS, checking every tick (default 1s) for an interrupt.
+      Exit 0 = full duration elapsed. Exit 3 = interrupted early.
+
+  isleep interrupt NAME [reason...]
+      Wake a named sleep immediately. Reason is recorded in its status.
+
+  isleep status NAME
+      Print the named sleep's status JSON (works after it exits too).
+
+  isleep list
+      List all known named sleeps and their states.
+
+State dir: ~/.isleep/<NAME>.status.json (+ <NAME>.interrupt flag).
+"""
+import json, os, sys, time
+
+STATE = os.path.join(os.path.expanduser("~"), ".isleep")
+
+
+def paths(name):
+    safe = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in name)
+    return (os.path.join(STATE, safe + ".status.json"),
+            os.path.join(STATE, safe + ".interrupt"))
+
+
+def write_status(sp, **kw):
+    tmp = sp + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(kw, f)
+    os.replace(tmp, sp)
+
+
+def cmd_sleep(args):
+    if not args or args[0].startswith("-"):
+        print("usage: isleep SECONDS --name NAME [--tick SECS]", file=sys.stderr)
+        return 2
+    total = float(args[0])
+    name, tick = None, 1.0
+    i = 1
+    while i < len(args):
+        if args[i] == "--name" and i + 1 < len(args):
+            name = args[i + 1]; i += 2
+        elif args[i] == "--tick" and i + 1 < len(args):
+            tick = max(0.2, float(args[i + 1])); i += 2
+        else:
+            i += 1
+    if not name:
+        print("usage: isleep SECONDS --name NAME [--tick SECS]", file=sys.stderr)
+        return 2
+    os.makedirs(STATE, exist_ok=True)
+    sp, ip = paths(name)
+    if os.path.exists(ip):
+        os.unlink(ip)  # stale flag from a previous run
+    start = time.time()
+    deadline = start + total
+    state = {"name": name, "state": "running", "started_at": start,
+             "deadline_at": deadline, "total": total}
+    while True:
+        now = time.time()
+        state.update({"last_tick": now, "elapsed": round(now - start, 1),
+                      "remaining": round(max(0.0, deadline - now), 1)})
+        if os.path.exists(ip):
+            try:
+                reason = open(ip).read().strip() or "interrupt flag set"
+            except OSError:
+                reason = "interrupt flag set"
+            state.update({"state": "interrupted", "interrupt_reason": reason,
+                          "ended_at": now})
+            write_status(sp, **state)
+            print(f"isleep {name}: INTERRUPTED after {state['elapsed']}s ({reason})")
+            return 3
+        if now >= deadline:
+            state.update({"state": "done", "ended_at": now, "remaining": 0.0})
+            write_status(sp, **state)
+            print(f"isleep {name}: done ({total}s elapsed)")
+            return 0
+        write_status(sp, **state)
+        time.sleep(min(tick, max(0.2, deadline - now)))
+
+
+def cmd_interrupt(args):
+    if not args:
+        print("usage: isleep interrupt NAME [reason...]", file=sys.stderr)
+        return 2
+    name, reason = args[0], " ".join(args[1:]) or "interrupted by operator"
+    os.makedirs(STATE, exist_ok=True)
+    _, ip = paths(name)
+    with open(ip, "w") as f:
+        f.write(f"{time.time():.0f} {reason}\n")
+    print(f"isleep {name}: interrupt flag set ({reason})")
+    return 0
+
+
+def cmd_status(args):
+    if not args:
+        print("usage: isleep status NAME", file=sys.stderr)
+        return 2
+    sp, _ = paths(args[0])
+    if not os.path.exists(sp):
+        print(json.dumps({"name": args[0], "state": "unknown"}))
+        return 0
+    print(open(sp).read().strip())
+    return 0
+
+
+def cmd_list(_args):
+    os.makedirs(STATE, exist_ok=True)
+    out = []
+    for fn in sorted(os.listdir(STATE)):
+        if fn.endswith(".status.json"):
+            try:
+                out.append(json.load(open(os.path.join(STATE, fn))))
+            except (OSError, ValueError):
+                pass
+    for s in out:
+        print(f"{s.get('name')}: {s.get('state')} "
+              f"(elapsed {s.get('elapsed', '?')}s, remaining {s.get('remaining', '?')}s)")
+    return 0
+
+
+def main():
+    if len(sys.argv) < 2:
+        print(__doc__.strip().split("\n")[0], file=sys.stderr)
+        return 2
+    cmd = sys.argv[1]
+    if cmd == "interrupt":
+        return cmd_interrupt(sys.argv[2:])
+    if cmd == "status":
+        return cmd_status(sys.argv[2:])
+    if cmd == "list":
+        return cmd_list(sys.argv[2:])
+    return cmd_sleep(sys.argv[1:])
+
+
+if __name__ == "__main__":
+    sys.exit(main())

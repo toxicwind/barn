@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# saturation-watchdog: cheap cell-saturation detector + attributor + pager.
+# Patch for debate 2c7ca733 (lane-5 synthesis): the 2026-09-19 iowait crash
+# ran ~60 minutes before a human noticed. Prevention (safe-rg, reapers,
+# iowait-gate) reduces the odds; this closes the detection gap.
+#
+# Design constraints:
+#   - Reads ONLY /proc (zero disk I/O of its own -- the watchdog must never
+#     become the disk weapon it hunts).
+#   - Silent on clean: prints NOTHING to stdout unless saturated, so a
+#     wrapping cron stays quiet. State goes to the state file.
+#   - Never kills anything. Attribution + paging only (lane-4's con:
+#     no lease-less auto-kill).
+#
+# Triggers (env-overridable for testing):
+#   SAT_WD_WA_THRESH     wa% over the sample window (default 40)
+#   SAT_WD_DSTATE_THRESH D-state process count (default 4)
+#   SAT_WD_LOAD_MULT     load1 > MULT*nproc combined with wa>20 (default 2)
+#   SAT_WD_FORCE_ALERT=1 force the alert path (post-use verification)
+#   SAT_WD_WINDOW        sample window seconds (default 5)
+set -u
+STATE_DIR="${HOME}/workspace/state"
+STATE_FILE="$STATE_DIR/saturation-watchdog.state"
+mkdir -p "$STATE_DIR" 2>/dev/null || true
+
+WA_THRESH="${SAT_WD_WA_THRESH:-40}"
+DSTATE_THRESH="${SAT_WD_DSTATE_THRESH:-4}"
+LOAD_MULT="${SAT_WD_LOAD_MULT:-2}"
+WINDOW="${SAT_WD_WINDOW:-5}"
+NPROC="$(nproc 2>/dev/null || echo 2)"
+
+# --- sample 1 ---
+read -r _ u1 _ s1 idle1 w1 _ < <(awk '/^cpu /{print $2,$3,$4,$5,$6}' /proc/stat)
+read -r l1 _ _ < /proc/loadavg
+d1=0
+for st in /proc/[0-9]*/stat; do
+  [[ -r "$st" ]] || continue
+  # state is field 3 in /proc/PID/stat
+  [[ "$(awk '{print $3}' "$st" 2>/dev/null)" == "D" ]] && d1=$((d1+1))
+done 2>/dev/null
+
+sleep "$WINDOW"
+
+# --- sample 2 ---
+read -r _ u2 _ s2 idle2 w2 _ < <(awk '/^cpu /{print $2,$3,$4,$5,$6}' /proc/stat)
+read -r l2 _ _ < /proc/loadavg
+d2=0
+for st in /proc/[0-9]*/stat; do
+  [[ -r "$st" ]] || continue
+  [[ "$(awk '{print $3}' "$st" 2>/dev/null)" == "D" ]] && d2=$((d2+1))
+done 2>/dev/null
+
+tot=$(( (u2+s2+idle2+w2) - (u1+s1+idle1+w1) ))
+wa_pct=0
+[[ $tot -gt 0 ]] && wa_pct=$(( 100 * (w2-w1) / tot ))
+dstate=$(( d1 > d2 ? d1 : d2 ))
+# load1 as integer x100 to avoid float math
+load_i="$(awk -v l="$l2" 'BEGIN{printf "%d", l*100}')"
+load_thresh=$(( LOAD_MULT * NPROC * 100 ))
+
+trigger=""
+[[ $wa_pct -ge $WA_THRESH ]] && trigger="${trigger}wa:${wa_pct}%>=${WA_THRESH}% "
+[[ $dstate -ge $DSTATE_THRESH ]] && trigger="${trigger}dstate:${dstate}>=${DSTATE_THRESH} "
+if [[ $load_i -ge $load_thresh && $wa_pct -ge 20 ]]; then
+  trigger="${trigger}load:${l2}>=${LOAD_MULT}x${NPROC}cpus+wa:${wa_pct}% "
+fi
+[[ "${SAT_WD_FORCE_ALERT:-0}" == "1" ]] && trigger="${trigger}FORCED "
+
+ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+if [[ -z "$trigger" ]]; then
+  # clean: state file only, stdout stays silent
+  printf '%s clean wa=%s%% dstate=%s load1=%s\n' "$ts" "$wa_pct" "$dstate" "$l2" >> "$STATE_FILE"
+  exit 0
+fi
+
+# --- saturated: attribute via /proc/PID/io deltas (3s, /proc only) ---
+declare -A io1 io2
+for io in /proc/[0-9]*/io; do
+  pid="${io#/proc/}"; pid="${pid%/io}"
+  v="$(awk '/^read_bytes:/{print $2}' "$io" 2>/dev/null)"
+  [[ -n "$v" ]] && io1["$pid"]="$v"
+done
+sleep 3
+attr=""
+for io in /proc/[0-9]*/io; do
+  pid="${io#/proc/}"; pid="${pid%/io}"
+  v="$(awk '/^read_bytes:/{print $2}' "$io" 2>/dev/null)"
+  [[ -n "$v" && -n "${io1[$pid]:-}" ]] && io2["$pid"]="$v"
+done
+tmp="$(mktemp)"
+for pid in "${!io2[@]}"; do
+  d=$(( io2[$pid] - ${io1[$pid]:-0} ))
+  [[ $d -gt 0 ]] && echo "$d $pid" >> "$tmp"
+done
+top5="$(sort -rn "$tmp" 2>/dev/null | head -5)"
+rm -f "$tmp"
+while read -r bytes pid; do
+  [[ -z "$pid" ]] && continue
+  comm="$(cat "/proc/$pid/comm" 2>/dev/null || echo '?')"
+  ppid="$(awk '{print $4}' "/proc/$pid/stat" 2>/dev/null || echo '?')"
+  mb="$(awk -v b="$bytes" 'BEGIN{printf "%.1f", b/1048576}')"
+  attr="${attr}  pid=${pid} comm=${comm} ppid=${ppid} read=${mb}MB/3s\n"
+done <<< "$top5"
+
+{
+printf 'SATURATION ALERT %s\n' "$ts"
+printf 'trigger: %s\n' "$trigger"
+printf 'metrics: wa=%s%% dstate=%s load1=%s nproc=%s\n' "$wa_pct" "$dstate" "$l2" "$NPROC"
+printf 'top disk readers (3s window):\n'
+printf '%b' "$attr"
+printf 'action: investigate before killing; consider ~/workspace/bin/io-rate-reaper --dry-run\n'
+} | tee -a "$STATE_FILE"
+exit 0

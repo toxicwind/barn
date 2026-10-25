@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+"""kodi-handoff: one-shot playback transfer between two Kodi boxes via JSON-RPC.
+Freezes the source (pause), then opens the same stream on the destination
+at the exact position, paused.
+
+Usage: kodi-handoff <src_ip> <dst_ip> [--play] [--dry-run] [--selftest <ip>]
+  --play     leave the destination playing instead of paused
+  --dry-run  validate the read path only: no pause, no stop, no open, no seek.
+             Prints the exact mutating RPCs it would send.
+  --selftest run a no-op seek (to current position) on <ip> to exercise the
+             Player.Seek code path without moving the playhead.
+"""
+import json, sys, time, urllib.request
+
+def rpc(host, method, params=None):
+    req = {"jsonrpc": "2.0", "id": 1, "method": method}
+    if params:
+        req["params"] = params
+    r = urllib.request.Request(
+        f"http://{host}:8080/jsonrpc",
+        data=json.dumps(req).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    body = json.loads(urllib.request.urlopen(r, timeout=10).read())
+    if "error" in body:
+        raise RuntimeError(f"{method} on {host}: {body['error']}")
+    return body["result"]
+
+def to_sec(t):
+    return t["hours"] * 3600 + t["minutes"] * 60 + t["seconds"] + t["milliseconds"] / 1000.0
+
+def selftest(host):
+    """No-op seek on a live box: exercises Player.Seek without moving playhead."""
+    players = rpc(host, "Player.GetActivePlayers")
+    vids = [p for p in players if p.get("type") == "video"]
+    if not vids:
+        sys.exit(f"no video player on {host}")
+    dpid = vids[0]["playerid"]
+    props = rpc(host, "Player.GetProperties",
+                {"playerid": dpid, "properties": ["time", "totaltime"]})
+    cur, total = to_sec(props["time"]), to_sec(props["totaltime"])
+    pct = (cur / total * 100.0) if total else 0.0
+    print(f"{host}: no-op seek to current {pct:.2f}%")
+    seek = rpc(host, "Player.Seek",
+               {"playerid": dpid, "value": {"percentage": pct}})
+    got = seek["percentage"]
+    print(f"{host}: seek RPC ok, landed {got:.2f}% (drift {abs(got-pct):.2f}%)")
+    print("selftest PASS" if abs(got - pct) < 1.0 else "selftest FAIL")
+
+def main():
+    if "--selftest" in sys.argv:
+        i = sys.argv.index("--selftest")
+        selftest(sys.argv[i + 1])
+        return
+    if len(sys.argv) < 3:
+        print(__doc__, file=sys.stderr)
+        sys.exit(2)
+    src, dst = sys.argv[1], sys.argv[2]
+    keep_playing = "--play" in sys.argv[3:]
+    dry_run = "--dry-run" in sys.argv[3:]
+
+    players = rpc(src, "Player.GetActivePlayers")
+    if not players:
+        sys.exit(f"no active player on {src}")
+    pid = players[0]["playerid"]
+
+    # 1. Freeze the source so the timestamp can't drift mid-transfer.
+    props = rpc(src, "Player.GetProperties",
+                {"playerid": pid, "properties": ["time", "totaltime", "speed"]})
+    if props["speed"] != 0 and not dry_run:
+        rpc(src, "Player.PlayPause", {"playerid": pid})
+        time.sleep(1)
+        props = rpc(src, "Player.GetProperties",
+                    {"playerid": pid, "properties": ["time", "totaltime", "speed"]})
+    cur, total = to_sec(props["time"]), to_sec(props["totaltime"])
+    pct = (cur / total * 100.0) if total else 0.0
+
+    item = rpc(src, "Player.GetItem",
+               {"playerid": pid, "properties": ["file", "title"]})
+    url = item["item"]["file"]
+    label = item["item"].get("label") or item["item"].get("title") or url
+    print(f"src {src}: {label} at {cur:.1f}s ({pct:.2f}%)")
+
+    if dry_run:
+        print("dry-run: read path OK. Would send:")
+        print(f"  {dst} Player.Stop {{playerid: <video>}}")
+        print(f"  {dst} Player.Open {{item: {{file: <{len(url)} chars>}}}}")
+        print(f"  {dst} Player.Seek {{value: {{percentage: {pct:.2f}}}}}")
+        print("dry-run PASS")
+        return
+
+    # 2. Open on dst and wait until the stream reports a real duration.
+    try:
+        rpc(dst, "Player.Stop", {"playerid": 1})
+    except RuntimeError:
+        pass
+    time.sleep(1)
+    rpc(dst, "Player.Open", {"item": {"file": url}})
+    dpid = None
+    for _ in range(15):
+        time.sleep(2)
+        players = rpc(dst, "Player.GetActivePlayers")
+        vids = [p for p in players if p.get("type") == "video"]
+        if not vids:
+            continue
+        dpid = vids[0]["playerid"]
+        p = rpc(dst, "Player.GetProperties",
+                {"playerid": dpid, "properties": ["totaltime"]})
+        if to_sec(p["totaltime"]) > 60:
+            break
+    else:
+        sys.exit(f"dst {dst}: stream never became seekable")
+
+    # 3. Seek with retry — first seek after open often lands at 0.
+    # NOTE: Kodi 21 wants the seek value wrapped: {"percentage": x},
+    # a bare number or time object is rejected as invalid params.
+    for attempt in range(6):
+        try:
+            seek = rpc(dst, "Player.Seek",
+                       {"playerid": dpid, "value": {"percentage": pct}})
+        except RuntimeError as e:
+            print(f"dst seek {attempt}: rpc error, retrying ({e})")
+            time.sleep(2)
+            continue
+        got = seek["percentage"]
+        t = seek["time"]
+        print(f"dst seek {attempt}: {got:.2f}% @ {t['minutes']}:{t['seconds']:02d}")
+        if abs(got - pct) < 1.0:
+            break
+        time.sleep(2)
+    else:
+        sys.exit(f"dst {dst}: seek would not stick")
+
+    if not keep_playing:
+        rpc(dst, "Player.PlayPause", {"playerid": dpid})
+        print(f"dst {dst}: paused at match point")
+    print("done")
+
+if __name__ == "__main__":
+    main()

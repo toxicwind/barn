@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""kappa-config-audit — the REUSE-ABLE helper to introspect kappa config.
+
+Reads the authoritative config schema from the installed kappa package
+(`@opencode-ai/core/v1/config/config.ts` -> ConfigV1.Info = Schema.Struct),
+loads the live ~/.config/kappa config, and reports:
+
+  * every top-level key in the file and whether the schema accepts it
+  * the schema-provided shape/description for each valid key
+  * unknown keys kappa would flag
+
+Use this INSTEAD of grepping config.ts (which is how config refs got made up).
+
+Usage:
+  kappa-config-audit                     # audit live config
+  kappa-config-audit --schema            # dump the full valid top-level schema
+  kappa-config-audit <config.jsonc>      # audit a specific file
+"""
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+SCHEMA_FILE = (Path.home() /
+    "pens/ranch/kappa/kappa-code/packages/core/src/v1/config/config.ts")
+LIVE = Path.home() / ".config/kappa/kappa.jsonc"
+
+
+def strip_jsonc(text: str) -> str:
+    text = re.sub(r"(?m)^\s*(//.*)$", "", text)
+    text = re.sub(r"(?m)^\s*#.*$", "", text)
+    return text
+
+
+def valid_key_map(schema_text: str) -> dict[str, str]:
+    """Best-effort parse of `Schema.Struct({ key: optional(...).annotate({description:"..."}) })`
+    top-level fields -> {key: description}."""
+    m = re.search(r"export const Info = Schema\.Struct\(\{(.*?)\n\}\)", schema_text, re.S)
+    fields = {}
+    if not m:
+        return fields
+    body = m.group(1)
+    # match lines like `  key: Schema.optional(...).annotate({...})` 
+    for fm in re.finditer(r"(?m)^\s{2}([a-zA-Z_][a-zA-Z0-9_]*)\s*:", body):
+        key = fm.group(1)
+        tail = body[fm.end(): fm.end() + 220]
+        desc = ""
+        dm = re.search(r'description:\s*"([^"]*)"', tail)
+        if dm:
+            desc = dm.group(1)
+        # if not a self-closing line, it's a nested struct of keys
+        fields[key] = (desc + (" (nested)" if "Schema.Struct" in tail[:200] else "")).strip()
+    return fields
+
+
+def load_config(path: Path):
+    return json.loads(strip_jsonc(path.read_text()))
+
+
+def main():
+    args = sys.argv[1:]
+    if "--schema" in args:
+        schema_file = SCHEMA_FILE
+        print(f"schema source: {schema_file}")
+        fields = valid_key_map(schema_file.read_text())
+        for k in sorted(fields):
+            print(f"  {k}: {fields[k]}")
+        return
+    cfg_file = Path(args[0]) if args and args[0] != "--schema" else LIVE
+    schema_text = SCHEMA_FILE.read_text()
+    fields = valid_key_map(schema_text)
+    cfg = load_config(cfg_file)
+    file_keys = set(cfg.keys())
+    print(f"config: {cfg_file}  (schema: @opencode-ai {SCHEMA_FILE.name})")
+    print(f"\n== present + schema-accepted ==")
+    for k in sorted(file_keys & set(fields)):
+        print(f"  ok    {k}")
+    print("\n== present but UNKNOWN to schema (would trip Excess) ==")
+    for k in sorted(file_keys - set(fields)):
+        print(f"  ??    {k}")
+    print("\n== schema-known keys NOT in config (optional) ==")
+    for k in sorted(set(fields) - file_keys):
+        print(f"       {k}: {fields[k][:60]}")
+
+
+if __name__ == "__main__":
+    main()

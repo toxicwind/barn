@@ -1,0 +1,5 @@
+#!/bin/sh
+# git pre-push hook -> push-guard.sh (conflict markers, gofmt, scoped go vet).
+# Installed by: install -Dm755 /home/toxic/bin/pre-push "$(git rev-parse --git-dir)/hooks/pre-push"
+# Emergency bypass: PUSH_GUARD_SKIP=1 git push   (loud, never silent)
+exec /home/toxic/bin/push-guard.sh pre-push

@@ -1,0 +1,134 @@
+#!/usr/bin/env bun
+/**
+ * gatehouse-mcp-stdio — bridge the Estate Gatehouse (streamable-http MCP at
+ * 127.0.0.1:25127/mcp) into a stdio MCP server, so stdio-only MCP clients
+ * (e.g. the Rig kernel) can consume Gatehouse / kappa / skills tools.
+ *
+ * Streamable-http session semantics: initialize returns a short-lived
+ * Mcp-Session-Id; every subsequent call must send that header on a POST that
+ * Accepts json + text/event-stream. mcpproxy binds the session to immediacy,
+ * so we reuse it immediately for tools/list and tools/call.
+ *
+ * Rig config:
+ *   [[mcp_servers]]
+ *     name = "mesh-gateway"
+ *     [mcp_servers.transport]
+ *       type = "stdio"
+ *       command = "/home/toxic/pens/barn/estate-ops/gatehouse-mcp-stdio"
+ *       args = ["http://127.0.0.1:25127/mcp"]
+ */
+
+import { createInterface } from "node:readline";
+
+const URL = process.argv[2] || process.env.MCP_PROXY_URL || "http://127.0.0.1:25127/mcp";
+// API key comes from the secretsmith keyring (SSOT, AGENTS.md rule 3) via
+// `secretsmith env` or the ~/.secrets fallback — never a literal in source.
+const API_KEY =
+  process.env.GATEHOUSE_KEY ||
+  process.env.MCPPROXY_API_KEY ||
+  process.env.ESTATE_MCP_API_KEY ||
+  "";
+let sessionId: string | undefined;
+
+/** Parse a streamable-http body (may be a raw JSON object or an SSE envelope). */
+function parseBody(text: string): unknown {
+  const lines = text.split("\n");
+  for (const line of lines) {
+    if (line.startsWith("data:")) {
+      const payload = line.slice(5).trim();
+      if (!payload) continue;
+      try {
+        return JSON.parse(payload);
+      } catch {
+        /* keep scanning */
+      }
+    }
+    const t = line.trim();
+    if (t.startsWith("{")) {
+      try {
+        return JSON.parse(t);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  return { error: { code: -32603, message: `unparseable upstream: ${text.slice(0, 300)}` } };
+}
+
+async function upstream(method: string, params: unknown): Promise<{ result?: unknown; error?: unknown }> {
+  const h: Record<string, string> = {
+    "Content-Type": "application/json",
+    Accept: "application/json, text/event-stream",
+    Authorization: `Bearer ${API_KEY}`,
+  };
+  if (sessionId) h["Mcp-Session-Id"] = sessionId;
+  const res = await fetch(URL, {
+    method: "POST",
+    headers: h,
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params: params ?? {} }),
+    signal: AbortSignal.timeout(60000),
+  });
+  const sid = res.headers.get("Mcp-Session-Id");
+  if (sid) sessionId = sid;
+  const body = await res.text();
+  const parsed = parseBody(body) as { result?: unknown; error?: unknown };
+  return { result: parsed.result, error: (parsed as { error?: unknown }).error };
+}
+
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+const queue: string[] = [];
+let draining = false;
+
+const queueLine = (line: string) => {
+  queue.push(line);
+  void pump();
+};
+
+/** Process lines one-at-a-time, awaiting each upstream round-trip. */
+async function pump(): Promise<void> {
+  if (draining) return;
+  draining = true;
+  while (queue.length > 0) {
+    const trimmed = queue.shift()!.trim();
+    if (!trimmed) continue;
+    await handle(trimmed);
+  }
+  draining = false;
+}
+
+async function handle(trimmed: string): Promise<void> {
+  let id: unknown = null;
+  try {
+    const req = JSON.parse(trimmed);
+    id = req.id ?? null;
+    const method = req.method ?? "";
+    const params = req.params ?? {};
+
+    if (method === "initialize") {
+      await upstream("initialize", { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "gatehouse-stdio-bridge", version: "0.1.0" } });
+      process.stdout.write(
+        JSON.stringify({ jsonrpc: "2.0", id, result: { protocolVersion: "2025-03-26", capabilities: { tools: { listChanged: true } }, serverInfo: { name: "gatehouse-stdio-bridge", version: "0.1.0" } } }) + "\n",
+      );
+      return;
+    }
+
+    if (method === "notifications/initialized" || method === "ping") {
+      if (method === "ping") process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result: {} }) + "\n");
+      return;
+    }
+
+    const { result, error } = await upstream(method, params);
+    if (error) process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, error }) + "\n");
+    else process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\n");
+  } catch (e) {
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32603, message: String(e) } }) + "\n");
+  }
+}
+
+rl.on("line", queueLine);
+let flushing = false;
+rl.on("close", async () => {
+  // Wait for the queue to fully drain before exiting (bun otherwise exits early).
+  while (draining || queue.length > 0) await new Promise((r) => setTimeout(r, 10));
+  process.exit(0);
+});

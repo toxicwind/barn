@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# keeper-open — open an arbitrary graphical app on the estate agent desktop (:99).
+#
+# Delegation shim: this is now one thin proxy for the canonical skopos product
+# binary. All real logic (DISPLAY pinning, setsid detach, floaty lamp ping,
+# window listing) lives in pens/olympus/products/skopos/bin/skopos-open.ts;
+# `skopos open` is the single implementation. Kept as a named command so
+# existing agent hooks / docs that say `keeper-open` keep working unchanged.
+#
+# Usage: keeper-open <command...> [--class <wm_class>]
+#   --class sets the X window class hint so openbox/agents can match (wmctrl -x).
+
+set -uo pipefail
+
+SKOPOS_OPEN=/home/toxic/pens/olympus/products/skopos/bin/skopos-open.ts
+
+if [ ! -f "$SKOPOS_OPEN" ]; then
+  echo "keeper-open: skopos-open.ts not found at $SKOPOS_OPEN" >&2
+  exit 1
+fi
+
+exec /home/toxic/.bun/bin/bun "$SKOPOS_OPEN" "$@"

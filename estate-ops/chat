@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# chat — CLI client for estate-chat (fleet coordination plane, :25120).
+# Token: /home/toxic/.config/estate-chat-token (0600, never printed) — the
+#   canonical path, matching the daemon's ESTATE_CHAT_TOKEN_FILE.
+#   ESTATE_CHAT_TOKEN_FILE / ESTATE_CHAT_BASE override.
+#   Legacy SOVEREIGN_CHAT_TOKEN_FILE / SOVEREIGN_CHAT_BASE still honoured, and
+#   the pre-consolidation token file name is used as a last-resort fallback
+#   (2026-10-21: the sovereign-chat-token path was retired, which silently
+#   broke every `chat` call on this box — the CLI exited 1 with
+#   "cannot read token file" before it ever reached the daemon).
+# Usage:
+#   chat join --name NAME --summoner SUMMONER [--chat-id ID] [--agent-id ID]
+#             [--surface S] [--host-machine-id M] [--hostname H] [--hatchling-id G] [--activity A]
+#   chat heartbeat --agent-id ID [--activity A]
+#   chat post --room ROOM --from AGENT_ID --body TEXT [--kind chat]
+#   chat read --room ROOM [--since N] [--limit N]
+#   chat presence | chat rooms | chat activity | chat health
+set -u
+
+TOKEN_FILE="${ESTATE_CHAT_TOKEN_FILE:-${SOVEREIGN_CHAT_TOKEN_FILE:-/home/toxic/.config/estate-chat-token}}"
+if [ ! -r "$TOKEN_FILE" ] && [ -r "/home/toxic/.config/sovereign-chat-token" ]; then
+  TOKEN_FILE="/home/toxic/.config/sovereign-chat-token"
+fi
+BASE="${ESTATE_CHAT_BASE:-${SOVEREIGN_CHAT_BASE:-http://127.0.0.1:25120}}"
+
+if [ ! -r "$TOKEN_FILE" ]; then echo "chat: cannot read token file $TOKEN_FILE" >&2; exit 1; fi
+TOKEN="$(cat "$TOKEN_FILE")"
+if [ -z "$TOKEN" ]; then echo "chat: empty token" >&2; exit 1; fi
+
+api() { # method path [json-body]
+  local method="$1" path="$2" body="${3:-}"
+  if [ -n "$body" ]; then
+    curl -sS -m 20 -H "Authorization: Bearer $TOKEN" -H "content-type: application/json" \
+      -X "$method" --data-binary "$body" "$BASE$path"
+  else
+    curl -sS -m 20 -H "Authorization: Bearer $TOKEN" -X "$method" "$BASE$path"
+  fi
+}
+
+jbuild() { # build a JSON object from key=value pairs (values are strings)
+  python3 - "$@" <<'EOF'
+import json, sys
+print(json.dumps({kv.split("=", 1)[0]: kv.split("=", 1)[1] for kv in sys.argv[1:]}))
+EOF
+}
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  health) curl -sS -m 10 "$BASE/health"; echo ;;
+  join)
+    name=""; summoner=""; chat_id=""; agent_id=""; surface=""; hmid=""; hostname=""; hatchling=""; activity=""
+    while [ $# -gt 0 ]; do case "$1" in
+      --name) name="$2"; shift 2;; --summoner) summoner="$2"; shift 2;;
+      --chat-id) chat_id="$2"; shift 2;; --agent-id) agent_id="$2"; shift 2;;
+      --surface) surface="$2"; shift 2;; --host-machine-id) hmid="$2"; shift 2;;
+      --hostname) hostname="$2"; shift 2;; --hatchling-id) hatchling="$2"; shift 2;;
+      --activity) activity="$2"; shift 2;; *) echo "chat join: unknown flag $1" >&2; exit 1;;
+    esac; done
+    [ -n "$name" ] && [ -n "$summoner" ] || { echo "chat join: --name and --summoner required" >&2; exit 1; }
+    args=("name=$name" "summoner=$summoner")
+    [ -n "$chat_id" ] && args+=("chat_id=$chat_id")
+    [ -n "$agent_id" ] && args+=("agent_id=$agent_id")
+    [ -n "$surface" ] && args+=("surface=$surface")
+    [ -n "$hmid" ] && args+=("host_machine_id=$hmid")
+    [ -n "$hostname" ] && args+=("hostname=$hostname")
+    [ -n "$hatchling" ] && args+=("hatchling_id=$hatchling")
+    [ -n "$activity" ] && args+=("activity=$activity")
+    api POST /v1/join "$(jbuild "${args[@]}")"; echo ;;
+  heartbeat)
+    agent_id=""; activity=""
+    while [ $# -gt 0 ]; do case "$1" in
+      --agent-id) agent_id="$2"; shift 2;; --activity) activity="$2"; shift 2;;
+      *) echo "chat heartbeat: unknown flag $1" >&2; exit 1;;
+    esac; done
+    [ -n "$agent_id" ] || { echo "chat heartbeat: --agent-id required" >&2; exit 1; }
+    args=("agent_id=$agent_id"); [ -n "$activity" ] && args+=("activity=$activity")
+    api POST /v1/presence "$(jbuild "${args[@]}")"; echo ;;
+  post)
+    room="fleet"; from=""; body=""; kind="chat"
+    while [ $# -gt 0 ]; do case "$1" in
+      --room) room="$2"; shift 2;; --from) from="$2"; shift 2;;
+      --body) body="$2"; shift 2;; --kind) kind="$2"; shift 2;;
+      *) echo "chat post: unknown flag $1" >&2; exit 1;;
+    esac; done
+    [ -n "$from" ] && [ -n "$body" ] || { echo "chat post: --from and --body required" >&2; exit 1; }
+    api POST "/v1/rooms/$room/messages" "$(jbuild from_agent="$from" body="$body" kind="$kind")"; echo ;;
+  read)
+    room="fleet"; since="0"; limit="50"
+    while [ $# -gt 0 ]; do case "$1" in
+      --room) room="$2"; shift 2;; --since) since="$2"; shift 2;; --limit) limit="$2"; shift 2;;
+      *) echo "chat read: unknown flag $1" >&2; exit 1;;
+    esac; done
+    api GET "/v1/rooms/$room/messages?since_seq=$since&limit=$limit"; echo ;;
+  presence) api GET /v1/presence; echo ;;
+  rooms) api GET /v1/rooms; echo ;;
+  activity) api GET /v1/activity; echo ;;
+  *) echo "usage: chat {join|heartbeat|post|read|presence|rooms|activity|health} ..." >&2; exit 1 ;;
+esac

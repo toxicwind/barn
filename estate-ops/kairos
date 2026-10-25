@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# run-fast — Bun-native 2-second deadline wrapper with explicit flag support.
+#
+# Every command gets a 2.0s hard deadline. Exceeded → URGENT notice + cancel.
+# Shim-level flags are stripped before passing to runner.ts.
+#
+# Usage: run-fast [--cwd DIR] [--env KEY=VALUE] [--deadline SECS] [--id NAME] <cmd…>
+#   - env vars work: FOO=bar ls
+#   - flags work: bun run build --watch
+#   - shell via bash -c: /bin/bash -c 'echo hi'
+#   - -- delimiter: run-fast -- bun run build
+#
+# Source: ranch/kairos (was ranch/two-sec; always runs latest code, never prebuilt).
+
+set -uo pipefail
+
+KAIROS_SRC="${KAIROS_DIR:-/home/toxic/pens/ranch/kairos}"
+CLI="$KAIROS_SRC/src/cli.ts"
+
+if [ ! -f "$CLI" ]; then
+  echo "run-fast: kairos source not found at $CLI (set KAIROS_DIR)" >&2
+  exit 2
+fi
+
+BUN_BIN="${BUN_BIN:-$HOME/.bun/bin/bun}"
+
+# --- Parse shim-level flags ---
+RF_CWD=""
+RF_ENV=""
+RF_DEADLINE=""
+RF_ID=""
+RF_ARGS=()
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --cwd)
+      RF_CWD="$2"; shift 2 ;;
+    --cwd=*)
+      RF_CWD="${1#--cwd=}"; shift ;;
+    --env)
+      RF_ENV="$2"; shift 2 ;;
+    --env=*)
+      RF_ENV="${1#--env=}"; shift ;;
+    --deadline)
+      RF_DEADLINE="$2"; shift 2 ;;
+    --deadline=*)
+      RF_DEADLINE="${1#--deadline=}"; shift ;;
+    --id)
+      RF_ID="$2"; shift 2 ;;
+    --id=*)
+      RF_ID="${1#--id=}"; shift ;;
+    --)
+      shift; RF_ARGS+=("$@"); break ;;
+    *)
+      RF_ARGS+=("$1"); shift ;;
+  esac
+done
+
+# --- Build runner args with shim-level flags prepended ---
+RUNNER_ARGS=("run")
+[ -n "$RF_CWD" ] && RUNNER_ARGS+=("--cwd" "$RF_CWD")
+[ -n "$RF_ENV" ] && RUNNER_ARGS+=("--env" "$RF_ENV")
+[ -n "$RF_DEADLINE" ] && RUNNER_ARGS+=("--deadline" "$RF_DEADLINE")
+[ -n "$RF_ID" ] && RUNNER_ARGS+=("--id" "$RF_ID")
+RUNNER_ARGS+=("${RF_ARGS[@]}")
+
+exec "$BUN_BIN" run "$CLI" "${RUNNER_ARGS[@]}"

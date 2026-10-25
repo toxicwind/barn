@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+"""
+hashline — verifiable line manifest of a source tree.
+
+USAGE
+  hashline emit   [root] [output]      write manifest
+  hashline verify <manifest> [root]    re-read, diff, report drift
+  hashline cat    <manifest> <path>    reconstruct one file
+  hashline root   <manifest>           print final hash
+  hashline head   <manifest> [n]       print first n records
+
+FORMAT
+  RS=\\x1e prefixes every record; fields are US=\\x1f-separated; \\n terminates.
+    H <path> <sha256-raw> <sha256-norm> <bytes> <lines>
+    L <path> <lineno> <sha256-line> <content>
+    R <sha256-running> <files> <lines>     # checkpoint after each file
+    F <sha256-final>   <files> <lines> <bytes>
+
+HASHES
+  raw   = sha256(raw file bytes)
+  norm  = sha256(raw with CRLF -> LF)
+  line  = sha256(line content, no trailing newline)
+  R     = sha256 of every byte written before this R record
+  F     = sha256 of every byte written before the F record
+"""
+from __future__ import annotations
+import hashlib, os, sys, time, difflib
+from pathlib import Path
+from typing import Iterator, BinaryIO
+
+US = b"\x1f"; RS = b"\x1e"
+SKIP_DIRS = {".git","node_modules",".venv","target","dist","build","__pycache__",
+             ".audit",".scratch",".cargo",".rustup",".npm",".bun"}
+
+def sha256(b: bytes) -> str: return hashlib.sha256(b).hexdigest()
+
+def iter_files(root: Path) -> Iterator[Path]:
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
+        for fn in sorted(filenames):
+            yield Path(dirpath) / fn
+
+class W:
+    def __init__(self, fh: BinaryIO): self.fh = fh; self.h = hashlib.sha256()
+    def write(self, b: bytes) -> None: self.fh.write(b); self.h.update(b)
+    def snap(self) -> str: return self.h.copy().hexdigest()
+
+def emit(root: Path, out: Path) -> tuple[dict, str]:
+    stats = {"files": 0, "lines": 0, "bytes": 0}
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("wb") as fh:
+        w = W(fh)
+        for path in iter_files(root):
+            try: raw = path.read_bytes()
+            except OSError: continue
+            rel = str(path.relative_to(root))
+            norm = raw.replace(b"\r\n", b"\n")
+            lines = norm.split(b"\n")
+            if lines and lines[-1] == b"": lines = lines[:-1]
+            if not norm: lines = []
+            w.write(RS + b"H" + US + rel.encode() + US
+                    + sha256(raw).encode() + US + sha256(norm).encode() + US
+                    + str(len(raw)).encode() + US + str(len(lines)).encode() + b"\n")
+            for i, line in enumerate(lines, 1):
+                w.write(RS + b"L" + US + rel.encode() + US + str(i).encode() + US
+                        + sha256(line).encode() + US + line + b"\n")
+                stats["lines"] += 1
+            stats["files"] += 1; stats["bytes"] += len(raw)
+            w.write(RS + b"R" + US + w.snap().encode() + US
+                    + str(stats["files"]).encode() + US
+                    + str(stats["lines"]).encode() + b"\n")
+        final = w.snap()
+        w.write(RS + b"F" + US + final.encode() + US
+                + str(stats["files"]).encode() + US
+                + str(stats["lines"]).encode() + US
+                + str(stats["bytes"]).encode() + b"\n")
+    return stats, final
+
+def parse(manifest: Path):
+    data = manifest.read_bytes()
+    for line in data.split(b"\n"):
+        if not line or line[0:1] != RS: continue
+        fields = line[1:].split(US)
+        yield fields[0].decode(), fields
+
+def verify(manifest: Path, root: Path) -> int:
+    tmp = manifest.with_suffix(manifest.suffix + ".verify")
+    _, final_new = emit(root, tmp)
+    final_old = next((f[1].decode() for k, f in parse(manifest) if k == "F"), None)
+    if final_old is None:
+        print(f"verify: no F record in {manifest}", file=sys.stderr); return 2
+    def strip_f(b: bytes) -> bytes:
+        return b"\n".join(l for l in b.split(b"\n")
+                          if not l.startswith(RS + b"F"))
+    old_body = strip_f(manifest.read_bytes())
+    new_body = strip_f(tmp.read_bytes())
+    if old_body == new_body:
+        print(f"verify: OK  final={final_old}"); tmp.unlink(); return 0
+    print(f"verify: DRIFT")
+    print(f"  old final: {final_old}")
+    print(f"  new final: {final_new}")
+    diff = list(difflib.unified_diff(
+        [l.decode("utf-8","replace") for l in old_body.split(b"\n")],
+        [l.decode("utf-8","replace") for l in new_body.split(b"\n")],
+        fromfile="old", tofile="new", lineterm=""))
+    for d in diff[:80]: print(d)
+    if len(diff) > 80: print(f"... ({len(diff)-80} more)")
+    tmp.unlink(); return 1
+
+def cat(manifest: Path, path_str: str) -> int:
+    out = []
+    for k, f in parse(manifest):
+        if k == "L" and f[1].decode() == path_str:
+            out.append(f[4])
+    if not out:
+        print(f"cat: no L records for {path_str!r}", file=sys.stderr); return 1
+    sys.stdout.buffer.write(b"\n".join(out) + b"\n"); return 0
+
+def root(manifest: Path) -> int:
+    for k, f in parse(manifest):
+        if k == "F": print(f[1].decode()); return 0
+    print("root: no F record", file=sys.stderr); return 1
+
+def head(manifest: Path, n: int) -> int:
+    c = 0
+    for k, f in parse(manifest):
+        line = (RS + US.join(f)).decode("utf-8","replace")
+        print(line.replace("\x1e","␞").replace("\x1f","␟"))
+        c += 1
+        if c >= n: break
+    return 0
+
+def main(argv: list[str]) -> int:
+    if len(argv) < 2: print(__doc__, file=sys.stderr); return 2
+    m = argv[1]
+    if m == "emit":
+        r = Path(argv[2]) if len(argv) > 2 else Path.cwd()
+        o = Path(argv[3]) if len(argv) > 3 else Path("/tmp/hashline.manifest")
+        s, f = emit(r, o)
+        print(f"manifest: {o}"); print(f"final:    {f}")
+        print(f"files:    {s['files']}"); print(f"lines:    {s['lines']}")
+        print(f"bytes:    {s['bytes']}"); return 0
+    if m == "verify":
+        return verify(Path(argv[2]), Path(argv[3]) if len(argv) > 3 else Path.cwd())
+    if m == "cat":
+        return cat(Path(argv[2]), argv[3])
+    if m == "root":
+        return root(Path(argv[2]))
+    if m == "head":
+        return head(Path(argv[2]), int(argv[3]) if len(argv) > 3 else 10)
+    print(f"unknown mode: {m}", file=sys.stderr); return 2
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# io-rate-reaper: kill disk-thrashers by measured read rate, not just orphan status.
+# Companion to orphan-reaper (which only catches PPID-1 orphans).
+# Patch for 2c7ca733: the 2026-09-19 crash was 50-80% iowait from recursive
+# workspace greps. Killer profile = high read_bytes/s + low CPU, whatever the PPID.
+#
+# Samples /proc/PID/io read_bytes twice (2s apart) for candidate processes
+# (rg, grep, find, python forensics). Flags sustained read rate above threshold.
+# Dry-run by default; --kill to act. Never touches PID 1, self, or the daemon.
+#
+# Usage: io-rate-reaper [--kill] [--rate-mb MB] [--sample-secs S]
+#   Defaults: 100 MB/s sustained over a 2s sample.
+
+set -u
+
+KILL=0
+RATE_MB=100
+SAMPLE=2
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --kill) KILL=1; shift ;;
+    --rate-mb) RATE_MB="$2"; shift 2 ;;
+    --sample-secs) SAMPLE="$2"; shift 2 ;;
+    *) echo "usage: io-rate-reaper [--kill] [--rate-mb MB] [--sample-secs S]" >&2; exit 1 ;;
+  esac
+done
+
+SELF=$$
+THRESH=$((RATE_MB * 1024 * 1024))
+LEASE_DIR=~/workspace/bin/.io-leases
+
+lease_active() {
+  local pid=$1 f="$LEASE_DIR/$1"
+  [[ -f "$f" ]] || return 1
+  local expiry
+  expiry=$(cut -d' ' -f1 "$f" 2>/dev/null || echo 0)
+  [[ "$expiry" -gt $(date +%s) ]]
+}
+
+declare -A R1
+# Candidate PIDs: forensics-shaped commands, excluding self
+CANDS=$(ps -eo pid,comm,args | awk -v self="$SELF" '
+  $1==self {next}
+  $2=="awk" {next}
+  $2=="rg" || $2=="grep" || $2=="find" || $3 ~ /parquet/ || $0 ~ /forensics/ {print $1}')
+
+for pid in $CANDS; do
+  [[ -r /proc/$pid/io ]] || continue
+  R1[$pid]=$(awk '/^read_bytes:/{print $2}' /proc/$pid/io 2>/dev/null || echo 0)
+done
+
+# Sampling window via interruptible isleep (no `sleep` binary per standing rule).
+# Exit 3 = interrupted early; treat the window as elapsed and proceed.
+BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"$BIN_DIR/isleep" "$SAMPLE" --name io-rate-sample --tick 0.5
+rc=$?
+[[ $rc -eq 0 || $rc -eq 3 ]] || exit $rc
+
+FLAGGED=0
+for pid in "${!R1[@]}"; do
+  [[ -d /proc/$pid ]] || continue
+  [[ "$pid" == "1" ]] && continue
+  if lease_active "$pid"; then
+    echo "io-rate-reaper: SKIP pid=$pid (active forensics lease: $(cut -d' ' -f2- "$LEASE_DIR/$pid"))"
+    continue
+  fi
+  r2=$(awk '/^read_bytes:/{print $2}' /proc/$pid/io 2>/dev/null || echo 0)
+  rate=$(( (r2 - ${R1[$pid]}) / SAMPLE ))
+  if [[ $rate -ge $THRESH ]]; then
+    cmd=$(ps -p "$pid" -o args= 2>/dev/null | head -c 120)
+    mb=$(( rate / 1024 / 1024 ))
+    if [[ $KILL -eq 1 ]]; then
+      kill -TERM "$pid" 2>/dev/null && echo "io-rate-reaper: TERM pid=$pid ${mb}MB/s :: $cmd" \
+        || echo "io-rate-reaper: FAILED to signal pid=$pid" >&2
+    else
+      echo "io-rate-reaper: FLAG pid=$pid ${mb}MB/s (dry-run) :: $cmd"
+    fi
+    FLAGGED=$((FLAGGED+1))
+  fi
+done
+
+[[ $KILL -eq 0 ]] && echo "io-rate-reaper: dry-run complete, $FLAGGED flagged (pass --kill to act)"
+exit 0

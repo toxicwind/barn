@@ -1,0 +1,41 @@
+#!/usr/bin/env bun
+// pitchfork-orphan-watch — fail-closed orphan detector for pitchfork daemons.
+//
+// Compares the daemons pitchfork reports as RUNNING against the D2 ownership
+// map (attribution.json). Any running daemon with no declared owner is an
+// ORPHAN — invisible to `bin/pitchfork-compose --check`, a future deletion
+// risk, and a sign something was started outside the composition.
+//
+// Usage: bin/pitchfork-orphan-watch
+// Exit 0: no orphans. Exit 1: orphans found (JSON report to stdout).
+import { $ } from "bun";
+
+const root = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
+const pitchforkBin =
+  process.env.PITCHFORK_BIN ??
+  `${process.env.HOME}/.local/share/mise/installs/pitchfork/2.25.0/pitchfork`;
+
+const list = await $`${pitchforkBin} list`.text();
+const running = [
+  ...new Set(
+    list
+      .split("\n")
+      .map((l) => l.trim().split(/\s+/))
+      .filter((p) => p.length >= 2 && p[1] === "running")
+      .map((p) => p[0].replace(/^[^/]*\//, ""))
+  ),
+];
+
+const tmp = `${root}/.orphan-watch.tmp.json`;
+await Bun.write(tmp, JSON.stringify(running));
+try {
+  const out =
+    await $`${root}/bin/pitchfork-compose --running ${tmp} --attribution ${root}/attribution.json`.json();
+  if (out.orphan_count > 0) {
+    console.log(JSON.stringify(out, null, 2));
+    process.exit(1);
+  }
+  console.log(`orphan-watch: 0 orphans (${running.length} daemons running)`);
+} finally {
+  await $`rm -f ${tmp}`.quiet();
+}

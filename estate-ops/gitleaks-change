@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# estate/bin/gitleaks-change — FAST hardcoded-key check on only the changed
+# files (or a specific repo's working tree).
+#
+# RACED: scanning a whole 325K-file repo per commit is O(repo) and slow. This
+# scans only the files that actually changed (git diff --name-only), which is
+# O(changes) — completes in the 2s window. Same gate config as the hooks.
+#
+# Usage:
+#   gitleaks-change                # staged + unstaged changed files (scoped)
+#   gitleaks-change <repo-dir>     # whole working tree of a repo (scoped)
+#   gitleaks-change --report f     # write JSON to f
+set -uo pipefail
+
+CFG="/home/toxic/estate/ops/git-hooks/gitleaks.toml"
+REPORT=""
+SRC="."
+MODE="diff"
+
+for a in "$@"; do
+  case "$a" in
+    --report) shift; REPORT="$1" ;;
+    --all) MODE="tree" ;;
+    *) SRC="$a" ;;
+  esac
+done
+
+if [ "$MODE" = "tree" ]; then
+  # Whole-tree scan of one repo dir (still scoped, no history).
+  cmd=(gitleaks detect --config "$CFG" --source "$SRC" --no-git --no-banner)
+  [ -n "$REPORT" ] && cmd+=(--report-path "$REPORT")
+  "${cmd[@]}"
+  rc=$?
+  echo "[gitleaks-change] tree scan exit=$rc"
+  exit "$rc"
+fi
+
+# diff-mode: scan only the changed files (fast). Build a temp file list.
+# Use git itself (assumes cwd is a git repo).
+changed="$(git -C "$SRC" diff --staged --name-only 2>/dev/null; git -C "$SRC" diff --name-only 2>/dev/null)"
+[ -z "$changed" ] && { echo "[gitleaks-change] no changed files"; exit 0; }
+mapfile -t files <<<"$changed"
+
+# gitleaks has no direct file-list mode; emulate by creating a stub tree of
+# symlinks to the changed files under a temp --source.
+tmp="$(mktemp -d)"
+for f in "${files[@]}"; do
+  case "$f" in *.gem|lost+found|*.gguf|*.onnx|*.h5) continue;; esac
+  mkdir -p "$tmp/$(dirname "$f")" 2>/dev/null
+  ln -sf "$SRC/$f" "$tmp/$f" 2>/dev/null
+done
+
+cmd=(gitleaks detect --config "$CFG" --source "$tmp" --no-git --no-banner)
+[ -n "$REPORT" ] && cmd+=(--report-path "$REPORT")
+"${cmd[@]}"
+rc=$?
+rm -rf "$tmp"
+echo "[gitleaks-change] changed-files scan exit=$rc"
+exit "$rc"

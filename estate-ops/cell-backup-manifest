@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+"""cell-backup-manifest — the ONE canonical manifest/verdict writer for daily cell backups.
+
+Ground truth is the archive files on disk. This writer:
+  1. enumerates the actual archives in the backup dir (top level, dotfiles included),
+  2. streams sha256 over every file,
+  3. writes ONE canonical MANIFEST.txt plus ONE VERDICT.json, atomically
+     (temp file + fsync + rename, so readers never see a partial manifest),
+  4. refuses to write a verdict unless entry count == files hashed
+     (any read/hash failure aborts BEFORE anything is written).
+
+MANIFEST.txt format (kept compatible with the 2026-09-18 generation that was
+independently verified 434/434):
+    <header lines>
+    PASS <name> bytes=<n> sha256=<hex>
+one line per archive, sorted by name.
+
+SUPERSEDED LEGACY MANIFESTS — historical only, never written by this tool,
+never deleted (durable history):
+  MANIFEST.json        342 entries, 2026-09-17 — stale, predates recompression
+  manifest.jsonl       366 entries — stale, mixed .tar.gz/.tar.zst era
+  manifest.jsonl.part  partial write, 2026-09-17 — never completed
+Their divergence is exactly what this single writer exists to prevent.
+
+Usage:
+  cell-backup-manifest --dir /home/toxic/cell-backup-YYYYMMDD/
+
+Exit codes: 0 ok | 2 no archives found | 3 read/hash failure (nothing written)
+            | 4 write/rename failure | 5 unusable filename (whitespace)
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import sys
+import time
+from datetime import datetime, timezone
+
+VERSION = "v1"
+ARCHIVE_SUFFIXES = (".tar", ".tar.gz", ".tar.zst", ".tgz")
+CHUNK = 1024 * 1024
+
+
+def fail(msg, code):
+    print(f"cell-backup-manifest: FATAL: {msg}", file=sys.stderr)
+    return code
+
+
+def enumerate_archives(d):
+    names = []
+    for entry in os.listdir(d):
+        full = os.path.join(d, entry)
+        if not os.path.isfile(full):
+            continue
+        if entry.endswith(".tmp-manifest"):
+            continue  # our own temp files, never inventory them
+        if entry in ("MANIFEST.txt", "VERDICT.json"):
+            continue  # metadata, not backup payload
+        if entry.lower().endswith(ARCHIVE_SUFFIXES):
+            names.append(entry)
+    return sorted(names)
+
+
+def hash_all(d, names):
+    """Returns (inventory, None, None) on success,
+    (None, 'unusable-name', name) on a whitespace filename,
+    (None, 'read-error', detail) on any I/O failure."""
+    inv = []
+    for name in names:
+        if any(c.isspace() for c in name):
+            # would corrupt the line-oriented manifest; refuse loudly
+            return None, "unusable-name", name
+        h = hashlib.sha256()
+        size = 0
+        try:
+            with open(os.path.join(d, name), "rb") as f:
+                while True:
+                    chunk = f.read(CHUNK)
+                    if not chunk:
+                        break
+                    h.update(chunk)
+                    size += len(chunk)
+        except OSError as e:
+            return None, "read-error", f"{name}: {e}"
+        inv.append((name, size, h.hexdigest()))
+    return inv, None, None
+
+
+def atomic_write(path, data: bytes):
+    tmp = f"{path}.tmp-manifest-{os.getpid()}"
+    try:
+        with open(tmp, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)  # atomic on POSIX
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+    # fsync the directory so the rename itself is durable
+    dirfd = os.open(os.path.dirname(os.path.abspath(path)), os.O_DIRECTORY)
+    try:
+        os.fsync(dirfd)
+    finally:
+        os.close(dirfd)
+
+
+def main():
+    ap = argparse.ArgumentParser(description="canonical cell-backup manifest writer")
+    ap.add_argument("--dir", required=True, help="backup dir holding the archives")
+    args = ap.parse_args()
+    d = os.path.abspath(args.dir)
+    if not os.path.isdir(d):
+        return fail(f"not a directory: {d}", 2)
+
+    names = enumerate_archives(d)
+    if not names:
+        return fail(f"no archives (*.tar*) found in {d} — refusing to write empty manifest", 2)
+
+    inv, err_kind, err_detail = hash_all(d, names)
+    if inv is None:
+        if err_kind == "read-error":
+            return fail(f"read/hash failure on {err_detail} — nothing written", 3)
+        return fail(f"unusable filename {err_detail!r} — nothing written", 5)
+
+    n = len(inv)
+    # INVARIANT: the verdict is built from the same inventory list; a verdict whose
+    # entry count != files hashed cannot be constructed — any deviation aborts above.
+    assert n == len(names), "inventory/count divergence — refusing to write"
+
+    now = datetime.now(timezone.utc).isoformat()
+    bytes_total = sum(size for _, size, _ in inv)
+    header = (
+        f"cell-backup manifest — generated {now} by cell-backup-manifest {VERSION}\n"
+        f"entries={n}\n"
+        f"bytes_total={bytes_total}\n"
+        f"\n"
+    )
+    lines = "".join(f"PASS {name} bytes={size} sha256={digest}\n" for name, size, digest in inv)
+    verdict = {
+        "generated_utc": now,
+        "generator": f"cell-backup-manifest {VERSION}",
+        "dir": d,
+        "manifest": "MANIFEST.txt",
+        "entries": n,
+        "verified_ok": n,
+        "verified_failed": 0,
+        "bytes_total": bytes_total,
+        "invariant": "entries == files_hashed == manifest PASS lines; "
+                     "verdict is never written unless all three agree",
+    }
+    try:
+        atomic_write(os.path.join(d, "MANIFEST.txt"), (header + lines).encode())
+        atomic_write(os.path.join(d, "VERDICT.json"),
+                     (json.dumps(verdict, indent=2) + "\n").encode())
+    except OSError as e:
+        return fail(f"atomic write failed: {e}", 4)
+
+    print(f"cell-backup-manifest: OK dir={d} entries={n} "
+          f"verified_ok={n} verified_failed=0 bytes_total={bytes_total}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

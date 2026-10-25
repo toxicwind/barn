@@ -1,0 +1,22 @@
+#!/bin/bash
+# squawk-alert <channel> <text> — durable fleet alert poster for pitchfork hooks.
+# Writes a message file into the canonical squawk chat tree; inotify pickup
+# does the rest. No network, no credentials, survives restarts.
+set -euo pipefail
+CHANNEL="${1:?usage: squawk-alert <channel> <text>}"
+TEXT="${2:?usage: squawk-alert <channel> <text>}"
+ROOT="/home/toxic/.fleet-bus/squawk-root/$CHANNEL"
+mkdir -p "$ROOT"
+SEQ=$(python3 -c "
+import os
+d = \"$ROOT\"
+mx = 0
+for f in os.listdir(d):
+    if f[0].isdigit():
+        try: mx = max(mx, int(f.split(\"-\")[0]))
+        except ValueError: pass
+print(mx + 1)
+")
+TS=$(date -Iseconds)
+printf -- "---\nseq: %s\nfrom: pitchfork\nto: all\nchannel: %s\nts: %s\nstatus: alert\ntitle: daemon-alert\n---\n%s\n" "$SEQ" "$CHANNEL" "$TS" "$TEXT" > "$ROOT/$SEQ-pitchfork-msg.md"
+echo "posted $CHANNEL/$SEQ"

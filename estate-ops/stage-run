@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# stage-run — Stage run files and manifest into /home/toxic/estate/runs/<run_id>/
+set -euo pipefail
+
+ESTATE_RUNS="/home/toxic/estate/runs"
+RUN_ID="${1:-$(date -u +%Y%m%d-%H%M%S)}"
+RUN_DIR="$ESTATE_RUNS/$RUN_ID"
+
+mkdir -p "$RUN_DIR"
+shift || true
+
+echo "Staging run into: $RUN_DIR"
+STAGED_FILES=()
+
+for f in "$@"; do
+  if [ -e "$f" ]; then
+    cp -r "$f" "$RUN_DIR/"
+    STAGED_FILES+=("$(basename "$f")")
+    echo "  + Staged: $(basename "$f")"
+  else
+    echo "  ! Warning: $f not found, skipping"
+  fi
+done
+
+MANIFEST_FILE="$RUN_DIR/manifest.json"
+cat << EOF > "$MANIFEST_FILE"
+{
+  "run_id": "$RUN_ID",
+  "staged_at": "$(date -u +%FT%TZ)",
+  "run_dir": "$RUN_DIR",
+  "files": $(printf '%s\n' "${STAGED_FILES[@]:-}" | jq -R . | jq -s .),
+  "sync_target": "dropbox:Sovereign/runs",
+  "sync_policy": "autonomous_host_runner"
+}
+EOF
+
+echo "Created manifest: $MANIFEST_FILE"
+echo "Run $RUN_ID staged successfully in estate."

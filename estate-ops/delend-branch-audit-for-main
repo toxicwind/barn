@@ -1,0 +1,26 @@
+#!/usr/bin/env bun
+/**
+ * delend-branch-audit-for-main — audit branches against main for ANY repo (estate-wide).
+ * Thin shim over the @delendai/global-gh plugin (DelendAI first-class plugin).
+ */
+import { branchAuditMain } from "/home/toxic/pens/barn/corral/delendai/plugins/global-gh/src/index.ts";
+const argv = process.argv.slice(2);
+if (argv.includes("--help") || argv.includes("-h")) {
+  console.log(`delend-branch-audit-for-main — audit branches against main for ANY repo (estate-wide).
+
+Usage:
+  delend-branch-audit-for-main                          # cwd repo, audit only
+  delend-branch-audit-for-main --repo /path/to/repo
+  delend-branch-audit-for-main --repo https://github.com/org/repo --merge-ready
+  delend-branch-audit-for-main --only <substring> --main <branch>
+
+Flags:
+  --repo <path|url>   local git checkout path or any git upstream URL (clone + audit)
+  --main <branch>     default branch to audit against (default: main)
+  --only <substring>  only audit branches whose name includes <substring>
+  --merge-ready       safely merge non-diverged ahead branches into the default branch
+  --push              also push (for a real checkout; clones stay read-only unless set)
+`);
+  process.exit(0);
+}
+process.exit(branchAuditMain(argv));

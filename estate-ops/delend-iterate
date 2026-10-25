@@ -1,0 +1,7 @@
+#!/usr/bin/env bun
+/**
+ * delend-iterate — async/await-aware synchronous iteration driver.
+ * Thin shim over the @delendai/iterate plugin (DelendAI first-class plugin).
+ */
+import { main } from "/home/toxic/pens/barn/corral/delendai/plugins/iterate/src/index.ts";
+if (import.meta.main) process.exit(main(process.argv.slice(2)));

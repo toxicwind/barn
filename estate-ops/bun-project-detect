@@ -1,0 +1,88 @@
+#!/usr/bin/env bun
+// bun-project-detect — high-performance recursive Bun workspace/project detector
+// Classifies directories into Bun monorepos, standalone packages, or non-bun projects
+// Usage: bun-project-detect [path] [--depth N] [--json]
+
+import { readdirSync, statSync, existsSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+
+const root = resolve(process.argv[2] && !process.argv[2].startsWith("--") ? process.argv[2] : process.cwd());
+const maxDepth = (() => {
+  const idx = process.argv.indexOf("--depth");
+  return idx !== -1 && process.argv[idx + 1] ? parseInt(process.argv[idx + 1], 10) : 3;
+})();
+const jsonMode = process.argv.includes("--json");
+
+interface ProjectInfo {
+  path: string;
+  type: "workspace-root" | "workspace-member" | "standalone-bun" | "npm-legacy";
+  hasBunLock: boolean;
+  hasBunfig: boolean;
+  workspaces?: string[];
+  name?: string;
+}
+
+const projects: ProjectInfo[] = [];
+
+function scan(dir: string, depth: number) {
+  if (depth > maxDepth) return;
+
+  const pkgPath = join(dir, "package.json");
+  if (existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+      const hasBunLock = existsSync(join(dir, "bun.lock")) || existsSync(join(dir, "bun.lockb"));
+      const hasBunfig = existsSync(join(dir, "bunfig.toml"));
+      
+      let type: ProjectInfo["type"] = "npm-legacy";
+      let workspaces: string[] | undefined = undefined;
+
+      if (pkg.workspaces) {
+        type = "workspace-root";
+        workspaces = Array.isArray(pkg.workspaces) ? pkg.workspaces : pkg.workspaces.packages;
+      } else if (hasBunLock || hasBunfig) {
+        type = "standalone-bun";
+      }
+
+      projects.push({
+        path: dir,
+        type,
+        hasBunLock,
+        hasBunfig,
+        workspaces,
+        name: pkg.name || "<unnamed>",
+      });
+    } catch {}
+  }
+
+  // Traverse child directories
+  try {
+    const entries = readdirSync(dir, { withFileTypes: true });
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      if (["node_modules", ".git", "dist", "build", "target", ".cache"].includes(e.name)) continue;
+      scan(join(dir, e.name), depth + 1);
+    }
+  } catch {}
+}
+
+scan(root, 0);
+
+if (jsonMode) {
+  console.log(JSON.stringify(projects, null, 2));
+} else {
+  console.log(`⚡ [bun-project-detect] Discovered ${projects.length} JS/TS projects under ${root}:`);
+  const roots = projects.filter(p => p.type === "workspace-root");
+  const standalone = projects.filter(p => p.type === "standalone-bun");
+  const others = projects.filter(p => p.type === "npm-legacy");
+
+  console.log(`\n📦 Workspace Roots (${roots.length}):`);
+  roots.forEach(r => console.log(`  • ${r.name} @ ${r.path} (workspaces: ${r.workspaces?.length || 0})`));
+
+  console.log(`\n🍞 Standalone Bun Projects (${standalone.length}):`);
+  standalone.slice(0, 15).forEach(s => console.log(`  • ${s.name} @ ${s.path}`));
+  if (standalone.length > 15) console.log(`  ... and ${standalone.length - 15} more.`);
+
+  console.log(`\n📜 Other Packages (${others.length}):`);
+  console.log(`  Total managed packages discovered: ${projects.length}\n`);
+}

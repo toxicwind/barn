@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Estate Path & Binary Audit Launcher
+set -euo pipefail
+# ESTATE_ROOT is the canonical name (formerly SOVEREIGN_ROOT).
+SOV="${ESTATE_ROOT:-/home/toxic/estate}"
+exec bun "$SOV/helpers/estate-scanner.ts" "$@"

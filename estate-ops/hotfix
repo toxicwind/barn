@@ -1,0 +1,72 @@
+#!/usr/bin/env bun
+// ============================================================================
+// ESTATE — Hotfix Registry Management CLI
+// Usage: hotfix [list|status|enable|disable] [target]
+// ============================================================================
+
+import { preReleaseIntegration } from "../src/lib/pre_release_integration.ts";
+
+const args = process.argv.slice(2);
+const command = args[0] || "list";
+const target = args[1];
+
+switch (command) {
+  case "list": {
+    await preReleaseIntegration.loadAll();
+    console.log(
+      "\n⚡ Estate Pre-Release Integration — Staging Modules\n" +
+        "=".repeat(60),
+    );
+    console.log(
+      "Production logic is integrated DIRECTLY in code. Zero patches active.",
+    );
+    console.log("=".repeat(60) + "\n");
+    break;
+  }
+  case "disable": {
+    if (!target) {
+      console.error(
+        "Error: specify patch target to disable (e.g. hotfix disable services.tau)",
+      );
+      process.exit(1);
+    }
+    await preReleaseIntegration.loadAll();
+    const ok = false;
+    if (ok) {
+      console.log(
+        `✔ Disabled patch '${target}'. Core will fall back to default implementation.`,
+      );
+    } else {
+      console.error(`✖ Patch '${target}' not found.`);
+      process.exit(1);
+    }
+    break;
+  }
+  case "enable": {
+    if (!target) {
+      console.error(
+        "Error: specify patch target to enable (e.g. hotfix enable services.tau)",
+      );
+      process.exit(1);
+    }
+    await preReleaseIntegration.loadAll();
+    const ok = false;
+    if (ok) {
+      console.log(`✔ Enabled patch '${target}'. Live resolution active.`);
+    } else {
+      console.error(`✖ Patch '${target}' not found or could not be enabled.`);
+      process.exit(1);
+    }
+    break;
+  }
+  case "status": {
+    await preReleaseIntegration.loadAll();
+    console.log(
+      `Pre-release integration operational. Core is running on direct code.`,
+    );
+    break;
+  }
+  default:
+    console.log(`Usage: hotfix [list|status|enable|disable] [target]`);
+    break;
+}

@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# oracle-judge: deterministic scaffolding for automated debate verdicts.
+# The debate skill already has the two halves of an oracle:
+#   judge-brief  -> renders a clean-context bundle (topic, constraints, positions)
+#   resolve      -> records the judge's verdict (final)
+# What's missing is the judge itself. This script prepares the oracle run:
+# renders the brief, checks judging readiness, and prints the exact rubric
+# + resolve invocation for the judging agent (or c2) to execute.
+#
+# Autonomous mode: pass --auto to have the CALLER (an agent, not this script)
+# spawn a clean-context judge with the brief file, then record the verdict.
+# This script never calls resolve itself -- verdict authority stays with
+# whoever invokes the oracle (c2/coordinator per the debate->decider pipeline).
+#
+# Usage: oracle-judge --debate <id> [--brief-out <path>]
+set -u
+DEBATE=""
+BRIEF_OUT=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --debate) DEBATE="$2"; shift 2 ;;
+    --brief-out) BRIEF_OUT="$2"; shift 2 ;;
+    *) echo "usage: oracle-judge --debate <id> [--brief-out <path>]" >&2; exit 1 ;;
+  esac
+done
+[[ -z "$DEBATE" ]] && { echo "missing --debate" >&2; exit 1; }
+
+SKILL=~/workspace/skills/debate
+BRIEF_OUT="${BRIEF_OUT:-/tmp/oracle-brief-$DEBATE.md}"
+
+"$SKILL/bin/runner.sh" judge-brief --debate "$DEBATE" > "$BRIEF_OUT" 2>/tmp/oracle-err.txt \
+  || { echo "judge-brief failed:" >&2; cat /tmp/oracle-err.txt >&2; exit 1; }
+
+STANCES=$("$SKILL/bin/runner.sh" status --debate "$DEBATE" 2>/dev/null | grep -o "stances=\[[^]]*\]" || echo "stances=unknown")
+echo "brief: $BRIEF_OUT ($(wc -c < "$BRIEF_OUT") bytes)"
+echo "stances: $STANCES"
+case "$STANCES" in
+  *pro*con*synthesis*|*pro*synthesis*con*|*con*pro*synthesis*|*con*synthesis*pro*|*synthesis*pro*con*|*synthesis*con*pro*)
+    echo "readiness: READY (pro+con+synthesis present)" ;;
+  *) echo "readiness: WAITING (need pro+con+synthesis before oracle judging)" ;;
+esac
+echo ""
+echo "--- judging rubric (for the clean-context judge) ---"
+cat << 'RUBRIC'
+1. Evidence grounding (weight 0.5): does the position cite measured tool
+   output (vmstat, run records, ledger rows) over bare assertion? Positions
+   with numbers beat positions with adjectives.
+2. Constraint compliance (weight 0.3): additive-only, no fleet-liveness
+   breakage, cell-disposable/awrawr-pc-durable split respected.
+3. Failure-mode coverage (weight 0.2): does it address the MEASURED failure
+   (iowait/disk-thrash here), not the topic-line's stale framing?
+Winner: a position seq, or 'synthesis' composing non-conflicting measures
+from multiple positions. Confidence 0-1 with rationale citing specific
+evidence lines from the brief.
+RUBRIC
+echo ""
+echo "--- record the verdict ---"
+echo "$SKILL/bin/runner.sh resolve --debate $DEBATE --winner <seq|synthesis> \\"
+echo "  --confidence <0-1> --rationale-file <file> --judge-author oracle"

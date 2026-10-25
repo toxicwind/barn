@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# grid-4 — tile four X11 windows into a clean, aesthetic 2x2 grid,
+# AND toggle between grid and single-window full resolution (esp. for browsers).
+# Keeps the keeper :99 desktop mac-like: even gaps, top margin, above the taskbar.
+#
+# Usage:
+#   grid-4 --all                          tile the 4 open client windows into 2x2
+#   grid-4 win1 [win2 win3 win4]          tile the given windows (id or name)
+#   grid-4 --one [win]                    enlarge ONE window to full work area (browser)
+#   grid-4 --toggle                       toggle between grid and full-res
+#   grid-4 --restore                      ungrid / back to prior per-window layout
+
+set -u
+: "${DISPLAY:=:99}"
+
+PANEL_H=30          # tint2 taskbar height at the bottom
+MARGIN=12           # outer margin around the whole grid
+GAP=10              # gap between the four cells
+STATE=/tmp/grid-4.state
+: "${arg_ids:=()}"
+
+# ---- read the ACTUAL root geometry once (resolution-resilient) ----
+ROOT_W=1600; ROOT_H=900
+# prefer wmctrl -d "DG: <W>x<H>  VP: ..." (clean); fall back to xrandr "WxH+0+0"
+geom=$(DISPLAY=$DISPLAY wmctrl -d 2>/dev/null | awk 'NR==1{for(i=1;i<=NF;i++) if($i ~ /^DG:/){print $(i+1); break}}')
+if [[ -z "$geom" || "$geom" != *x* ]]; then
+  geom=$(DISPLAY=$DISPLAY xrandr --current 2>/dev/null | awk '/ connected /{print $4; exit}')
+fi
+geom=${geom%%+*}   # strip any "+x+y" offset
+if [[ "$geom" == *"x"* ]]; then
+  ROOT_W=${geom%%x*}; ROOT_H=${geom##*x}
+fi
+
+WORK_H=$((ROOT_H - PANEL_H - MARGIN))
+TOP=$MARGIN; LEFT=$MARGIN
+CELL_W=$(((ROOT_W - 2*MARGIN - GAP) / 2))
+CELL_H=$(((WORK_H - GAP) / 2))
+
+pick_id() { # $1 = name substring or window id -> prints hex id
+  case "$1" in
+    0x*|0X*) echo "$1" ;;
+    *) wmctrl -l | awk -v n="$1" 'index($0,n){print $1; exit}' ;;
+  esac
+}
+
+do_one() { # $1=window id -> maximize into full work area (full resolution)
+  local win="$1"
+  local ext; local fl=0 ft=0
+  ext=$(DISPLAY=$DISPLAY xprop -id "$win" _NET_FRAME_EXTENTS 2>/dev/null)
+  if [[ "$ext" == *"="* ]]; then
+    local fv=${ext#*=}; fv=${fv//,/ }
+    read -r fl fr ft fb <<< "$fv"
+  fi
+  wmctrl -i -r "$win" -e 0,$((LEFT-fl)),$((TOP-ft)),$((ROOT_W-2*MARGIN)),$((WORK_H))
+  wmctrl -i -a "$win"
+  echo "grid-4: focused $win to full resolution."
+}
+
+case "${1:-}" in
+  --one)
+    target="$2"; [ -z "${target:-}" ] && target=$(DISPLAY=$DISPLAY xprop -root _NET_ACTIVE_WINDOW | awk '{print $5}' | tr -d '#')
+    do_one "$(pick_id "$target")"
+    exit 0
+    ;;
+  --toggle)
+    if [[ -f "$STATE" ]]; then
+      rm -f "$STATE"
+      exec "$0" --all
+    else
+      wmctrl -lG > "$STATE"
+      do_one "$(DISPLAY=$DISPLAY xprop -root _NET_ACTIVE_WINDOW | awk '{print $5}' | tr -d '#')"
+      exit 0
+    fi
+    ;;
+  --restore) rm -f "$STATE"; exec "$0" --all ;;
+  --all) : ;;  # proceed to main body (no re-exec)
+  *) # 1-4 named windows
+    targets=()
+    for a in "$@"; do targets+=("$(pick_id "$a")"); done
+    arg_ids=("${targets[@]}")
+    ;;
+esac
+
+# ---- resolve target window ids (arg_ids already set by case dispatch) ----
+
+# collect openbox client windows (exclude tint2 panel)
+client_wins=$(wmctrl -l | awk '$2 !~ /-1/ {print $1}' | grep -v '^0x1400008' | grep -iv 'tint2')
+
+targets=()
+for a in "${arg_ids[@]:-}"; do
+  case "$a" in
+    0x*|0X*) targets+=("$a") ;;
+    *)       id=$(wmctrl -l | awk -v n="$a" 'index($0,n){print $1; exit}'); [ -n "$id" ] && targets+=("$id") ;;
+  esac
+done
+
+# fill remaining slots from client list, preferring real app windows
+for w in $client_wins; do
+  if [[ ${#targets[@]} -ge 4 ]]; then break; fi
+  case " ${targets[*]} " in
+    *" $w "*) ;;
+    *) targets+=("$w") ;;
+  esac
+done
+if [[ ${#targets[@]} -lt 4 ]]; then
+  echo "grid-4: only ${#targets[@]} target windows present, need 4." >&2
+  exit 1
+fi
+
+# 2x2 layout (top-left, top-right, bottom-left, bottom-right)
+idx=0
+for win in "${targets[@]:0:4}"; do
+  row=$((idx / 2)); col=$((idx % 2))
+  cell_x=$((LEFT + col * (CELL_W + GAP)))
+  cell_y=$((TOP + row * (CELL_H + GAP)))
+  # account for the window's frame border so the CLIENT area lands in the cell
+  frame_left=0; frame_top=0
+  ext=$(DISPLAY=$DISPLAY xprop -id "$win" _NET_FRAME_EXTENTS 2>/dev/null)
+  if [[ "$ext" == *"="* ]]; then
+    fv=${ext#*=}; fv=${fv//,/ }; read -r fl fr ft fb <<< "$fv"
+    frame_left=${fl:-0}; frame_top=${ft:-0}
+  fi
+  x=$((cell_x - frame_left))
+  y=$((cell_y - frame_top))
+  wmctrl -i -r "$win" -e 0,$x,$y,$CELL_W,$CELL_H
+  idx=$((idx + 1))
+done
+
+# raise + focus the first target so there's an obvious active tile
+wmctrl -i -a "${targets[0]}"
+
+echo "grid-4: tiled ${targets[*]:0:4} into ${CELL_W}x${CELL_H} cells."

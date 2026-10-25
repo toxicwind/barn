@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# tcp-probe PORT — exit 0 if something accepts TCP on 127.0.0.1:PORT.
+# Used by mise health tasks for raw-TCP services (redis/valkey, kafka, dnsmasq).
+set -u
+python3 -c 'import socket,sys;socket.create_connection(("127.0.0.1",int(sys.argv[1])),2).close()' "$1"
