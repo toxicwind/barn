@@ -9,55 +9,41 @@ the `:25127/mcp` endpoint every MCP client on the estate talks to.
 > Thresher = the machine that beats the chaff out of the grain: it lets the
 > relevant tools through and holds the rest back.
 
+## What this repo is
+
+This repository **is** the product. The estate forked `mcpproxy-go` and
+extended it in place (module root), rather than building from a separate
+vendored upstream clone. The gateway is compiled directly from
+`./cmd/mcpproxy` in this tree.
+
+- `cmd/mcpproxy` — the `serve` gateway binary entrypoint.
+- `internal/…` — server, config, upstream orchestration, tray, TUI, security.
+- `web/` — the embedded management UI.
+- `bin/thresher` — build artifact from `build.sh` (gitignored).
+
 ## Layout
 
 ```
 pens/barn/thresher/
-  bin/thresher                 # the gateway binary (Go, built from ./vendor)
-  bin/thresher-mcp-stdio       # stdio MCP bridge (stdio clients -> :25127/mcp)
-  bin/github-mcp.sh            # GitHub MCP launcher
-  vendor/                      # upstream source + our estate patches (git)
-  vendor.old-20261023/         # memorialized pre-fork snapshot (do not edit)
-  build.sh                     # build the binary from ./vendor
-  docs/UPGRADE-RUNBOOK.md      # how to re-sync with upstream
-  docs/COVERAGE.md             # coverage state of the carried estate packages
+  cmd/mcpproxy                # the Go gateway entrypoint (module root)
+  build.sh                    # go build -o bin/thresher ./cmd/mcpproxy
+  tests/coverage_gate.sh      # coverage gate on estate-owned packages
+  docs/UPGRADE-RUNBOOK.md     # how to re-sync with upstream
+  docs/COVERAGE.md            # coverage state of the carried estate packages
+  _archive/vendor-20261024/   # pre-merge upstream clone snapshots (reference only)
 ```
 
 ## Lineage
 
-| Layer | Source | State |
-|---|---|---|
-| Upstream | `smart-mcp-proxy/mcpproxy-go` @ `c82d515d` (2,033 commits) | full git history vendored |
-| Our branch | `vendor` branch `estate/awrawr` (commit `7861ef21`) | estate patches on top of upstream HEAD |
-| Old snapshot | `vendor.old-20261023/` | squashed, 2,033 commits behind — **kept for reference only** |
+| Layer     | Source                                                     | State                 |
+| --------- | ---------------------------------------------------------- | --------------------- |
+| Upstream  | `smart-mcp-proxy/mcpproxy-go` @ `c82d515d` (2,033 commits) | merged as module root |
+| This fork | estate extensions on top of upstream HEAD                  | working tree + `main` |
 
-The old snapshot had **no shared history** with upstream (squashed at vendor
-time), which is why drift went unnoticed for months. The current vendor dir
-keeps real upstream ancestry, so `git log`/`git merge-base` answer drift
-questions directly.
-
-## Estate deltas carried on top of upstream
-
-Carried (our code, on top of upstream HEAD):
-
-- `cmd/mcpproxy/secrets_cmd.go` — secretsmith keyring integration (estate rule 3:
-  secrets live in the keyring, never in source).
-- `internal/config/server_edition_config.go` — server-edition config surface.
-- `internal/contracts/intent.go`, `internal/contracts/types.go`,
-  `internal/contracts/converters.go` — **variant calls** (intent routing).
-- `internal/httpapi/scope.go`, `internal/httpapi/scope_subtree.go` — scope
-  subtree selection for tool routing.
-
-Deliberate posture (decided 2026-10-23, "anti-security / full YOLO"):
-
-- Destructive tools are **auto-approved** via generic call
-  (`tools_allow_destructive_via_generic_call`) — the estate prefers momentum
-  over ceremony.
-- **No quarantine layer** and **no sandbox** in the fork.
-- Upstream's **TPA signature bundles** are adopted, but our `security_cmd.go`
-  surface is kept alongside them.
-- Auth: upstream's fail-closed constant-time compare and agent-token model,
-  with the API key sourced from the secretsmith keyring.
+The 2026-10-24 merge folded the vendored upstream clone (`vendor/`,
+`vendor.old-20261023/`) into the module root and moved those snapshots to
+`_archive/vendor-20261024/` for reference. There is no separate vendored
+build source anymore — `build.sh` builds this tree directly.
 
 ## Runtime
 
@@ -90,5 +76,5 @@ pens/audit-links.sh                                         # product contract
 ## Building
 
 ```bash
-bash build.sh            # -> bin/thresher
+bash build.sh            # -> bin/thresher  (from ./cmd/mcpproxy)
 ```

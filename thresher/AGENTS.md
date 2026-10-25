@@ -10,11 +10,13 @@ patches. It is the estate's MCP federation + control surface on `:25127/mcp`.
 
 ## Ownership
 
-- **Source of truth**: `vendor/` (git clone of upstream + branch `estate/awrawr`).
-- **Never edit** `vendor.old-20261023/` — memorialized snapshot, reference only.
+- **Source of truth**: this repo (module root). Upstream `mcpproxy-go` was
+  merged in-place; `_archive/vendor-20261024/` holds the pre-merge clone
+  snapshots, reference only.
+- **Never edit** `_archive/` — archived snapshots, do not touch.
 - **One writer per subtree**: upstream files belong to upstream (rebase, don't
-  hand-edit); `estate/awrawr` commits belong to us.
-- The binary is built from `vendor/` — `bin/thresher` is a build artifact
+  hand-edit); estate commits belong to us.
+- The binary is built from `./cmd/mcpproxy` — `bin/thresher` is a build artifact
   (rebuild via `build.sh`, never hand-patch the binary).
 
 ## Build & deploy
@@ -24,8 +26,8 @@ bash build.sh                                   # rebuild bin/thresher
 cd /home/toxic/estate && pitchfork restart thresher   # deploy = restart
 ```
 
-Deploy means a **running process uses the new binary**. After any vendor
-change: rebuild → restart → `curl -s http://127.0.0.1:25127/health`.
+Deploy means a **running process uses the new binary**. After any change:
+rebuild → restart → `curl -s http://127.0.0.1:25127/health`.
 
 ## Ports & data
 
@@ -56,7 +58,7 @@ a decision, not an oversight.
 bash /home/toxic/estate/bin/bin-verify.sh          # link contract (30 ok)
 /home/toxic/pens/audit-links.sh                     # product contract (26 ok)
 python3 /home/toxic/pens/barn/thresher/tests/timing_regression.py
-cd vendor && go test ./... -coverprofile=coverage.out   # see docs/COVERAGE.md
+go test ./... -coverprofile=coverage.out            # see docs/COVERAGE.md
 ```
 
 ## Upstream sync

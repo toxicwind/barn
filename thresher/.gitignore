@@ -1,3 +1,6 @@
-# gatehouse/.gitignore
-# bin/ is a build artifact produced by build.sh from ./vendor — never commit.
+# thresher/.gitignore
+# bin/ is a build artifact produced by build.sh from ./cmd/mcpproxy — never commit.
 /bin/
+
+# coverage profiles written by tests/coverage_gate.sh and AGENTS.md examples.
+/coverage*.out

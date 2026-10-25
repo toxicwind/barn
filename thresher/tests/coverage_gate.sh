@@ -10,9 +10,8 @@
 set -uo pipefail
 
 THRESHER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VENDOR="${THRESHER_DIR}/vendor"
 THRESHOLD="${1:-95}"
-PROFILE="${VENDOR}/coverage-estate.out"
+PROFILE="${THRESHER_DIR}/coverage-estate.out"
 
 # Estate-owned packages: the ones holding our carried files plus the
 # operational surface we gate on (secrets cmd lives in cmd/mcpproxy).
@@ -23,7 +22,7 @@ PACKAGES=(
   ./internal/httpapi
 )
 
-cd "${VENDOR}" || { echo "FAIL: no vendor dir at ${VENDOR}"; exit 1; }
+cd "${THRESHER_DIR}" || exit 1
 
 echo "== running estate coverage (threshold ${THRESHOLD}%) =="
 if ! go test -count=1 -coverprofile="${PROFILE}" "${PACKAGES[@]}"; then

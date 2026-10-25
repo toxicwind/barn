@@ -1,20 +1,19 @@
 #!/usr/bin/env bash
-# build.sh — vendored mcpproxy-go (thresher fork) build.
-# Produces bin/thresher (the `serve` gateway binary) from the vendored
-# mcpproxy-go source under ./vendor. No pinned fork binary: the estate
-# gateway is built from the vendored source, forward-only.
+# build.sh — build the estate's own thresher gateway binary directly.
+#
+# Thresher IS the product: a fork of smart-mcp-proxy/mcpproxy-go with the
+# estate's extensions (security leases, activity ledger, upstream ops, tray,
+# TUI) living at the module root. The gateway is built from THIS tree
+# (./cmd/mcpproxy), not from a vendored upstream clone.
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# Source is vendored from ranch/mcpproxy-go (module github.com/smart-mcp-proxy/mcpproxy-go).
-VENDOR="${1:-vendor}"
+# The //go:embed all:frontend/dist target must exist (empty dir falls back to
+# the embedded stub UI; the real UI is built separately into web/frontend/dist).
+mkdir -p web/frontend/dist
+touch web/frontend/dist/.gitkeep
 
-# Ensure the //go:embed all:frontend/dist target exists (empty dir falls back
-# to the embedded stub UI; real UI is built separately into web/frontend/dist).
-mkdir -p "$VENDOR/web/frontend/dist"
-touch "$VENDOR/web/frontend/dist/.gitkeep"
-
-echo "building thresher from vendored mcpproxy-go..."
-(cd "$VENDOR" && go build -o "$(readlink -f ..)/bin/thresher" ./cmd/mcpproxy)
+echo "building thresher from the estate module root..."
+go build -o "$(pwd)/bin/thresher" ./cmd/mcpproxy
 echo "done: bin/thresher ($(du -h bin/thresher | cut -f1))"
 bin/thresher --version
