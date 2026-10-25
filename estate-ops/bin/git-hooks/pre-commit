@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# pre-commit: KB §2 rollup freshness enforcement (Alternative A, Chris 2026-09-29).
+#
+# §2 Active Crews is a GENERATED rollup from docs/fleet/crews/*.md (one file
+# per crew). If this commit touches the crews dir or the KB, re-run the rollup
+# and fail closed when the working tree changed: the committer re-stages the
+# regenerated files and retries. Hand-edits to the §2 table are never kept —
+# the generated content wins, and the message says where the change belongs.
+#
+# Install: cp projects/ops/bin/git-hooks/pre-commit "$(git rev-parse --git-path hooks)/pre-commit"
+#          (hooks resolve to the COMMON dir; --git-dir misses worktrees)
+#          chmod +x "$(git rev-parse --git-path hooks)/pre-commit"
+#          chmod +x "$(git rev-parse --git-dir)/hooks/pre-commit"
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+[ -n "$ROOT" ] || exit 0
+KB="$ROOT/docs/fleet-knowledgebase.md"
+ROLLUP="$ROOT/projects/ops/bin/kb-rollup.ts"
+[ -f "$KB" ] || exit 0
+
+# Only enforce when the commit touches KB territory.
+git diff --cached --name-only --diff-filter=ACMR | grep -qE '^(docs/fleet/crews/|docs/fleet-knowledgebase\.md$)' || exit 0
+
+# Only enforce on a post-migration KB (markers present).
+grep -q "KB-ROLLUP:START" "$KB" || exit 0
+
+BUN_BIN="$(command -v bun || true)"
+[ -n "$BUN_BIN" ] || BUN_BIN="$HOME/.bun/bin/bun"
+[ -x "$BUN_BIN" ] || { echo "pre-commit: bun not found, cannot verify §2 rollup" >&2; exit 1; }
+[ -f "$ROLLUP" ] || { echo "pre-commit: kb-rollup.ts missing at $ROLLUP" >&2; exit 1; }
+
+before="$(sha256sum "$KB" | cut -d' ' -f1)"
+"$BUN_BIN" "$ROLLUP" rollup --kb "$KB" >/dev/null 2>&1 || {
+  echo "pre-commit: kb-rollup.ts failed — §2 rollup could not be verified" >&2; exit 1; }
+after="$(sha256sum "$KB" | cut -d' ' -f1)"
+
+if [ "$before" != "$after" ]; then
+  cat >&2 <<'EOF'
+pre-commit: §2 rollup was stale (or the table was hand-edited) — regenerated
+from docs/fleet/crews/. Hand-edits to the §2 table are not kept: put the
+change in the per-crew file instead. Re-stage docs/fleet-knowledgebase.md
+(and docs/fleet/crews/) and commit again.
+EOF
+  exit 1
+fi

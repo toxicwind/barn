@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# safe-rg — I/O-disciplined ripgrep wrapper for the 2-core hatch cell.
+# Reference implementation for debate 2c7ca733 (cell saturation patch).
+# The 2026-09-19 02:08Z crash was iowait (50-80%), not compute: an orphaned
+# recursive grep over ~/workspace thrashed disk and starved the daemon.
+#
+# Enforces three guards:
+#   1. timeout (default 10s, override with SAFE_RG_TIMEOUT) — fail fast, no
+#      runaway searches; 10s is an eternity for a scoped rg, anything slower
+#      is a disk weapon
+#   2. ionice -c3 (idle I/O class) — searches never out-prioritize the daemon
+#   3. scope guard — refuses searches rooted at ~/workspace or broader
+#      (the exact killer pattern) unless --yolo is passed explicitly
+#
+# Usage: safe-rg [rg args] [path]
+#   safe-rg pattern ./subdir          # fine: scoped
+#   safe-rg pattern ~/workspace       # refused (use --yolo to override)
+#   safe-rg --yolo pattern ~/workspace # allowed, still timeout+ionice capped
+set -u
+
+TIMEOUT_S="${SAFE_RG_TIMEOUT:-10}"
+YOLO=0
+ARGS=()
+for a in "$@"; do
+  if [[ "$a" == "--yolo" ]]; then YOLO=1; continue; fi
+  ARGS+=("$a")
+done
+
+# Positional args: first is the pattern, second is the search path (rg default: .)
+POSITIONALS=()
+for a in "${ARGS[@]}"; do
+  [[ "$a" == -* ]] && continue
+  POSITIONALS+=("$a")
+done
+SEARCH_PATH="."
+if [[ ${#POSITIONALS[@]} -ge 2 ]]; then
+  SEARCH_PATH="${POSITIONALS[1]}"
+fi
+
+RESOLVED="$(realpath -m "$SEARCH_PATH" 2>/dev/null || echo "$SEARCH_PATH")"
+# HOME-aware: blocks the user's own workspace root and above (the killer pattern
+# is a recursive search rooted at the workspace or broader). Override with --yolo.
+case "$RESOLVED" in
+  "$HOME/workspace"|"$HOME"|/)
+    if [[ $YOLO -eq 0 ]]; then
+      echo "safe-rg: REFUSING unscoped search rooted at $RESOLVED" >&2
+      echo "safe-rg: this exact pattern (full-workspace recursive search) caused the 2026-09-19 cell crash." >&2
+      echo "safe-rg: narrow the path, or pass --yolo to override (still timeout+ionice capped)." >&2
+      exit 2
+    fi
+    ;;
+esac
+
+# Forensic log (append-only, one line per invocation)
+LOG="$HOME/workspace/bin/safe-rg.log"
+printf '%s pid=%s timeout=%s yolo=%s path=%s args=%s\n' \
+  "$(date -u +%FT%TZ)" "$$" "$TIMEOUT_S" "$YOLO" "$RESOLVED" "${ARGS[*]}" >>"$LOG" 2>/dev/null || true
+
+if ! command -v rg >/dev/null 2>&1; then
+  echo "safe-rg: rg not found on PATH" >&2
+  exit 127
+fi
+
+exec ionice -c3 timeout "$TIMEOUT_S" rg "${ARGS[@]}"

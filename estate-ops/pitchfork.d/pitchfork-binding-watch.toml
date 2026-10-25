@@ -1,0 +1,12 @@
+# ranch/ops — project-owned daemon manifest. Source of truth for 'pitchfork-binding-watch'.
+# Event-driven (inotify on pitchfork's state.toml); the sentinel verifies
+# allowlisted singleton daemons' bindings against the live process table
+# on every supervisor state write and heals tracking loss. No polling.
+
+[daemons.pitchfork-binding-watch]
+run = "exec /usr/bin/bash /home/toxic/estate/ranch/ops/bin/pitchfork-binding-watch.sh"
+dir = "/home/toxic/estate/ranch/ops/bin"
+mise = false
+retry = true
+boot_start = true
+auto = ["start"]

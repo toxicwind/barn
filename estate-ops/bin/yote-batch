@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# yote-batch — run many yote commands in ONE bridge exec (one WS handshake).
+# Each `yote-conn exec` costs a full python3 + WS round-trip (~250ms+). Agents
+# firing dozens of one-liners in a row pay it N times; this pays it once.
+#   yote-batch cmds.txt        # one command per line, # comments + blanks skipped
+#   yote-batch - < cmds.txt    # stdin
+#   yote-batch "cmd1" "cmd2"   # argv
+# Output is delimited per command: __YB_BEGIN_<n>__ ... __YB_END_<n>__ rc=<code>
+set -euo pipefail
+
+cmds=()
+if [ "${1:-}" = "-" ]; then
+    mapfile -t cmds
+elif [ -f "${1:-/nonexistent}" ]; then
+    mapfile -t cmds < "$1"
+elif [ $# -gt 0 ]; then
+    cmds=("$@")
+else
+    echo "usage: yote-batch <file|-> | \"cmd\" [\"cmd\"...]" >&2
+    exit 2
+fi
+
+joined=""; i=0
+for c in "${cmds[@]}"; do
+    case "$c" in ''|'#'*) continue ;; esac
+    i=$((i + 1))
+    joined+=$(printf '\necho "__YB_BEGIN_%d__"\n%s\necho "__YB_END_%d__ rc=$?"\n' "$i" "$c" "$i")
+done
+[ "$i" -eq 0 ] && { echo "yote-batch: no commands" >&2; exit 2; }
+
+exec yote-conn exec "$joined"

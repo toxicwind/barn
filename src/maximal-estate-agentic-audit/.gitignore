@@ -1,0 +1,14 @@
+node_modules/
+*.parquet
+*.csv
+*.log
+.env
+.env.local
+output/
+*.tsbuildinfo
+*.parq
+coverage/
+tmp/
+.DS_Store
+*.swp
+*.swo

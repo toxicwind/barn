@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# rg-scope — guarded, deduplicated ripgrep for the 2-vCPU hatch cell.
+# Kills two pathologies seen 2026-09-20: unscoped `rg /` scans and N agents
+# running the SAME search concurrently (cell hit 9x load).
+#   rg-scope [-i|--ignore-case ...] <pattern> [roots...] [-- extra rg args...]
+# Leading dash-flags are passed through to rg. Roots default to
+# ~/workspace + ~/memory. Full-filesystem `/` is REFUSED. An identical
+# in-flight search (same pattern+roots) is not re-launched.
+set -euo pipefail
+
+REG_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/rg-scope"
+mkdir -p "$REG_DIR"
+
+# Prune registry entries whose PIDs are gone.
+for f in "$REG_DIR"/*.json; do
+    [ -e "$f" ] || continue
+    pid="${f##*/}"; pid="${pid%.json}"
+    kill -0 "$pid" 2>/dev/null || rm -f "$f"
+done
+
+# Leading rg flags (anything starting with -) pass through.
+preflags=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --) shift; break ;;
+        -*) preflags+=("$1"); shift ;;
+        *)  break ;;
+    esac
+done
+pattern="${1:?usage: rg-scope [rg-flags] <pattern> [roots...] [-- rg-args...]}"
+shift
+roots=(); rgargs=()
+sep_seen=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --) sep_seen=1; shift; rgargs=("$@"); break ;;
+        *)  roots+=("$1"); shift ;;
+    esac
+done
+[ ${#roots[@]} -eq 0 ] && roots=("$HOME/workspace" "$HOME/memory")
+
+for r in "${roots[@]}"; do
+    case "$r" in
+        /|"")
+            echo "rg-scope: REFUSED — full-filesystem scan on the 2-vCPU cell." >&2
+            echo "Scope to a subtree (e.g. ~/workspace), or run the estate-wide" >&2
+            echo "search on yote (16 cores) via: yote-conn exec 'rg --hidden -m1 PAT /'" >&2
+            exit 2 ;;
+    esac
+done
+
+key="$(printf '%s' "$pattern|${preflags[*]}|${roots[*]}" | sha256sum | cut -d' ' -f1)"
+for f in "$REG_DIR"/*.json; do
+    [ -e "$f" ] || continue
+    if grep -q "\"key\":\"$key\"" "$f" 2>/dev/null; then
+        other="${f##*/}"; other="${other%.json}"
+        echo "rg-scope: identical search already running as PID $other — not launching a duplicate." >&2
+        exit 3
+    fi
+done
+
+regfile="$REG_DIR/$$.json"
+printf '{"key":"%s","pattern":%s,"roots":%s,"started":%s}\n' \
+    "$key" \
+    "$(printf '%s' "$pattern" | jq -Rs .)" \
+    "$(printf '%s\n' "${roots[@]}" | jq -R . | jq -s .)" \
+    "$(date +%s)" > "$regfile"
+
+# NOTE: no `exec` below — exec would bypass the EXIT trap and leak the
+# registry entry (caught 2026-09-20).
+rg --hidden -m1 "${preflags[@]}" "$pattern" "${rgargs[@]}" "${roots[@]}"
+rc=$?
+rm -f "$regfile"
+exit $rc

@@ -1,0 +1,198 @@
+#!/usr/bin/env bun
+/**
+ * pitchfork-split — one-shot migration: split a monolithic pitchfork.toml into
+ * the D2 per-project layout (<project>/pitchfork.d/<daemon>.toml + parent.toml
+ * + projects.toml + attribution.json).
+ *
+ *   bin/pitchfork-split <monolith.toml> [--root DIR] [--apply]
+ *
+ * Without --apply: dry run, prints the project map. With --apply: writes files.
+ * Original block text is preserved byte-for-byte (comments are incident docs).
+ * KNOWN-STALE (verified 2026-09-30 against `pitchfork list` + ss + git log):
+ * bidder-forge, bidder-scout are NOT migrated (stopped, oracle-market retired).
+ * flicker + flicker-agent were replaced 2026-10-03 by estate/ops/mbx-cache:
+ * direct Rust mise remote-cache server at :25148. buildsrv and flicker no longer
+ * belong in the live split; historical fragments remain only in audit records.
+ *
+ * Ownership signal: each daemon's `dir` field (ground truth of where it runs),
+ * same projectKey() the hyper-race validated. Re-run safe: overwrites outputs.
+ */
+
+const SOV = "/home/toxic/estate";
+const STALE = new Set(["bidder-forge", "bidder-scout"]);
+
+function arg(name: string): string | undefined {
+  const i = process.argv.indexOf(name);
+  return i >= 0 && i + 1 < process.argv.length ? process.argv[i + 1] : undefined;
+}
+const apply = process.argv.includes("--apply");
+const root = arg("--root") ?? SOV;
+const monolithPath = process.argv[2];
+if (!monolithPath) {
+  console.error("usage: bin/pitchfork-split <monolith.toml> [--root DIR] [--apply]");
+  process.exit(2);
+}
+
+interface Block { kind: "daemon" | "groups"; name: string; text: string; dir?: string }
+
+function splitBlocks(src: string): { preamble: string; blocks: Block[] } {
+  const lines = src.split("\n");
+  let i = 0;
+  const pre: string[] = [];
+  while (i < lines.length && !/^\[/.test(lines[i])) { pre.push(lines[i]); i++; }
+  const preamble = pre.join("\n");
+  const blocks: Block[] = [];
+  let pending: string[] = [];
+  while (i < lines.length) {
+    const m = lines[i].match(/^\[(daemons|groups)\.([^\]]+)\]/);
+    if (!m) { pending.push(lines[i]); i++; continue; }
+    const kind = (m[1] === "daemons" ? "daemon" : "groups") as "daemon" | "groups";
+    const name = m[2];
+    const body: string[] = [lines[i]];
+    i++;
+    while (i < lines.length && !/^\[(daemons|groups)\./.test(lines[i])) { body.push(lines[i]); i++; }
+    while (body.length && body[body.length - 1].trim() === "") { pending.unshift(body.pop()!); }
+    blocks.push({ kind, name, text: pending.join("\n") + (pending.length ? "\n" : "") + body.join("\n") + "\n" });
+    pending = [];
+  }
+  return { preamble, blocks };
+}
+
+function projectKey(dir: string, daemon: string): string {
+  let d = dir;
+  if (!d) return "estate";
+  if (!d.startsWith("/")) d = SOV + "/" + d;
+  if (d === SOV) return "estate";
+  const ranch = SOV + "/projects/range/ranch/";
+  if (d.startsWith(ranch)) {
+    const rest = d.slice(ranch.length).split("/").filter(Boolean);
+    if (rest[0] === "barn" && rest[1]) return `barn/${rest[1]}`;
+    return `ranch/${rest[0]}`;
+  }
+  if (d === SOV + "/projects/range") return "range";
+  if (d.startsWith(SOV + "/projects/range/")) return `range/${d.slice((SOV + "/projects/range/").length).split("/").filter(Boolean)[0]}`;
+  if (d.startsWith(SOV + "/projects/")) return `projects/${d.slice((SOV + "/projects/").length).split("/").filter(Boolean)[0]}`;
+  if (d.startsWith(SOV + "/tools/")) return `tools/${d.slice((SOV + "/tools/").length).split("/").filter(Boolean)[0]}`;
+  if (d.startsWith(SOV + "/")) return "estate";
+  if (d === "/home/toxic") {
+    if (daemon === "tau") return "standalone/tau";
+    if (daemon.startsWith("awrawr-")) return "standalone/awrawr";
+    return `standalone/${daemon}`;
+  }
+  if (d.startsWith("/home/toxic/")) {
+    const rest = d.slice("/home/toxic/".length).split("/").filter(Boolean);
+    if (rest[0] === ".squawk-bus") return "standalone/squawk-relay";
+    if (rest[0] === "projects") return `standalone/${rest[1]}`;
+    return `standalone/${rest[0]}`;
+  }
+  return "standalone/unknown";
+}
+
+// manifest path relative to the compose root
+function manifestPath(key: string): string {
+  if (key === "estate") return "pitchfork.d";
+  if (key.startsWith("ranch/")) return `projects/range/ranch/${key.slice(6)}/pitchfork.d`;
+  if (key === "range") return "projects/range/pitchfork.d";
+  if (key.startsWith("range/")) return `projects/range/${key.slice(6)}/pitchfork.d`;
+  if (key.startsWith("tools/") || key.startsWith("projects/") || key.startsWith("standalone/"))
+    return `${key}/pitchfork.d`;
+  throw new Error(`no manifest mapping for project key '${key}'`);
+}
+
+const src = await Bun.file(monolithPath).text();
+// Refuse an ALREADY COMPOSED registry. The historical bug that produced the
+// corrupted fragments bin/pitchfork-split writes is pointing it at output that
+// bin/pitchfork-compose emits: the split tool attached the trailing comment
+// text between stanzas to the PRECEDING block, so every fragment carried the
+// NEXT daemon's docs plus the composed project separators, and the later split
+// of that made the estate-scripts-stream-broker duplicate look legitimate.
+// A composed pitchfork.toml is unmistakable: the composer stamps `[generated
+// file]`, the schema URL, and `env_file`, and emits `# ---- project:` separators
+// plus per-daemon "Source of truth for '…'" headers. If the input carries any
+// of those, it is the OUTPUT of composition, not the INPUT to splitting — halt
+// with a loud, actionable error instead of recreating the corruption.
+{
+  const composedMarkers = [
+    [/^\[generated file\]/m, "the '[generated file]' composer stamp"],
+    [/#:schema https:\/\/pitchfork\.jdx\.dev\/schema\.json/m, "the pitchfork schema URL the composer emits"],
+    [/#\s*----\s*project:/m, "a '# ---- project:' project separator"],
+    [/Source of truth for '[^']+'/m, "per-daemon 'Source of truth for' headers"],
+    [/# Generated by [^\n]*pitchfork-compose/m, "the 'Generated by pitchfork-compose' footer"],
+  ];
+  for (const [re, what] of composedMarkers) {
+    if (re.test(src)) {
+      console.error(
+        `REFUSED: ${monolithPath} is an ALREADY COMPOSED pitchfork registry ` +
+          `(contains ${what}). pitchfork-split splits a RAW daemon dump into the ` +
+          `D2 per-project layout; feeding it a composed file recreates the stale-` +
+          `fragment corruption. Split the source of truth (the pre-compose monolith), ` +
+          `then run bin/pitchfork-compose to regenerate the registry.`,
+      );
+      process.exit(3);
+    }
+  }
+}
+const { preamble, blocks } = splitBlocks(src);
+const daemons = blocks.filter((b) => b.kind === "daemon");
+const groups = blocks.filter((b) => b.kind === "groups");
+for (const d of daemons) {
+  try {
+    d.dir = (Bun.TOML.parse(d.text) as any).daemons[d.name].dir ?? "";
+  } catch (e: any) {
+    console.error(`ERROR: daemon block '${d.name}' does not parse: ${e.message}`);
+    process.exit(1);
+  }
+}
+
+const retired = daemons.filter((d) => STALE.has(d.name));
+const live = daemons.filter((d) => !STALE.has(d.name));
+console.log(`monolith: ${daemons.length} daemons, ${groups.length} groups`);
+console.log(`retiring (not migrated): ${retired.map((d) => d.name).join(", ") || "(none)"}`);
+
+const byProject = new Map<string, Block[]>();
+const attribution: Record<string, string> = {};
+for (const d of daemons) {
+  const k = projectKey(d.dir!, d.name);
+  attribution[d.name] = k; // includes stale: last-known project for the orphan detector
+  if (STALE.has(d.name)) continue;
+  if (!byProject.has(k)) byProject.set(k, []);
+  byProject.get(k)!.push(d);
+}
+
+const rank = (k: string) =>
+  k === "estate" ? 0 : k.startsWith("ranch/") ? 1 : k.startsWith("range") ? 2 :
+  k.startsWith("tools/") ? 3 : k.startsWith("projects/") ? 4 : 5;
+const order = [...byProject.keys()].sort((a, b) => rank(a) - rank(b) || (a < b ? -1 : 1));
+
+for (const k of order) {
+  const ds = byProject.get(k)!.sort((a, b) => (a.name < b.name ? -1 : 1));
+  console.log(`  ${k}: ${ds.length} daemons -> ${manifestPath(k)}/`);
+}
+
+if (!apply) {
+  console.log("\ndry run — pass --apply to write files");
+  process.exit(0);
+}
+
+const parentToml = preamble.trimEnd() + "\n\n" + groups.map((g) => g.text.trimEnd()).join("\n\n") + "\n";
+await Bun.write(`${root}/parent.toml`, parentToml);
+
+const reg: string[] = [
+  "# The parent's project registry. The parent COMPOSES; it does not own daemon stanzas.",
+  "# Removing a project = delete its directory + one line here. Adding one = the reverse.",
+  "# Generated by bin/pitchfork-split; hand-editable afterwards.",
+];
+for (const k of order) {
+  const ds = byProject.get(k)!.sort((a, b) => (a.name < b.name ? -1 : 1));
+  const mp = manifestPath(k);
+  await Bun.$`mkdir -p ${root}/${mp}`.quiet();
+  for (const d of ds) {
+    await Bun.write(`${root}/${mp}/${d.name}.toml`,
+      `# ${k} — project-owned daemon manifest. Source of truth for '${d.name}'.\n` +
+      `# Owned by the ${k} project; the parent only composes it.\n\n` + d.text.trimEnd() + "\n");
+  }
+  reg.push(`[[project]]\nkey = "${k}"\nmanifest = "${mp}"\nkind = "dir"\n`);
+}
+await Bun.write(`${root}/projects.toml`, reg.join("\n"));
+await Bun.write(`${root}/attribution.json`, JSON.stringify(attribution, null, 2) + "\n");
+console.log(`\nwrote: parent.toml, projects.toml, attribution.json, ${live.length} daemon files across ${order.length} projects`);

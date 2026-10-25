@@ -1,0 +1,35 @@
+#!/usr/bin/env python3
+"""bg-heartbeat — record a liveness heartbeat for a registered task id.
+
+Usage: bg-heartbeat ID
+
+Tasks that want supervision push a heartbeat (event-driven, not a poller).
+bg-audit flags entries whose heartbeat is older than their ttl.
+"""
+import os
+import sys
+import time
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "..", "bg-tracker", "lib"))
+import bgcommon as C
+
+
+def main():
+    if len(sys.argv) != 2:
+        sys.exit("usage: bg-heartbeat ID")
+    tid = sys.argv[1]
+    reg = C.load_reg()
+    t = reg["tasks"].get(tid)
+    if not t:
+        sys.exit("bg-heartbeat: unknown id %s" % tid)
+    t["heartbeat_at"] = time.time()
+    if t.get("status") != "active":
+        t["status"] = "active"
+    C.save_reg(reg)
+    C.log_event({"type": "heartbeat", "id": tid, "name": t["name"]})
+    print("heartbeat id=%s name=%s" % (tid, t["name"]))
+
+
+if __name__ == "__main__":
+    main()

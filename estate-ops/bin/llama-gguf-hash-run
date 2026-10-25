@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Wrapper: real binary needs libggml.so from ik_llama build
+export LD_LIBRARY_PATH="/home/toxic/projects/ik_llama.cpp-main/build/ggml/src${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+exec /home/toxic/projects/ik_llama.cpp-main/build/bin/llama-gguf-hash "$@"

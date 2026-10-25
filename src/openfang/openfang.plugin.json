@@ -1,0 +1,16 @@
+{
+  "id": "openfang",
+  "name": "openfang",
+  "description": "Connector plugin that bridges remote events to the Estate OpenFang Agent system.",
+  "version": "0.1.0",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "openfangUrl": { "type": "string" },
+      "agent": { "type": "string" }
+    }
+  }
+}

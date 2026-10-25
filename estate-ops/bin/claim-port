@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# bin/claim-port — pre-launch reserved-port guard (fail-fast edition).
+#
+# Runs once at daemon start (the event), does a single ss observation, and
+# either execs the real command or refuses loudly. It NEVER kills, NEVER
+# sleeps, NEVER polls. Stale holders are the operator's job:
+#   bin/pitchfork-restart <daemon>
+# reconciles stop->start against port ground truth (single-shot desync reap)
+# before the supervisor starts the new instance.
+#
+# This is the fail-fast edition (2026-09-20). The previous edition reaped
+# holders with TERM/KILL + sleep loops; that behavior is gone on purpose —
+# a guard that kills is a second supervisor, and a second supervisor is how
+# you get split-brains. If the port is taken, the launch refuses and the
+# refusal names names: holder PIDs + cmdlines + the SSOT's expected owner.
+#
+# Use in pitchfork.toml run lines:
+#   run = "exec /home/toxic/estate/bin/claim-port 25126 <real command...>"
+#
+# PROTECTED PORTS — the live bridge and squawk are never guarded and never
+# exec'd through this path; they have their own supervised start paths:
+#   8379  bridge exec-ws (live; tailscale /exec-ws -> 127.0.0.1:8379)
+#   25204 bridge exec-ws (SSOT EXEC_WS_PORT; pitchfork stanza metadata)
+#   25147 squawk-ws
+#   25135 squawk-feed
+# Defense in depth: even for a non-protected port argument, a holder whose
+# cmdline IS the bridge or squawk triggers a protected refusal.
+#
+# Exit codes:
+#   0  port free — command exec'd (replaces this process)
+#   2  usage / invalid port / no command
+#   4  REFUSED: port occupied (fail-fast; no port-walk, no kills)
+#   5  REFUSED: protected port or protected holder (bridge/squawk)
+set -euo pipefail
+
+PORT="${1:?usage: claim-port <port> <command...>}"; shift
+[[ "$PORT" =~ ^[0-9]+$ ]] || { echo "[claim-port] invalid port: $PORT" >&2; exit 2; }
+(( $# >= 1 )) || { echo "[claim-port] no command given" >&2; exit 2; }
+
+SSOT="/home/toxic/estate/config/ports.env"
+
+is_protected_port() {
+  case "$1" in
+    8379|25204|25147|25135) return 0 ;;
+  esac
+  return 1
+}
+
+is_protected_holder() { # $1 = pid
+  local cmdline
+  cmdline="$(tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null)" || return 1
+  case "$cmdline" in
+    *awrawr_ws_exec*|*squawk_ws_server*|*squawk_feed*|*awrawr_mcp*) return 0 ;;
+  esac
+  return 1
+}
+
+holders() {
+  # Exact port match on any local address (numeric boundary so 2512 never
+  # matches 25126). 0.0.0.0 / [::] binds conflict with 127.0.0.1 binds.
+  ss -tlnp 2>/dev/null \
+    | grep -E ":${PORT}([^0-9]|$)" \
+    | grep -oP 'pid=\K[0-9]+' \
+    | sort -un || true
+}
+
+describe_holder() { # $1 = pid
+  local cmd
+  cmd="$(tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null | cut -c1-160)"
+  [[ -z "$cmd" ]] && cmd="<unreadable cmdline>"
+  printf 'pid=%s %s' "$1" "$cmd"
+}
+
+ssot_owner() {
+  grep -E "^[A-Za-z0-9_]+=${PORT}([^0-9]|$)" "$SSOT" 2>/dev/null \
+    | cut -d= -f1 | tr '\n' ' ' || true
+}
+
+if is_protected_port "$PORT"; then
+  echo "[claim-port] REFUSING: :$PORT is a protected port (bridge/squawk) — not guarded, not started" >&2
+  exit 5
+fi
+
+HOLDERS="$(holders)"
+if [[ -n "${HOLDERS//[[:space:]]/}" ]]; then
+  for h in $HOLDERS; do
+    if is_protected_holder "$h"; then
+      echo "[claim-port] REFUSING: :$PORT held by protected process: $(describe_holder "$h")" >&2
+      exit 5
+    fi
+  done
+  echo "[claim-port] REFUSING: :$PORT is occupied — not starting (fail-fast: no port-walk, no kills)" >&2
+  for h in $HOLDERS; do
+    echo "[claim-port]   holder: $(describe_holder "$h")" >&2
+  done
+  OWNER="$(ssot_owner)"
+  [[ -n "${OWNER// /}" ]] && echo "[claim-port]   SSOT expects: ${OWNER}" >&2
+  echo "[claim-port] If a holder is stale, clear it on the operator path: bin/pitchfork-restart <daemon>" >&2
+  exit 4
+fi
+
+exec "$@"

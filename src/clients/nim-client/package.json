@@ -1,0 +1,37 @@
+{
+  "name": "@estate/nim-client",
+  "version": "1.0.0",
+  "description": "NVIDIA NIM API Client Library with full parameter support, retry logic, rate limiting, and streaming",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "bun test",
+    "test:watch": "bun test --watch",
+    "lint": "eslint src --ext .ts"
+  },
+  "dependencies": {
+    "openai": "^4.55.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.5.4",
+    "eslint": "^8.57.0",
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0"
+  },
+  "peerDependencies": {
+    "openai": "^4.0.0"
+  },
+  "keywords": [
+    "nvidia",
+    "nim",
+    "llm",
+    "api",
+    "client",
+    "reasoning"
+  ],
+  "author": "toxicwind",
+  "license": "MIT"
+}

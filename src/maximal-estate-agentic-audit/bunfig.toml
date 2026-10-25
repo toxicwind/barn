@@ -1,0 +1,17 @@
+[install]
+exact = false
+
+[test]
+timeout = 120000
+coverage = true
+
+[runner]
+inline-sources = true
+source-map = "external"
+
+[build]
+target = "bun"
+minify = false
+
+[lint]
+rules = ["recommended"]

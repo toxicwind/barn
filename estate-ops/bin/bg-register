@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""bg-register — manually register an already-running process as a tracked task.
+
+Usage:
+  bg-register --pid PID --name NAME --purpose TEXT [--ttl SEC] [--owner WHO]
+
+Verifies the pid exists and captures its sid/args at registration time.
+The PID+cmd0 pair is later used as a PID-reuse guard.
+"""
+import argparse
+import os
+import sys
+import time
+import uuid
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "..", "bg-tracker", "lib"))
+import bgcommon as C
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--pid", type=int, required=True)
+    ap.add_argument("--name", required=True)
+    ap.add_argument("--purpose", required=True)
+    ap.add_argument("--ttl", type=int, default=0)
+    ap.add_argument("--owner", default=os.environ.get("BG_OWNER", "manual"))
+    a = ap.parse_args()
+
+    if not C.proc_alive(a.pid):
+        ap.error("pid %d not alive" % a.pid)
+    args = C.proc_cmdline(a.pid) or ""
+    try:
+        sid = os.getsid(a.pid)
+    except ProcessLookupError:
+        ap.error("pid %d vanished" % a.pid)
+
+    tid = uuid.uuid4().hex[:12]
+    now = time.time()
+    reg = C.load_reg()
+    reg["tasks"][tid] = {
+        "id": tid, "name": a.name, "box": C.box(),
+        "pid": a.pid, "sid": sid,
+        "cmd": args.split(), "cmd0": args.split()[0] if args else "",
+        "cmdline": args,
+        "purpose": a.purpose, "owner": a.owner,
+        "workdir": "", "log": "",
+        "started_at": now, "heartbeat_at": now,
+        "ttl_sec": a.ttl or None, "status": "active",
+        "registered_after_start": True,
+    }
+    C.save_reg(reg)
+    C.log_event({"type": "register", "id": tid, "name": a.name,
+                 "pid": a.pid, "cmdline": args})
+    print("registered id=%s pid=%d name=%s" % (tid, a.pid, a.name))
+
+
+if __name__ == "__main__":
+    main()

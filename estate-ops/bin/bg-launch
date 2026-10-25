@@ -1,0 +1,175 @@
+#!/usr/bin/env python3
+"""bg-launch — the ONE correct way to background a task on this estate.
+
+Replaces the `cd dir && setsid nohup cmd &` pattern that backgrounds the
+whole shell chain (see AGENTS.md "Daemon-start & scoping"). Uses a real
+double-fork daemonize in Python, so there is no `&` to mis-scope and the
+recorded PID is the actual daemon, verified detached (PPID 1, own SID).
+
+Usage:
+  bg-launch --name NAME --purpose TEXT --workdir DIR [--ttl SEC] [--owner WHO] -- CMD [ARGS...]
+
+Registers the task in the bg-tracker registry atomically. Stdout/stderr go
+to <state>/<name>.log. Prints the registry id and daemon pid.
+"""
+import argparse
+import fcntl
+import os
+import sys
+import time
+import uuid
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "..", "bg-tracker", "lib"))
+import bgcommon as C
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--name", required=True, help="short registry name")
+    ap.add_argument("--purpose", required=True, help="why this task exists")
+    ap.add_argument("--workdir", required=True, help="daemon working directory")
+    ap.add_argument("--ttl", type=int, default=0,
+                    help="expected lifetime seconds; 0 = indefinite")
+    ap.add_argument("--owner", default=os.environ.get("BG_OWNER", "manual"))
+    ap.add_argument("cmd", nargs=argparse.REMAINDER, help="-- CMD [ARGS...]")
+    a = ap.parse_args()
+    cmd = a.cmd[1:] if a.cmd and a.cmd[0] == "--" else a.cmd
+    if not cmd:
+        ap.error("no command given (use -- CMD [ARGS...])")
+    workdir = os.path.abspath(os.path.expanduser(a.workdir))
+    if not os.path.isdir(workdir):
+        ap.error("workdir does not exist: %s" % workdir)
+
+    state = C.state_dir()
+    log = os.path.join(state, "%s.log" % a.name)
+    r, w = os.pipe()
+    er, ew = os.pipe()  # exec-status handshake: ew is CLOEXEC in the daemon,
+                        # so EOF on er == exec succeeded; a byte == failure
+    os.set_inheritable(w, True)
+    os.set_inheritable(ew, True)
+    flags = fcntl.fcntl(ew, fcntl.F_GETFD)
+    fcntl.fcntl(ew, fcntl.F_SETFD, flags | fcntl.FD_CLOEXEC)
+    pid1 = os.fork()
+    if pid1 > 0:
+        # parent: read the real daemon pid from the pipe
+        os.close(w)
+        os.close(ew)  # must close our write end or er never sees EOF
+        data = b""
+        while True:
+            chunk = os.read(r, 32)
+            if not chunk:
+                break
+            data += chunk
+        os.close(r)
+        _, status = os.waitpid(pid1, 0)
+        if not os.WIFEXITED(status) or os.WEXITSTATUS(status) != 0:
+            sys.exit("bg-launch: intermediate child failed (status=%r)" %
+                     (status,))
+        try:
+            daemon_pid = int(data.decode().strip())
+        except ValueError:
+            sys.exit("bg-launch: daemonize failed (no pid from pipe), "
+                     "see %s" % log)
+        # event-driven exec check: blocks until the daemon execs (EOF) or
+        # reports failure. No sleeps.
+        err = b""
+        while True:
+            chunk = os.read(er, 256)
+            if not chunk:
+                break
+            err += chunk
+        os.close(er)
+        if err:
+            sys.exit("bg-launch: daemon exec failed: %s" %
+                     err.decode(errors="replace"))
+        # verify it actually detached
+        try:
+            sid = os.getsid(daemon_pid)
+        except ProcessLookupError:
+            sys.exit("bg-launch: daemon pid %d died immediately; log: %s"
+                     % (daemon_pid, log))
+        if sid != daemon_pid:
+            sys.exit("bg-launch: pid %d not session leader (sid=%d)" %
+                     (daemon_pid, sid))
+        # ppid should be 1, or the user-session subreaper (systemd --user)
+        # which adopts orphans on systemd boxes. Anything else means the
+        # intermediate child is still alive or something reparented oddly.
+        ppid = int(open("/proc/%d/stat" % daemon_pid).read()
+                   .split(")")[1].split()[1])
+        if ppid != 1:
+            try:
+                pargs = open("/proc/%d/cmdline" % ppid, "rb").read() \
+                    .replace(b"\0", b" ").decode(errors="replace")
+            except OSError:
+                pargs = ""
+            if "systemd" not in pargs:
+                sys.exit("bg-launch: pid %d has unexpected ppid %d (%s)" %
+                         (daemon_pid, ppid, pargs[:60]))
+        tid = uuid.uuid4().hex[:12]
+        now = time.time()
+        reg = C.load_reg()
+        reg["tasks"][tid] = {
+            "id": tid, "name": a.name, "box": C.box(),
+            "pid": daemon_pid, "sid": sid,
+            "cmd": cmd, "cmd0": cmd[0],
+            "purpose": a.purpose, "owner": a.owner,
+            "workdir": workdir, "log": log,
+            "started_at": now, "heartbeat_at": now,
+            "ttl_sec": a.ttl or None, "status": "active",
+        }
+        C.save_reg(reg)
+        C.log_event({"type": "launch", "id": tid, "name": a.name,
+                     "pid": daemon_pid, "cmd": cmd})
+        print("launched id=%s pid=%d sid=%d log=%s" % (tid, daemon_pid, sid, log))
+        return
+
+    # --- first child: detach into a new session, then fork the daemon ---
+    os.close(r)
+    os.setsid()
+    pid2 = os.fork()
+    if pid2 > 0:
+        # intermediate: report the daemon pid, then exit (reparent to init)
+        os.write(w, str(pid2).encode())
+        os.close(w)
+        os._exit(0)
+
+    # --- daemon ---
+    os.close(w)
+    os.close(er)
+    # second setsid: after the fork above we are not a process-group leader,
+    # so this succeeds and makes the daemon its own session leader
+    # (sid == pid), fully detached with no controlling terminal.
+    os.setsid()
+    os.chdir(workdir)
+    os.umask(0o027)
+    devnull = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(devnull, 0)          # stdin is /dev/null, never the log file
+    os.close(devnull)
+    lf = open(log, "ab", buffering=0)
+    os.dup2(lf.fileno(), 1)
+    os.dup2(lf.fileno(), 2)
+    lf.close()
+    # close inherited fds except the exec-status pipe (CLOEXEC handles exec)
+    try:
+        fds = [int(f) for f in os.listdir("/proc/self/fd")]
+    except OSError:
+        fds = list(range(3, 256))
+    for fd in fds:
+        if fd > 2 and fd != ew:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+    try:
+        os.execvp(cmd[0], cmd)
+    except OSError as e:
+        try:
+            os.write(ew, ("E%s" % e).encode()[:200])
+        except OSError:
+            pass
+        os._exit(127)
+
+
+if __name__ == "__main__":
+    main()

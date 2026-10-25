@@ -1,0 +1,284 @@
+#!/usr/bin/env bash
+# worker-queue — persistent worker queue with max concurrency for Ember's pack.
+#
+# The problem: coordinators spawn unlimited workers (20+ seen), thrashing the
+# 2-vCPU cell. The fix: a persistent queue with a max workers cap.
+#
+# - Work is submitted to the queue instead of spawning directly
+# - Dispatcher spawns workers only when under the cap
+# - Queue survives restarts (file-based, in ~/workspace/queue/)
+# - All state is JSON files — inspectable, debuggable, no daemon needed
+#
+# Usage:
+#   worker-queue submit --title "task name" --brief "instructions" [--workstream "x"] [--priority N]
+#   worker-queue list [--state pending|active|completed|failed]
+#   worker-queue status
+#   worker-queue config [--max-workers N]
+#   worker-queue next                    # Get next pending item (for dispatcher)
+#   worker-queue start <id> --agent-id <aid>   # Mark as active
+#   worker-queue complete <id> [--result "summary"]
+#   worker-queue fail <id> --reason "why"
+#   worker-queue retry <id>              # Move failed back to pending
+#
+# Queue layout:
+#   ~/workspace/queue/config.json       — max_workers, etc.
+#   ~/workspace/queue/pending/<id>.json
+#   ~/workspace/queue/active/<id>.json
+#   ~/workspace/queue/completed/<id>.json
+#   ~/workspace/queue/failed/<id>.json
+
+set -euo pipefail
+
+QUEUE_DIR="${WORKER_QUEUE_DIR:-$HOME/workspace/queue}"
+CONFIG_FILE="$QUEUE_DIR/config.json"
+
+mkdir -p "$QUEUE_DIR/pending" "$QUEUE_DIR/active" "$QUEUE_DIR/completed" "$QUEUE_DIR/failed"
+
+# Initialize config if missing
+if [ ! -f "$CONFIG_FILE" ]; then
+    cat > "$CONFIG_FILE" <<'EOF'
+{
+  "max_workers": 8,
+  "created": "",
+  "updated": "",
+  "updated_by": "system",
+  "note": "Max concurrent workers. Queue holds overflow. Persistent across restarts."
+}
+EOF
+    now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    tmp=$(mktemp)
+    jq --arg now "$now" '.created = $now | .updated = $now' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
+fi
+
+usage() {
+    sed -n '2,/^$/p' "$0" | grep -E '^#' | sed 's/^# //;s/^#//'
+}
+
+get_max_workers() {
+    jq -r '.max_workers' "$CONFIG_FILE"
+}
+
+count_state() {
+    local state="$1"
+    local count=0
+    for f in "$QUEUE_DIR/$state/"*.json; do
+        [ -f "$f" ] && count=$((count + 1))
+    done
+    echo "$count"
+}
+
+cmd="${1:-}"; shift 2>/dev/null || { usage >&2; exit 2; }
+
+case "$cmd" in
+    submit)
+        title=""; brief=""; workstream=""; priority="5"
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --title) title="$2"; shift 2;;
+                --brief) brief="$2"; shift 2;;
+                --workstream) workstream="$2"; shift 2;;
+                --priority) priority="$2"; shift 2;;
+                *) echo "Unknown: $1" >&2; exit 2;;
+            esac
+        done
+        [ -z "$title" ] && { echo "Missing --title" >&2; exit 2; }
+        [ -z "$brief" ] && { echo "Missing --brief" >&2; exit 2; }
+
+        id="wq-$(date +%Y%m%d-%H%M%S)-$$"
+        now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+        tmp=$(mktemp)
+        jq -n \
+            --arg id "$id" \
+            --arg title "$title" \
+            --arg brief "$brief" \
+            --arg workstream "$workstream" \
+            --argjson priority "$priority" \
+            --arg created "$now" \
+            '{id: $id, title: $title, brief: $brief, workstream: $workstream, priority: $priority, created: $created, state: "pending"}' > "$tmp"
+        mv "$tmp" "$QUEUE_DIR/pending/$id.json"
+        echo "Queued: $id"
+        echo "  Title: $title"
+        pending=$(count_state pending)
+        active=$(count_state active)
+        maxw=$(get_max_workers)
+        echo "  Queue: $pending pending, $active active, max $maxw workers"
+        ;;
+
+    list)
+        state=""
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --state) state="$2"; shift 2;;
+                *) state="$1"; shift;;
+            esac
+        done
+        if [ -n "$state" ]; then
+            states="$state"
+        else
+            states="pending active completed failed"
+        fi
+        for s in $states; do
+            echo "=== $s ==="
+            for f in "$QUEUE_DIR/$s/"*.json; do
+                [ -f "$f" ] || continue
+                jq -r '"  \(.id) [P\(.priority)] \(.title) (\(.workstream // "no-workstream"))"' "$f"
+            done
+        done
+        ;;
+
+    status)
+        maxw=$(get_max_workers)
+        pending=$(count_state pending)
+        active=$(count_state active)
+        completed=$(count_state completed)
+        failed=$(count_state failed)
+        available=$((maxw - active))
+        [ $available -lt 0 ] && available=0
+        echo "Workers: $active active / $maxw max ($available slots available)"
+        echo "Queue: $pending pending, $completed completed, $failed failed"
+        if [ "$pending" -gt 0 ] && [ "$available" -gt 0 ]; then
+            echo "Ready to dispatch: $available worker(s) can start"
+        elif [ "$pending" -gt 0 ]; then
+            echo "At capacity: $pending item(s) waiting in queue"
+        fi
+        ;;
+
+    config)
+        if [ "${1:-}" = "--max-workers" ]; then
+            new_max="$2"
+            [[ "$new_max" =~ ^[0-9]+$ ]] || { echo "Must be a number" >&2; exit 2; }
+            [ "$new_max" -lt 1 ] && { echo "Must be >= 1" >&2; exit 2; }
+            [ "$new_max" -gt 50 ] && { echo "Max 50 (sanity cap)" >&2; exit 2; }
+            now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+            tmp=$(mktemp)
+            jq --argjson mw "$new_max" --arg now "$now" '.max_workers = $mw | .updated = $now | .updated_by = "manual"' "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
+            echo "Max workers set to $new_max (persistent)"
+        else
+            echo "Current config:"
+            cat "$CONFIG_FILE"
+        fi
+        ;;
+
+    next)
+        # Get highest priority pending item (lowest number = highest priority)
+        best=""
+        best_prio=999
+        for f in "$QUEUE_DIR/pending/"*.json; do
+            [ -f "$f" ] || continue
+            prio=$(jq -r '.priority' "$f")
+            if [ "$prio" -lt "$best_prio" ]; then
+                best_prio=$prio
+                best="$f"
+            fi
+        done
+        if [ -z "$best" ]; then
+            echo "No pending items" >&2
+            exit 1
+        fi
+        # Check capacity
+        active=$(count_state active)
+        maxw=$(get_max_workers)
+        if [ "$active" -ge "$maxw" ]; then
+            echo "At capacity ($active/$maxw), cannot dispatch" >&2
+            exit 1
+        fi
+        cat "$best"
+        ;;
+
+    start)
+        id="${1:-}"; shift 2>/dev/null || true
+        agent_id=""
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --agent-id) agent_id="$2"; shift 2;;
+                *) shift;;
+            esac
+        done
+        [ -z "$id" ] && { echo "Missing <id>" >&2; exit 2; }
+        src="$QUEUE_DIR/pending/$id.json"
+        [ -f "$src" ] || { echo "Not found in pending: $id" >&2; exit 2; }
+
+        # Check capacity
+        active=$(count_state active)
+        maxw=$(get_max_workers)
+        if [ "$active" -ge "$maxw" ]; then
+            echo "At capacity ($active/$maxw)" >&2
+            exit 1
+        fi
+
+        now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+        tmp=$(mktemp)
+        jq --arg now "$now" --arg aid "$agent_id" '.state = "active" | .started = $now | .agent_id = $aid' "$src" > "$tmp"
+        mv "$tmp" "$QUEUE_DIR/active/$id.json"
+        rm "$src"
+        echo "Started: $id (agent: ${agent_id:-unassigned})"
+        ;;
+
+    complete)
+        id="${1:-}"
+        result=""
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --result) result="$2"; shift 2;;
+                *) shift;;
+            esac
+        done
+        [ -z "$id" ] && { echo "Missing <id>" >&2; exit 2; }
+        src="$QUEUE_DIR/active/$id.json"
+        [ -f "$src" ] || { echo "Not found in active: $id" >&2; exit 2; }
+
+        now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+        tmp=$(mktemp)
+        jq --arg now "$now" --arg res "$result" '.state = "completed" | .completed = $now | .result = $res' "$src" > "$tmp"
+        mv "$tmp" "$QUEUE_DIR/completed/$id.json"
+        rm "$src"
+        echo "Completed: $id"
+        # Show if more work is pending
+        pending=$(count_state pending)
+        if [ "$pending" -gt 0 ]; then
+            echo "  $pending item(s) still pending — capacity freed"
+        fi
+        ;;
+
+    fail)
+        id="${1:-}"; shift 2>/dev/null || true
+        reason=""
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --reason) reason="$2"; shift 2;;
+                *) shift;;
+            esac
+        done
+        [ -z "$id" ] && { echo "Missing <id>" >&2; exit 2; }
+        # Can fail from active or pending
+        src=""
+        [ -f "$QUEUE_DIR/active/$id.json" ] && src="$QUEUE_DIR/active/$id.json"
+        [ -f "$QUEUE_DIR/pending/$id.json" ] && src="$QUEUE_DIR/pending/$id.json"
+        [ -z "$src" ] && { echo "Not found: $id" >&2; exit 2; }
+
+        now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+        tmp=$(mktemp)
+        jq --arg now "$now" --arg reason "$reason" '.state = "failed" | .failed = $now | .fail_reason = $reason' "$src" > "$tmp"
+        mv "$tmp" "$QUEUE_DIR/failed/$id.json"
+        rm "$src"
+        echo "Failed: $id — $reason"
+        ;;
+
+    retry)
+        id="${1:-}"
+        [ -z "$id" ] && { echo "Missing <id>" >&2; exit 2; }
+        src="$QUEUE_DIR/failed/$id.json"
+        [ -f "$src" ] || { echo "Not found in failed: $id" >&2; exit 2; }
+
+        tmp=$(mktemp)
+        jq '.state = "pending" | del(.failed, .fail_reason)' "$src" > "$tmp"
+        mv "$tmp" "$QUEUE_DIR/pending/$id.json"
+        rm "$src"
+        echo "Retried: $id (back to pending)"
+        ;;
+
+    *)
+        usage >&2
+        exit 2
+        ;;
+esac

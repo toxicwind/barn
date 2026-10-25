@@ -1,0 +1,16 @@
+{
+  "listen": "127.0.0.1:25127",
+  "routing_mode": "retrieve_tools",
+  "tool_discovery_interval": "2m0s",
+  "health_check_interval": "15s",
+  "quarantine_enabled": true,
+  "mcpServers": [
+    {
+      "name": "estate-scripts-tools",
+      "protocol": "stdio",
+      "command": "bun",
+      "args": ["/home/toxic/estate/helpers/estate-scripts-mcp-server.ts"],
+      "enabled": true
+    }
+  ]
+}

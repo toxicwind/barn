@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+"""patchwork-mcp: stdio MCP server wrapping the Patchwork CLI.
+
+patchwork-cli (0.0.124, latest on PyPI) ships NO `serve` patchflow and no MCP
+code at all, so the shep gateway entry `patchwork serve --stdio` could never
+connect. This shim exposes the real patchflows as MCP tools over stdio
+(newline-delimited JSON-RPC 2.0), which is what shep expects from a stdio
+upstream. Zero third-party dependencies.
+
+Tools:
+  patchwork_list_patchflows  - run `patchwork --list`
+  patchwork_run              - run `patchwork <PATCHFLOW> [OPTS]...`
+
+Protocol log goes to stderr; stdout is pure JSON-RPC.
+"""
+import json
+import subprocess
+import sys
+
+PATCHWORK_BIN = "/home/toxic/.local/bin/patchwork"
+
+PATCHFLOWS = [
+    "AutoFix", "DependencyUpgrade", "GenerateCodeUsageExample",
+    "GenerateDiagram", "GenerateDocstring", "GenerateREADME",
+    "GenerateUnitTests", "LogAnalysis", "PRReview", "ResolveIssue",
+    "SonarFix",
+]
+
+TOOLS = [
+    {
+        "name": "patchwork_list_patchflows",
+        "description": "List the patchflows available in the installed Patchwork CLI.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "patchwork_run",
+        "description": (
+            "Run a Patchwork patchflow via the patchwork CLI. "
+            "Args are appended verbatim after the patchflow name, e.g. "
+            'args=["--prompt","summarise this diff"]. '
+            "Long-running: LLM-backed patchflows can take minutes."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "patchflow": {"type": "string", "enum": PATCHFLOWS,
+                              "description": "Patchflow to run."},
+                "args": {"type": "string",
+                         "description": "Extra CLI options for the patchflow."},
+                "workdir": {"type": "string",
+                            "description": "Working directory for the run."},
+                "timeout_secs": {"type": "number",
+                                 "description": "Kill the run after N seconds."},
+            },
+            "required": ["patchflow"],
+            "additionalProperties": False,
+        },
+    },
+]
+
+
+def log(msg):
+    print(f"[patchwork-mcp] {msg}", file=sys.stderr, flush=True)
+
+
+def run_patchwork(argv, workdir=None, timeout=600):
+    try:
+        p = subprocess.run(
+            [PATCHWORK_BIN] + argv,
+            cwd=workdir or None,
+            capture_output=True, text=True, timeout=timeout,
+        )
+        out = (p.stdout or "") + (p.stderr or "")
+        tail = out[-6000:]
+        return [{"type": "text",
+                 "text": f"exit={p.returncode}\n{tail}"}], p.returncode == 0
+    except subprocess.TimeoutExpired as e:
+        tail = ((e.stdout or "") + (e.stderr or ""))[-3000:]
+        return [{"type": "text",
+                 "text": f"TIMEOUT after {timeout}s\n{tail}"}], False
+    except FileNotFoundError:
+        return [{"type": "text",
+                 "text": f"patchwork binary not found at {PATCHWORK_BIN}"}], False
+    except Exception as e:  # noqa: BLE001 - surface as tool error, never crash
+        return [{"type": "text", "text": f"error: {e}"}], False
+
+
+def handle(msg):
+    mid = msg.get("id")
+    method = msg.get("method", "")
+
+    def resp(result):
+        return {"jsonrpc": "2.0", "id": mid, "result": result}
+
+    def err(code, message):
+        return {"jsonrpc": "2.0", "id": mid,
+                "error": {"code": code, "message": message}}
+
+    if method == "initialize":
+        return resp({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "patchwork-mcp", "version": "1.0.0"},
+        })
+    if method == "ping":
+        return resp({})
+    if method == "tools/list":
+        return resp({"tools": TOOLS})
+    if method == "tools/call":
+        params = msg.get("params", {}) or {}
+        name = params.get("name")
+        args = params.get("arguments", {}) or {}
+        if name == "patchwork_list_patchflows":
+            content, ok = run_patchwork(["--list"], timeout=60)
+        elif name == "patchwork_run":
+            pf = args.get("patchflow")
+            if pf not in PATCHFLOWS:
+                return err(-32602, f"unknown patchflow: {pf}")
+            extra = (args.get("args") or "").split()
+            try:
+                timeout = float(args.get("timeout_secs") or 600)
+            except (TypeError, ValueError):
+                return err(-32602, "timeout_secs must be a number")
+            content, ok = run_patchwork([pf] + extra,
+                                        workdir=args.get("workdir"),
+                                        timeout=min(timeout, 1800))
+        else:
+            return err(-32602, f"unknown tool: {name}")
+        return resp({"content": content, "isError": not ok})
+    if method.startswith("notifications/"):
+        return None
+    return err(-32601, f"method not found: {method}")
+
+
+def main():
+    log("started, patchwork=" + PATCHWORK_BIN)
+    inp = sys.stdin
+    for line in inp:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        try:
+            out = handle(msg)
+        except Exception as e:  # noqa: BLE001
+            log(f"handler crash: {e}")
+            out = {"jsonrpc": "2.0", "id": msg.get("id"),
+                   "error": {"code": -32603, "message": str(e)}}
+        if out is not None:
+            print(json.dumps(out), flush=True)
+
+
+if __name__ == "__main__":
+    main()

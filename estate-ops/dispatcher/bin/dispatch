@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""bin/dispatch — CLI for the canonical fleet dispatcher/ledger.
+
+Event-driven by design: invoke on admission, transition, completion.
+No daemons, no timers, no polling.
+
+State dir: --state (default <repo>/projects/ops/dispatcher/state),
+or FLEET_DISPATCH_STATE.
+"""
+import argparse
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                os.pardir))
+from fleet_dispatch import Dispatcher, PRECEDENCE  # noqa: E402
+from fleet_dispatch.admission import DuplicateAdmission  # noqa: E402
+from fleet_dispatch.dispatcher import UnknownEntity, IllegalTransition  # noqa: E402
+
+DEFAULT_STATE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "state")
+
+
+def get_state(args):
+    return args.state or os.environ.get("FLEET_DISPATCH_STATE", DEFAULT_STATE)
+
+
+def out(obj):
+    print(json.dumps(obj, indent=2, sort_keys=True, default=str))
+
+
+def cmd_admit_mission(a, d):
+    ent = d.admit_mission(a.slug, a.origin, a.brief, dedup_key=a.dedup)
+    out({"ok": True, "mission_id": ent["id"], "state": ent["state"]})
+
+
+def cmd_admit_coordinator(a, d):
+    ent = d.admit_coordinator(a.name, a.mission, a.origin, a.brief,
+                              dedup_key=a.dedup)
+    out({"ok": True, "coordinator_id": ent["id"], "relay_id": ent["relay_id"]})
+
+
+def cmd_admit_worker(a, d):
+    ent = d.admit_worker(a.name, a.mission, a.origin, a.brief,
+                         coordinator_id=a.coordinator, dedup_key=a.dedup)
+    out({"ok": True, "worker_id": ent["id"], "relay_id": ent["relay_id"]})
+
+
+def cmd_transition(a, d):
+    ent = d.transition(a.id, a.to, note=a.note or "")
+    out({"ok": True, "id": ent["id"], "state": ent["state"]})
+
+
+def cmd_heartbeat(a, d):
+    out({"ok": True, "live": d.heartbeat(a.id)})
+
+
+def cmd_result(a, d):
+    ent = d.record_result(a.id, a.success == "true", a.summary,
+                          artifacts=a.artifact or [], commits=a.commit or [])
+    out({"ok": True, "id": ent["id"], "state": ent["state"],
+         "relay_sealed": d.relays.is_sealed(ent["relay_id"])
+         if ent.get("relay_id") else None})
+
+
+def cmd_status(a, d):
+    out(d.status(a.id))
+
+
+def cmd_manifest(a, d):
+    out(d.mission_manifest(a.mission))
+
+
+def cmd_audit(a, d):
+    report = d.audit()
+    out(report)
+    return 0 if report["ok"] else 1
+
+
+def cmd_sweep(a, d):
+    out({"ok": True, "sealed": d.archive_sweep()})
+
+
+def cmd_intake(a, d):
+    out(d.intake_submit({"from": a.from_agent, "text": a.text,
+                         "origin": a.origin}))
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="dispatch",
+                                 description="canonical fleet dispatcher/ledger")
+    ap.add_argument("--state", default=None, help="state dir")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    def add_origin(p):
+        p.add_argument("--origin", required=True, choices=sorted(PRECEDENCE),
+                       help="chris-direct preempts anything (standing rule)")
+
+    p = sub.add_parser("admit-mission"); add_origin(p)
+    p.add_argument("--slug", required=True); p.add_argument("--brief", required=True)
+    p.add_argument("--dedup", default=None); p.set_defaults(fn=cmd_admit_mission)
+
+    p = sub.add_parser("admit-coordinator"); add_origin(p)
+    p.add_argument("--name", required=True); p.add_argument("--mission", required=True)
+    p.add_argument("--brief", required=True); p.add_argument("--dedup", default=None)
+    p.set_defaults(fn=cmd_admit_coordinator)
+
+    p = sub.add_parser("admit-worker"); add_origin(p)
+    p.add_argument("--name", required=True); p.add_argument("--mission", required=True)
+    p.add_argument("--brief", required=True); p.add_argument("--coordinator", default=None)
+    p.add_argument("--dedup", default=None); p.set_defaults(fn=cmd_admit_worker)
+
+    p = sub.add_parser("transition")
+    p.add_argument("--id", required=True); p.add_argument("--to", required=True)
+    p.add_argument("--note", default=""); p.set_defaults(fn=cmd_transition)
+
+    p = sub.add_parser("heartbeat")
+    p.add_argument("--id", required=True); p.set_defaults(fn=cmd_heartbeat)
+
+    p = sub.add_parser("result")
+    p.add_argument("--id", required=True)
+    p.add_argument("--success", required=True, choices=("true", "false"))
+    p.add_argument("--summary", required=True)
+    p.add_argument("--artifact", action="append", default=[])
+    p.add_argument("--commit", action="append", default=[])
+    p.set_defaults(fn=cmd_result)
+
+    p = sub.add_parser("status")
+    p.add_argument("--id", default=None); p.set_defaults(fn=cmd_status)
+
+    p = sub.add_parser("manifest")
+    p.add_argument("--mission", required=True); p.set_defaults(fn=cmd_manifest)
+
+    p = sub.add_parser("audit"); p.set_defaults(fn=cmd_audit)
+
+    p = sub.add_parser("archive-sweep"); p.set_defaults(fn=cmd_sweep)
+
+    p = sub.add_parser("intake")
+    p.add_argument("--from", dest="from_agent", required=True)
+    p.add_argument("--text", required=True)
+    p.add_argument("--origin", default="agent", choices=sorted(PRECEDENCE))
+    p.set_defaults(fn=cmd_intake)
+
+    args = ap.parse_args(argv)
+    d = Dispatcher(get_state(args))
+    try:
+        rc = args.fn(args, d)
+        return rc if isinstance(rc, int) else 0
+    except DuplicateAdmission as e:
+        out({"ok": False, "error": "duplicate-admission", "detail": str(e),
+             "holder": e.lock["holder_id"]})
+        return 3
+    except UnknownEntity as e:
+        out({"ok": False, "error": "unknown-entity", "detail": str(e)})
+        return 4
+    except IllegalTransition as e:
+        out({"ok": False, "error": "illegal-transition", "detail": str(e)})
+        return 5
+    except ValueError as e:
+        out({"ok": False, "error": "bad-request", "detail": str(e)})
+        return 6
+
+
+if __name__ == "__main__":
+    sys.exit(main())

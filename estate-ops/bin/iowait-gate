@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# iowait-gate: refuse to start heavy I/O work when the disk is already saturated.
+# Patch for 2c7ca733 (iowait crash): thundering-herd I/O bursts tip the 2-core
+# cell over. Heavy jobs (workspace scans, parquet sweeps, bulk churn) should
+# consult this gate first and defer when iowait is high.
+#
+# Usage: iowait-gate [--max-pct N]
+#   Exits 0 (with the measured %) when iowait < max; exits 1 when saturated.
+#   Default max: 40%.
+set -u
+MAX=40
+[[ "${1:-}" == "--max-pct" ]] && MAX="$2"
+
+read -r _ u1 _ s1 i1 w1 _ < <(awk '/^cpu /{print $2,$3,$4,$5,$6}' /proc/stat)
+# Sampling window via interruptible isleep (no `sleep` binary per standing rule).
+# Exit 3 = interrupted early; treat the window as elapsed and proceed.
+BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"$BIN_DIR/isleep" 1 --name iowait-sample --tick 0.5
+rc=$?
+[[ $rc -eq 0 || $rc -eq 3 ]] || exit $rc
+read -r _ u2 _ s2 i2 w2 < <(awk '/^cpu /{print $2,$3,$4,$5,$6}' /proc/stat)
+tot=$(( (u2+s2+i2+w2) - (u1+s1+i1+w1) ))
+pcta=0
+[[ $tot -gt 0 ]] && pcta=$(( 100 * (w2-w1) / tot ))
+echo "iowait=${pcta}%"
+[[ $pcta -lt $MAX ]]

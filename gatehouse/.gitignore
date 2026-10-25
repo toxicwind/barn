@@ -1,0 +1,54 @@
+# Re-include upstream mcpproxy-go source paths swallowed by root canary-hygiene rules.
+# These are public upstream files (smart-mcp-proxy/mcpproxy-go @ 69572f09), not secrets.
+# The root *token*/*secret*/*session*/logs/output/dist rules stay intact for everything else.
+!internal/cli/output/
+!internal/logs/
+!internal/secret/
+!internal/server/tokens/
+!web/frontend/dist/
+!internal/auth/agent_token.go
+!internal/auth/agent_token_test.go
+!internal/cliclient/credentials.go
+!internal/cliclient/credentials_test.go
+!internal/connect/token.go
+!internal/connect/token_test.go
+!internal/httpapi/agent_token_gating_test.go
+!internal/httpapi/redact_secrets_test.go
+!internal/httpapi/sessions_handlers_test.go
+!internal/httpapi/tokens.go
+!internal/httpapi/tokens_test.go
+!internal/oauth/persistent_token_store.go
+!internal/oauth/persistent_token_store_test.go
+!internal/runtime/event_bus_secrets_test.go
+!internal/runtime/worksession.go
+!internal/runtime/worksession_test.go
+!internal/security/detect/checks/embedded_secret.go
+!internal/security/detect/checks/embedded_secret_parity_test.go
+!internal/security/detect/checks/embedded_secret_test.go
+!internal/security/patterns/tokens.go
+!internal/security/patterns/tokens_test.go
+!internal/server/mcp_session_risk_test.go
+!internal/server/session_store.go
+!internal/server/session_store_worksession_test.go
+!internal/server/worksession_hook_test.go
+!internal/serveredition/auth/idp_subject_token.go
+!internal/serveredition/auth/idp_subject_token_test.go
+!internal/serveredition/auth/jwt_tokens.go
+!internal/serveredition/auth/jwt_tokens_test.go
+!internal/serveredition/auth/session_store.go
+!internal/serveredition/auth/session_store_test.go
+!internal/serveredition/broker/token_exchanger.go
+!internal/serveredition/broker/token_exchanger_test.go
+!internal/storage/agent_tokens.go
+!internal/storage/agent_tokens_test.go
+!internal/storage/sessions_filter_test.go
+!internal/storage/sessions_migration.go
+!internal/storage/sessions_migration_test.go
+!internal/storage/sessions_retention_test.go
+!internal/upstream/core/client_secret_test.go
+!internal/server/tokens/tokenizer.go
+!internal/server/tokens/tokenizer_test.go
+
+# test-built binary (internal/server binary_test.go requires it at this path;
+# build with: go build -o internal/server/mcpproxy ./cmd/mcpproxy)
+internal/server/mcpproxy

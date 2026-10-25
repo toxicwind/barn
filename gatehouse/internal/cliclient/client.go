@@ -1,0 +1,2250 @@
+package cliclient
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"time"
+
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/codescripts"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/contracts"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/reqcontext"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/socket"
+
+	"go.uber.org/zap"
+)
+
+// Client provides HTTP API access for CLI commands.
+type Client struct {
+	baseURL     string
+	apiKey      string
+	bearerToken string
+	httpClient  *http.Client
+	logger      *zap.SugaredLogger
+}
+
+// clientVersion holds the build-time version reported in X-MCPProxy-Client.
+// Set via SetClientVersion at process startup. Defaults to "dev" so tests
+// run without an explicit setup step. Spec 042 User Story 1.
+var clientVersion = "dev"
+
+// SetClientVersion sets the version reported in the X-MCPProxy-Client header.
+func SetClientVersion(v string) {
+	if v != "" {
+		clientVersion = v
+	}
+}
+
+// surfaceHeaderTransport wraps another http.RoundTripper to inject the
+// X-MCPProxy-Client header on every outbound request. The header value is
+// "cli/<version>". Spec 042 User Story 1.
+//
+// It also injects X-API-Key when the client was constructed with an API key.
+// Doing this at the transport level guarantees every request authenticates
+// over TCP, including methods that skip prepareRequest (e.g. Ping) — the REST
+// API always requires a key on TCP; only socket connections bypass it.
+type surfaceHeaderTransport struct {
+	base   http.RoundTripper
+	apiKey string
+}
+
+func (t *surfaceHeaderTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	needClientHeader := req.Header.Get("X-MCPProxy-Client") == ""
+	needAPIKey := t.apiKey != "" && req.Header.Get("X-API-Key") == ""
+	if needClientHeader || needAPIKey {
+		// Clone the header map so we don't mutate caller-owned state.
+		newHeaders := req.Header.Clone()
+		if newHeaders == nil {
+			newHeaders = http.Header{}
+		}
+		if needClientHeader {
+			newHeaders.Set("X-MCPProxy-Client", "cli/"+clientVersion)
+		}
+		if needAPIKey {
+			newHeaders.Set("X-API-Key", t.apiKey)
+		}
+		reqCopy := req.Clone(req.Context())
+		reqCopy.Header = newHeaders
+		req = reqCopy
+	}
+	return t.base.RoundTrip(req)
+}
+
+// APIError represents an error from the API that includes request_id for log correlation.
+// T023: Added for CLI error display with request ID
+type APIError struct {
+	Message   string `json:"error"`
+	RequestID string `json:"request_id,omitempty"`
+}
+
+// Error implements the error interface.
+func (e *APIError) Error() string {
+	return e.Message
+}
+
+// HasRequestID returns true if the error has a request ID for log correlation.
+func (e *APIError) HasRequestID() bool {
+	return e.RequestID != ""
+}
+
+// FormatWithRequestID returns a formatted error message including the request ID.
+func (e *APIError) FormatWithRequestID() string {
+	if e.RequestID != "" {
+		return fmt.Sprintf("%s\n\nRequest ID: %s\nUse 'mcpproxy activity list --request-id %s' to find related logs.",
+			e.Message, e.RequestID, e.RequestID)
+	}
+	return e.Message
+}
+
+// CodeExecResult represents code execution result.
+type CodeExecResult struct {
+	OK        bool                   `json:"ok"`
+	Result    interface{}            `json:"result,omitempty"`
+	Error     *CodeExecError         `json:"error,omitempty"`
+	Stats     map[string]interface{} `json:"stats,omitempty"`
+	RequestID string                 `json:"request_id,omitempty"` // T023: For error correlation
+}
+
+// CodeExecError represents execution error.
+type CodeExecError struct {
+	Message string `json:"message"`
+	Code    string `json:"code"`
+}
+
+// NewClient creates a new CLI HTTP client.
+// If endpoint is a socket path, creates a client with socket dialer.
+func NewClient(endpoint string, logger *zap.SugaredLogger) *Client {
+	return NewClientWithAPIKey(endpoint, "", logger)
+}
+
+// NewClientWithAPIKey creates a new CLI HTTP client with API key authentication.
+// If endpoint is a socket path, creates a client with socket dialer.
+func NewClientWithAPIKey(endpoint, apiKey string, logger *zap.SugaredLogger) *Client {
+	// Create custom transport with socket support
+	transport := &http.Transport{}
+
+	// Check if we should use a custom dialer (Unix socket or Windows pipe)
+	dialer, baseURL, err := socket.CreateDialer(endpoint)
+	if err != nil && logger != nil {
+		logger.Warnw("Failed to create socket dialer, using TCP",
+			"endpoint", endpoint,
+			"error", err)
+		baseURL = endpoint
+	}
+
+	// Apply custom dialer if available
+	if dialer != nil {
+		transport.DialContext = dialer
+		if logger != nil {
+			logger.Debugw("Using socket/pipe connection",
+				"endpoint", endpoint,
+				"base_url", baseURL)
+		}
+	} else {
+		baseURL = endpoint
+	}
+
+	return &Client{
+		baseURL: baseURL,
+		apiKey:  apiKey,
+		httpClient: &http.Client{
+			Timeout: 5 * time.Minute, // Generous timeout for long operations
+			// Spec 042: wrap transport so every request carries the
+			// X-MCPProxy-Client: cli/<version> header, plus X-API-Key
+			// when the client was constructed with one.
+			Transport: &surfaceHeaderTransport{base: transport, apiKey: apiKey},
+		},
+		logger: logger,
+	}
+}
+
+// NewClientWithBearer creates a CLI HTTP client that authenticates with a JWT
+// Bearer token. The server edition user/JWT endpoints (e.g. the per-user
+// credential broker surfaces, spec 074) sit behind session-or-Bearer auth
+// rather than the API-key group, so callers must present a user token.
+func NewClientWithBearer(endpoint, bearerToken string, logger *zap.SugaredLogger) *Client {
+	c := NewClientWithAPIKey(endpoint, "", logger)
+	c.bearerToken = bearerToken
+	return c
+}
+
+// DoRaw performs a raw HTTP request to the API and returns the response.
+// The caller is responsible for closing the response body.
+// The body parameter can be nil for methods that don't require a request body.
+func (c *Client) DoRaw(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
+	var bodyReader io.Reader
+	if body != nil {
+		bodyReader = bytes.NewReader(body)
+	}
+
+	reqURL := c.baseURL + path
+	req, err := http.NewRequestWithContext(ctx, method, reqURL, bodyReader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	c.prepareRequest(ctx, req)
+
+	return c.httpClient.Do(req)
+}
+
+// prepareRequest adds common headers to a request (correlation ID, API key, etc.)
+func (c *Client) prepareRequest(ctx context.Context, req *http.Request) {
+	if correlationID := reqcontext.GetCorrelationID(ctx); correlationID != "" {
+		req.Header.Set("X-Correlation-ID", correlationID)
+	}
+	if c.apiKey != "" {
+		req.Header.Set("X-API-Key", c.apiKey)
+	}
+	if c.bearerToken != "" && req.Header.Get("Authorization") == "" {
+		req.Header.Set("Authorization", "Bearer "+c.bearerToken)
+	}
+}
+
+// parseAPIError creates an APIError from API response fields.
+// T023: Helper to create errors with request_id for CLI display.
+func parseAPIError(errorMsg, requestID string) error {
+	return &APIError{Message: errorMsg, RequestID: requestID}
+}
+
+// execHTTPClient returns a shallow copy of the shared HTTP client with no
+// blanket timeout, so a long-running request is bounded by its context alone.
+// The shared client keeps a generous timeout as a safety net for ordinary
+// commands, but that net is shorter than the largest execution budget the
+// daemon accepts.
+func (c *Client) execHTTPClient() *http.Client {
+	clone := *c.httpClient
+	clone.Timeout = 0
+	return &clone
+}
+
+// CodeExecOptions contains optional parameters for code execution via the daemon API.
+type CodeExecOptions struct {
+	Language string // Source language: "javascript" (default) or "typescript"
+
+	// Script names a server-side stored script to execute instead of inline
+	// code (Spec 097). Only the NAME travels: the daemon's code_execution
+	// handler is the single execution-time resolver, so a stored script means
+	// the same thing over MCP, REST and both CLI modes.
+	Script string
+}
+
+// CodeExec executes JavaScript or TypeScript code via the daemon API.
+func (c *Client) CodeExec(
+	ctx context.Context,
+	code string,
+	input map[string]interface{},
+	timeoutMS int,
+	maxToolCalls int,
+	allowedServers []string,
+	opts ...CodeExecOptions,
+) (*CodeExecResult, error) {
+	// Build request body
+	reqBody := map[string]interface{}{
+		"input": input,
+		"options": map[string]interface{}{
+			"timeout_ms":      timeoutMS,
+			"max_tool_calls":  maxToolCalls,
+			"allowed_servers": allowedServers,
+		},
+	}
+
+	// Exactly one source travels (Spec 097): inline code, or the NAME of a
+	// stored script the daemon resolves. Sending an empty "code" alongside a
+	// script name would leave the caller's request ambiguous on the wire.
+	if len(opts) > 0 && opts[0].Script != "" {
+		reqBody["script"] = opts[0].Script
+	} else {
+		reqBody["code"] = code
+	}
+
+	// Forward the language verbatim when the caller named one. Deciding
+	// whether the user MEANT it belongs to the caller (the CLI sends it only
+	// when --language was explicitly set); dropping an explicit "javascript"
+	// here would silently swallow a contradiction with a stored .ts script.
+	if len(opts) > 0 && opts[0].Language != "" {
+		reqBody["language"] = opts[0].Language
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	// Create HTTP request
+	url := c.baseURL + "/api/v1/code/exec"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	// Send request
+	resp, err := c.execHTTPClient().Do(req)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("client-side timeout waiting for the daemon to return code execution results: %w", err)
+		}
+		return nil, fmt.Errorf("failed to call code execution API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Parse response
+	var result CodeExecResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	return &result, nil
+}
+
+// GetCodeScripts lists the stored scripts the DAEMON can execute (Spec 097),
+// together with the directory it read them from. Asking the daemon rather than
+// listing locally is the point: a listing that disagreed with the process which
+// actually resolves scripts would be worse than none.
+func (c *Client) GetCodeScripts(ctx context.Context) (dir string, entries []codescripts.Entry, err error) {
+	url := c.baseURL + "/api/v1/code/scripts"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to call stored scripts API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var apiResp struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Scripts []codescripts.Entry `json:"scripts"`
+			Dir     string              `json:"dir"`
+		} `json:"data"`
+		Error     string `json:"error"`
+		RequestID string `json:"request_id"`
+	}
+
+	if err := json.Unmarshal(bodyBytes, &apiResp); err != nil {
+		return "", nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if !apiResp.Success {
+		return "", nil, parseAPIError(apiResp.Error, apiResp.RequestID)
+	}
+
+	return apiResp.Data.Dir, apiResp.Data.Scripts, nil
+}
+
+// CallToolResult represents tool call result.
+type CallToolResult struct {
+	Content  []interface{}          `json:"content"`
+	IsError  bool                   `json:"isError"`
+	Metadata map[string]interface{} `json:"_meta,omitempty"`
+}
+
+// CallTool calls a tool on an upstream server via daemon API.
+func (c *Client) CallTool(
+	ctx context.Context,
+	toolName string,
+	args map[string]interface{},
+) (*CallToolResult, error) {
+	// Build request body (REST API format)
+	reqBody := map[string]interface{}{
+		"tool_name": toolName,
+		"arguments": args,
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	// Create HTTP request to REST API endpoint
+	url := c.baseURL + "/api/v1/tools/call"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	// Send request
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call tool API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Read the full response body for debugging
+	bodyBytes, err2 := io.ReadAll(resp.Body)
+	if err2 != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err2)
+	}
+
+	// Log response for debugging
+	if c.logger != nil {
+		c.logger.Debugw("Received response from CallTool",
+			"status_code", resp.StatusCode,
+			"body", string(bodyBytes))
+	}
+
+	// Parse response (REST API format: {"success": true, "data": <result>})
+	var apiResp struct {
+		Success   bool        `json:"success"`
+		Data      interface{} `json:"data"`
+		Error     string      `json:"error"`
+		RequestID string      `json:"request_id"` // T023: Capture request_id for error correlation
+	}
+
+	if err := json.Unmarshal(bodyBytes, &apiResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w (body: %s)", err, string(bodyBytes))
+	}
+
+	if !apiResp.Success {
+		// T023: Return APIError with request_id for CLI display
+		return nil, &APIError{Message: apiResp.Error, RequestID: apiResp.RequestID}
+	}
+
+	// Convert data to CallToolResult format
+	result := &CallToolResult{}
+
+	// Try to extract as map with content field
+	if dataMap, ok := apiResp.Data.(map[string]interface{}); ok {
+		if content, hasContent := dataMap["content"].([]interface{}); hasContent {
+			result.Content = content
+		} else {
+			// Wrap data in content array if not already in that format
+			result.Content = []interface{}{
+				map[string]interface{}{
+					"type": "text",
+					"text": fmt.Sprintf("%v", apiResp.Data),
+				},
+			}
+		}
+
+		if isError, ok := dataMap["isError"].(bool); ok {
+			result.IsError = isError
+		}
+
+		if meta, ok := dataMap["_meta"].(map[string]interface{}); ok {
+			result.Metadata = meta
+		}
+	} else {
+		// Fallback: wrap data in content array
+		result.Content = []interface{}{
+			map[string]interface{}{
+				"type": "text",
+				"text": fmt.Sprintf("%v", apiResp.Data),
+			},
+		}
+	}
+
+	return result, nil
+}
+
+// Ping checks if the daemon is reachable.
+func (c *Client) Ping(ctx context.Context) error {
+	url := c.baseURL + "/api/v1/status"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("daemon returned status %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+// GetServers retrieves list of servers from daemon.
+func (c *Client) GetServers(ctx context.Context) ([]map[string]interface{}, error) {
+	url := c.baseURL + "/api/v1/servers"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call servers API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var apiResp struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Servers []map[string]interface{} `json:"servers"`
+		} `json:"data"`
+		Error     string `json:"error"`
+		RequestID string `json:"request_id"` // T023: Capture request_id for error correlation
+	}
+
+	if err := json.Unmarshal(bodyBytes, &apiResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if !apiResp.Success {
+		return nil, parseAPIError(apiResp.Error, apiResp.RequestID)
+	}
+
+	return apiResp.Data.Servers, nil
+}
+
+// GetServerLogs retrieves logs for a specific server.
+func (c *Client) GetServerLogs(ctx context.Context, serverName string, tail int) ([]contracts.LogEntry, error) {
+	// PathEscape the server name: official-registry names are namespace/name and
+	// contain "/", which would otherwise inject extra path segments and miss the
+	// chi /servers/{id}/logs route (MCP-1111 / #598).
+	reqURL := fmt.Sprintf("%s/api/v1/servers/%s/logs?tail=%d", c.baseURL, url.PathEscape(serverName), tail)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call logs API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var apiResp struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Logs []contracts.LogEntry `json:"logs"`
+		} `json:"data"`
+		Error     string `json:"error"`
+		RequestID string `json:"request_id"` // T023: Capture request_id for error correlation
+	}
+
+	if err := json.Unmarshal(bodyBytes, &apiResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if !apiResp.Success {
+		// T023: Return APIError with request_id for CLI display
+		return nil, parseAPIError(apiResp.Error, apiResp.RequestID)
+	}
+
+	return apiResp.Data.Logs, nil
+}
+
+// ServerAction performs an action on a server (enable, disable, restart).
+func (c *Client) ServerAction(ctx context.Context, serverName, action string) error {
+	var url string
+	method := http.MethodPost
+
+	switch action {
+	case "enable":
+		url = fmt.Sprintf("%s/api/v1/servers/%s/enable", c.baseURL, serverName)
+	case "disable":
+		url = fmt.Sprintf("%s/api/v1/servers/%s/disable", c.baseURL, serverName)
+	case "restart":
+		url = fmt.Sprintf("%s/api/v1/servers/%s/restart", c.baseURL, serverName)
+	default:
+		return fmt.Errorf("unknown action: %s", action)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	c.prepareRequest(ctx, req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to call server action API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var apiResp struct {
+		Success   bool   `json:"success"`
+		Error     string `json:"error"`
+		RequestID string `json:"request_id"` // T023: Capture request_id for error correlation
+	}
+
+	if err := json.Unmarshal(bodyBytes, &apiResp); err != nil {
+		return fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if !apiResp.Success {
+		// T023: Return APIError with request_id for CLI display
+		return parseAPIError(apiResp.Error, apiResp.RequestID)
+	}
+
+	return nil
+}
+
+// GetDiagnostics retrieves diagnostics information from daemon.
+func (c *Client) GetDiagnostics(ctx context.Context) (map[string]interface{}, error) {
+	url := c.baseURL + "/api/v1/diagnostics"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call diagnostics API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var apiResp struct {
+		Success   bool                   `json:"success"`
+		Data      map[string]interface{} `json:"data"`
+		Error     string                 `json:"error"`
+		RequestID string                 `json:"request_id"` // T023: Capture request_id for error correlation
+	}
+
+	if err := json.Unmarshal(bodyBytes, &apiResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if !apiResp.Success {
+		// T023: Return APIError with request_id for CLI display
+		return nil, parseAPIError(apiResp.Error, apiResp.RequestID)
+	}
+
+	return apiResp.Data, nil
+}
+
+// DiagnosticFixResult is the response from POST /api/v1/diagnostics/fix. Spec 044.
+type DiagnosticFixResult struct {
+	Outcome    string `json:"outcome"` // "success" | "failed" | "blocked"
+	Mode       string `json:"mode"`    // "dry_run" | "execute"
+	Preview    string `json:"preview,omitempty"`
+	FailureMsg string `json:"failure_msg,omitempty"`
+	DurationMs int64  `json:"duration_ms,omitempty"`
+}
+
+// InvokeDiagnosticFix runs a registered fixer via the daemon's fix endpoint.
+// Destructive fixers default to dry_run on the server side; callers must
+// pass mode="execute" to mutate state. Spec 044.
+func (c *Client) InvokeDiagnosticFix(ctx context.Context, server, code, fixerKey, mode string) (*DiagnosticFixResult, error) {
+	reqBody := map[string]interface{}{
+		"server":    server,
+		"code":      code,
+		"fixer_key": fixerKey,
+	}
+	if mode != "" {
+		reqBody["mode"] = mode
+	}
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	url := c.baseURL + "/api/v1/diagnostics/fix"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call fix endpoint: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(respBytes))
+	}
+
+	var apiResp struct {
+		Success   bool                 `json:"success"`
+		Data      *DiagnosticFixResult `json:"data"`
+		Error     string               `json:"error"`
+		RequestID string               `json:"request_id"`
+	}
+	if err := json.Unmarshal(respBytes, &apiResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+	if !apiResp.Success {
+		return nil, parseAPIError(apiResp.Error, apiResp.RequestID)
+	}
+	if apiResp.Data == nil {
+		return &DiagnosticFixResult{}, nil
+	}
+	return apiResp.Data, nil
+}
+
+// GetTelemetryPayload retrieves the next telemetry heartbeat payload that
+// mcpproxy would send, rendered with live runtime stats attached. Spec 042.
+// No network call is made by the daemon — the payload reflects the current
+// in-memory state.
+func (c *Client) GetTelemetryPayload(ctx context.Context) (map[string]interface{}, error) {
+	url := c.baseURL + "/api/v1/telemetry/payload"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call telemetry payload API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var apiResp struct {
+		Success   bool                   `json:"success"`
+		Data      map[string]interface{} `json:"data"`
+		Error     string                 `json:"error"`
+		RequestID string                 `json:"request_id"`
+	}
+
+	if err := json.Unmarshal(bodyBytes, &apiResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if !apiResp.Success {
+		return nil, parseAPIError(apiResp.Error, apiResp.RequestID)
+	}
+
+	return apiResp.Data, nil
+}
+
+// GetStatus retrieves server status including running state, listen address, and upstream stats.
+func (c *Client) GetStatus(ctx context.Context) (map[string]interface{}, error) {
+	url := c.baseURL + "/api/v1/status"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call status API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var apiResp struct {
+		Success   bool                   `json:"success"`
+		Data      map[string]interface{} `json:"data"`
+		Error     string                 `json:"error"`
+		RequestID string                 `json:"request_id"`
+	}
+
+	if err := json.Unmarshal(bodyBytes, &apiResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if !apiResp.Success {
+		return nil, parseAPIError(apiResp.Error, apiResp.RequestID)
+	}
+
+	return apiResp.Data, nil
+}
+
+// GetInfo retrieves server info including version and update status.
+func (c *Client) GetInfo(ctx context.Context) (map[string]interface{}, error) {
+	return c.GetInfoWithRefresh(ctx, false)
+}
+
+// GetInfoWithRefresh retrieves server info with optional update check refresh.
+// When refresh is true, forces an immediate update check against GitHub.
+func (c *Client) GetInfoWithRefresh(ctx context.Context, refresh bool) (map[string]interface{}, error) {
+	url := c.baseURL + "/api/v1/info"
+	if refresh {
+		url += "?refresh=true"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call info API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var apiResp struct {
+		Success   bool                   `json:"success"`
+		Data      map[string]interface{} `json:"data"`
+		Error     string                 `json:"error"`
+		RequestID string                 `json:"request_id"` // T023: Capture request_id for error correlation
+	}
+
+	if err := json.Unmarshal(bodyBytes, &apiResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if !apiResp.Success {
+		// T023: Return APIError with request_id for CLI display
+		return nil, parseAPIError(apiResp.Error, apiResp.RequestID)
+	}
+
+	return apiResp.Data, nil
+}
+
+// BulkOperationResult holds the results of a bulk operation across multiple servers.
+type BulkOperationResult struct {
+	Total      int               `json:"total"`
+	Successful int               `json:"successful"`
+	Failed     int               `json:"failed"`
+	Errors     map[string]string `json:"errors"`
+}
+
+// T079: RestartAll restarts all configured servers.
+func (c *Client) RestartAll(ctx context.Context) (*BulkOperationResult, error) {
+	url := c.baseURL + "/api/v1/servers/restart_all"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Add correlation ID from context to request headers
+	c.prepareRequest(ctx, req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call restart_all API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var apiResp struct {
+		Success   bool                 `json:"success"`
+		Data      *BulkOperationResult `json:"data"`
+		Error     string               `json:"error"`
+		RequestID string               `json:"request_id"` // T023: Capture request_id for error correlation
+	}
+
+	if err := json.Unmarshal(bodyBytes, &apiResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if !apiResp.Success {
+		// T023: Return APIError with request_id for CLI display
+		return nil, parseAPIError(apiResp.Error, apiResp.RequestID)
+	}
+
+	return apiResp.Data, nil
+}
+
+// T080: EnableAll enables all configured servers.
+func (c *Client) EnableAll(ctx context.Context) (*BulkOperationResult, error) {
+	url := c.baseURL + "/api/v1/servers/enable_all"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Add correlation ID from context to request headers
+	c.prepareRequest(ctx, req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call enable_all API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var apiResp struct {
+		Success   bool                 `json:"success"`
+		Data      *BulkOperationResult `json:"data"`
+		Error     string               `json:"error"`
+		RequestID string               `json:"request_id"` // T023: Capture request_id for error correlation
+	}
+
+	if err := json.Unmarshal(bodyBytes, &apiResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if !apiResp.Success {
+		// T023: Return APIError with request_id for CLI display
+		return nil, parseAPIError(apiResp.Error, apiResp.RequestID)
+	}
+
+	return apiResp.Data, nil
+}
+
+// T080: DisableAll disables all configured servers.
+func (c *Client) DisableAll(ctx context.Context) (*BulkOperationResult, error) {
+	url := c.baseURL + "/api/v1/servers/disable_all"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Add correlation ID from context to request headers
+	c.prepareRequest(ctx, req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call disable_all API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var apiResp struct {
+		Success   bool                 `json:"success"`
+		Data      *BulkOperationResult `json:"data"`
+		Error     string               `json:"error"`
+		RequestID string               `json:"request_id"` // T023: Capture request_id for error correlation
+	}
+
+	if err := json.Unmarshal(bodyBytes, &apiResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if !apiResp.Success {
+		// T023: Return APIError with request_id for CLI display
+		return nil, parseAPIError(apiResp.Error, apiResp.RequestID)
+	}
+
+	return apiResp.Data, nil
+}
+
+// GetGlobalTools retrieves all tools across every configured server from the
+// consolidated GET /api/v1/tools endpoint (Spec 050). The returned slice
+// contains one map per tool with the same fields as the web page's data source.
+func (c *Client) GetGlobalTools(ctx context.Context) ([]map[string]interface{}, error) {
+	url := c.baseURL + "/api/v1/tools"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	c.prepareRequest(ctx, req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call global tools API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var apiResp struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Tools []map[string]interface{} `json:"tools"`
+		} `json:"data"`
+		Error     string `json:"error"`
+		RequestID string `json:"request_id"`
+	}
+
+	if err := json.Unmarshal(bodyBytes, &apiResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if !apiResp.Success {
+		return nil, parseAPIError(apiResp.Error, apiResp.RequestID)
+	}
+
+	return apiResp.Data.Tools, nil
+}
+
+// GetServerTools retrieves tools for a specific server from daemon.
+func (c *Client) GetServerTools(ctx context.Context, serverName string) ([]map[string]interface{}, error) {
+	url := fmt.Sprintf("%s/api/v1/servers/%s/tools", c.baseURL, serverName)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call tools API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var apiResp struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Tools []map[string]interface{} `json:"tools"`
+		} `json:"data"`
+		Error     string `json:"error"`
+		RequestID string `json:"request_id"` // T023: Capture request_id for error correlation
+	}
+
+	if err := json.Unmarshal(bodyBytes, &apiResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if !apiResp.Success {
+		// T023: Return APIError with request_id for CLI display
+		return nil, parseAPIError(apiResp.Error, apiResp.RequestID)
+	}
+
+	return apiResp.Data.Tools, nil
+}
+
+// SetToolEnabled flips an individual tool's enabled state for a server. The
+// daemon synthesizes an approval record on demand if the tool has never been
+// quarantined or toggled before — see Runtime.SetToolEnabled.
+func (c *Client) SetToolEnabled(ctx context.Context, serverName, toolName string, enabled bool) error {
+	url := fmt.Sprintf("%s/api/v1/servers/%s/tools/%s/enabled",
+		c.baseURL, serverName, toolName)
+	body, err := json.Marshal(map[string]bool{"enabled": enabled})
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.prepareRequest(ctx, req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to call set-tool-enabled API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var apiResp struct {
+		Success   bool   `json:"success"`
+		Error     string `json:"error"`
+		RequestID string `json:"request_id"`
+	}
+	if err := json.Unmarshal(bodyBytes, &apiResp); err != nil {
+		return fmt.Errorf("failed to parse response: %w", err)
+	}
+	if !apiResp.Success {
+		return parseAPIError(apiResp.Error, apiResp.RequestID)
+	}
+	return nil
+}
+
+// SetAllToolsEnabled bulk-toggles every known tool for a server. Returns the
+// number of tools whose state actually changed (already-correct tools are
+// skipped on the server side).
+func (c *Client) SetAllToolsEnabled(ctx context.Context, serverName string, enabled bool) (int, error) {
+	path := "disable_all"
+	if enabled {
+		path = "enable_all"
+	}
+	url := fmt.Sprintf("%s/api/v1/servers/%s/tools/%s", c.baseURL, serverName, path)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create request: %w", err)
+	}
+	c.prepareRequest(ctx, req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("failed to call bulk-tool-enable API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var apiResp struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Changed int `json:"changed"`
+		} `json:"data"`
+		Error     string `json:"error"`
+		RequestID string `json:"request_id"`
+	}
+	if err := json.Unmarshal(bodyBytes, &apiResp); err != nil {
+		return 0, fmt.Errorf("failed to parse response: %w", err)
+	}
+	if !apiResp.Success {
+		return 0, parseAPIError(apiResp.Error, apiResp.RequestID)
+	}
+	return apiResp.Data.Changed, nil
+}
+
+// TriggerOAuthLogin initiates OAuth authentication flow for a server.
+// Returns *contracts.OAuthFlowError for structured OAuth errors (Spec 020).
+func (c *Client) TriggerOAuthLogin(ctx context.Context, serverName string) error {
+	url := fmt.Sprintf("%s/api/v1/servers/%s/login", c.baseURL, serverName)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	c.prepareRequest(ctx, req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to call login API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
+	}
+
+	// Spec 020: Check for structured OAuth errors on 400 responses
+	if resp.StatusCode == http.StatusBadRequest {
+		// Try to parse as OAuthFlowError
+		var oauthFlowErr contracts.OAuthFlowError
+		if err := json.Unmarshal(bodyBytes, &oauthFlowErr); err == nil && oauthFlowErr.ErrorType != "" {
+			return &oauthFlowErr
+		}
+
+		// Try to parse as OAuthValidationError
+		var oauthValidationErr contracts.OAuthValidationError
+		if err := json.Unmarshal(bodyBytes, &oauthValidationErr); err == nil && oauthValidationErr.ErrorType != "" {
+			return &oauthValidationErr
+		}
+
+		// Fall back to generic error
+		return fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var apiResp struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Server  string `json:"server"`
+			Action  string `json:"action"`
+			Success bool   `json:"success"`
+		} `json:"data"`
+		Error     string `json:"error"`
+		RequestID string `json:"request_id"` // T023: Capture request_id for error correlation
+	}
+
+	if err := json.Unmarshal(bodyBytes, &apiResp); err != nil {
+		return fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if !apiResp.Success {
+		// T023: Return APIError with request_id for CLI display
+		return parseAPIError(apiResp.Error, apiResp.RequestID)
+	}
+
+	return nil
+}
+
+// TriggerOAuthLogout clears OAuth token and disconnects a server.
+func (c *Client) TriggerOAuthLogout(ctx context.Context, serverName string) error {
+	url := fmt.Sprintf("%s/api/v1/servers/%s/logout", c.baseURL, serverName)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to call logout API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var apiResp struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Server  string `json:"server"`
+			Action  string `json:"action"`
+			Success bool   `json:"success"`
+		} `json:"data"`
+		Error     string `json:"error"`
+		RequestID string `json:"request_id"` // T023: Capture request_id for error correlation
+	}
+
+	if err := json.Unmarshal(bodyBytes, &apiResp); err != nil {
+		return fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if !apiResp.Success {
+		// T023: Return APIError with request_id for CLI display
+		return parseAPIError(apiResp.Error, apiResp.RequestID)
+	}
+
+	return nil
+}
+
+// AddServerRequest represents the request body for adding a server.
+type AddServerRequest struct {
+	Name           string            `json:"name"`
+	URL            string            `json:"url,omitempty"`
+	Command        string            `json:"command,omitempty"`
+	Args           []string          `json:"args,omitempty"`
+	Env            map[string]string `json:"env,omitempty"`
+	Headers        map[string]string `json:"headers,omitempty"`
+	WorkingDir     string            `json:"working_dir,omitempty"`
+	Protocol       string            `json:"protocol,omitempty"`
+	Enabled        *bool             `json:"enabled,omitempty"`
+	Quarantined    *bool             `json:"quarantined,omitempty"`
+	ReconnectOnUse *bool             `json:"reconnect_on_use,omitempty"`
+	// TrustMode is the per-server trust tier (spec 086): auto|scan|manual.
+	// Empty is omitted from the wire so the daemon applies its own default; a
+	// non-empty value is validated CLI-side before the request is built and
+	// again by the REST layer (GH #938).
+	TrustMode string `json:"trust_mode,omitempty"`
+}
+
+// AddServerResult represents the result of adding a server.
+type AddServerResult struct {
+	Name        string `json:"name"`
+	ID          int    `json:"id"`
+	Quarantined bool   `json:"quarantined"`
+}
+
+// AddServer adds a new upstream server via the daemon API.
+func (c *Client) AddServer(ctx context.Context, req *AddServerRequest) (*AddServerResult, error) {
+	bodyBytes, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	url := c.baseURL + "/api/v1/servers"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	// Add correlation ID from context
+	c.prepareRequest(ctx, httpReq)
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call add server API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	// Handle conflict (server already exists)
+	if resp.StatusCode == http.StatusConflict {
+		return nil, fmt.Errorf("server '%s' already exists", req.Name)
+	}
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(respBytes))
+	}
+
+	var apiResp struct {
+		Success   bool             `json:"success"`
+		Data      *AddServerResult `json:"data"`
+		Error     string           `json:"error"`
+		RequestID string           `json:"request_id"` // T023: Capture request_id for error correlation
+	}
+
+	if err := json.Unmarshal(respBytes, &apiResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if !apiResp.Success {
+		// T023: Return APIError with request_id for CLI display
+		return nil, parseAPIError(apiResp.Error, apiResp.RequestID)
+	}
+
+	return apiResp.Data, nil
+}
+
+// PatchServer issues a partial update against PATCH /api/v1/servers/{name}.
+//
+// The body is sent as raw JSON so callers can include JSON null values
+// for header / env deletion under JSON Merge Patch semantics (RFC 7396).
+// Building the body as `map[string]any{"X": nil}` would round-trip through
+// encoding/json fine, but `map[string]*string` is cleaner for fixed-shape
+// callers that want type safety — both forms are supported because
+// callers pass already-marshaled bytes.
+//
+// Example body shapes:
+//
+//	{"headers": {"X-New": "value"}}                  -- upsert
+//	{"headers": {"X-Stale": null}}                   -- delete
+//	{"headers": {"X-Set": "v", "X-Old": null}}       -- combined
+//	{"env": {"API_KEY": null}, "enabled": true}      -- env delete + enable
+func (c *Client) PatchServer(ctx context.Context, serverName string, body []byte) error {
+	url := fmt.Sprintf("%s/api/v1/servers/%s", c.baseURL, serverName)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.prepareRequest(ctx, req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to call patch API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("server '%s' not found", serverName)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(respBytes))
+	}
+
+	var apiResp struct {
+		Success   bool   `json:"success"`
+		Error     string `json:"error"`
+		RequestID string `json:"request_id"`
+	}
+	if err := json.Unmarshal(respBytes, &apiResp); err != nil {
+		return fmt.Errorf("failed to parse response: %w", err)
+	}
+	if !apiResp.Success {
+		return parseAPIError(apiResp.Error, apiResp.RequestID)
+	}
+	return nil
+}
+
+// RemoveServer removes an upstream server via the daemon API.
+func (c *Client) RemoveServer(ctx context.Context, serverName string) error {
+	url := fmt.Sprintf("%s/api/v1/servers/%s", c.baseURL, serverName)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Add correlation ID from context
+	c.prepareRequest(ctx, req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to call remove server API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
+	}
+
+	// Handle not found
+	if resp.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("server '%s' not found", serverName)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(respBytes))
+	}
+
+	var apiResp struct {
+		Success   bool   `json:"success"`
+		Error     string `json:"error"`
+		RequestID string `json:"request_id"` // T023: Capture request_id for error correlation
+	}
+
+	if err := json.Unmarshal(respBytes, &apiResp); err != nil {
+		return fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if !apiResp.Success {
+		// T023: Return APIError with request_id for CLI display
+		return parseAPIError(apiResp.Error, apiResp.RequestID)
+	}
+
+	return nil
+}
+
+// ActivityFilterParams contains options for filtering activity records.
+type ActivityFilterParams interface {
+	ToQueryParams() url.Values
+}
+
+// ListActivities retrieves activity records with filtering.
+func (c *Client) ListActivities(ctx context.Context, filter ActivityFilterParams) ([]map[string]interface{}, int, error) {
+	apiURL := c.baseURL + "/api/v1/activity"
+	if filter != nil {
+		params := filter.ToQueryParams()
+		if encoded := params.Encode(); encoded != "" {
+			apiURL += "?" + encoded
+		}
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	c.prepareRequest(ctx, req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to call activity API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, 0, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var apiResp struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Activities []map[string]interface{} `json:"activities"`
+			Total      int                      `json:"total"`
+		} `json:"data"`
+		Error     string `json:"error"`
+		RequestID string `json:"request_id"` // T023: Capture request_id for error correlation
+	}
+
+	if err := json.Unmarshal(bodyBytes, &apiResp); err != nil {
+		return nil, 0, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if !apiResp.Success {
+		// T023: Return APIError with request_id for CLI display
+		return nil, 0, parseAPIError(apiResp.Error, apiResp.RequestID)
+	}
+
+	return apiResp.Data.Activities, apiResp.Data.Total, nil
+}
+
+// GetActivityDetail retrieves details for a specific activity record.
+func (c *Client) GetActivityDetail(ctx context.Context, activityID string) (map[string]interface{}, error) {
+	url := fmt.Sprintf("%s/api/v1/activity/%s", c.baseURL, activityID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	c.prepareRequest(ctx, req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call activity detail API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("activity not found: %s", activityID)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var apiResp struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Activity map[string]interface{} `json:"activity"`
+		} `json:"data"`
+		Error     string `json:"error"`
+		RequestID string `json:"request_id"` // T023: Capture request_id for error correlation
+	}
+
+	if err := json.Unmarshal(bodyBytes, &apiResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if !apiResp.Success {
+		// T023: Return APIError with request_id for CLI display
+		return nil, parseAPIError(apiResp.Error, apiResp.RequestID)
+	}
+
+	return apiResp.Data.Activity, nil
+}
+
+// GetActivitySummary retrieves activity summary statistics.
+func (c *Client) GetActivitySummary(ctx context.Context, period, groupBy string) (map[string]interface{}, error) {
+	url := c.baseURL + "/api/v1/activity/summary?period=" + period
+	if groupBy != "" {
+		url += "&group_by=" + groupBy
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	c.prepareRequest(ctx, req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call activity summary API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var apiResp struct {
+		Success   bool                   `json:"success"`
+		Data      map[string]interface{} `json:"data"`
+		Error     string                 `json:"error"`
+		RequestID string                 `json:"request_id"` // T023: Capture request_id for error correlation
+	}
+
+	if err := json.Unmarshal(bodyBytes, &apiResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if !apiResp.Success {
+		// T023: Return APIError with request_id for CLI display
+		return nil, parseAPIError(apiResp.Error, apiResp.RequestID)
+	}
+
+	return apiResp.Data, nil
+}
+
+// ToolApprovalRecord represents a tool approval record from the API (Spec 032)
+type ToolApprovalRecord struct {
+	ServerName          string `json:"server_name"`
+	ToolName            string `json:"tool_name"`
+	Status              string `json:"status"`
+	ApprovedHash        string `json:"approved_hash"`
+	CurrentHash         string `json:"current_hash"`
+	Hash                string `json:"hash"`
+	Description         string `json:"description"`
+	PreviousDescription string `json:"previous_description,omitempty"`
+	CurrentDescription  string `json:"current_description,omitempty"`
+	PreviousSchema      string `json:"previous_schema,omitempty"`
+	CurrentSchema       string `json:"current_schema,omitempty"`
+	Schema              string `json:"schema,omitempty"`
+}
+
+// GetToolApprovals fetches tool approval records for a server (Spec 032).
+func (c *Client) GetToolApprovals(ctx context.Context, serverName string) ([]ToolApprovalRecord, error) {
+	url := fmt.Sprintf("%s/api/v1/servers/%s/tools/export", c.baseURL, serverName)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	c.prepareRequest(ctx, req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call tool approvals API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var apiResp struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Tools []ToolApprovalRecord `json:"tools"`
+		} `json:"data"`
+		Error     string `json:"error"`
+		RequestID string `json:"request_id"`
+	}
+
+	if err := json.Unmarshal(bodyBytes, &apiResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if !apiResp.Success {
+		return nil, parseAPIError(apiResp.Error, apiResp.RequestID)
+	}
+
+	return apiResp.Data.Tools, nil
+}
+
+// GetToolDiff fetches the diff for a changed tool (Spec 032).
+func (c *Client) GetToolDiff(ctx context.Context, serverName, toolName string) (*ToolApprovalRecord, error) {
+	url := fmt.Sprintf("%s/api/v1/servers/%s/tools/%s/diff", c.baseURL, serverName, toolName)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	c.prepareRequest(ctx, req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call tool diff API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var apiResp struct {
+		Success   bool               `json:"success"`
+		Data      ToolApprovalRecord `json:"data"`
+		Error     string             `json:"error"`
+		RequestID string             `json:"request_id"`
+	}
+
+	if err := json.Unmarshal(bodyBytes, &apiResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if !apiResp.Success {
+		return nil, parseAPIError(apiResp.Error, apiResp.RequestID)
+	}
+
+	return &apiResp.Data, nil
+}
+
+// ApproveTools approves specific tools or all tools for a server (Spec 032).
+func (c *Client) ApproveTools(ctx context.Context, serverName string, toolNames []string, approveAll bool) (int, error) {
+	url := fmt.Sprintf("%s/api/v1/servers/%s/tools/approve", c.baseURL, serverName)
+
+	reqBody := struct {
+		Tools      []string `json:"tools,omitempty"`
+		ApproveAll bool     `json:"approve_all,omitempty"`
+	}{
+		Tools:      toolNames,
+		ApproveAll: approveAll,
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return 0, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return 0, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.prepareRequest(ctx, req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("failed to call approve tools API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(respBytes))
+	}
+
+	var apiResp struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Approved int `json:"approved"`
+		} `json:"data"`
+		Error     string `json:"error"`
+		RequestID string `json:"request_id"`
+	}
+
+	if err := json.Unmarshal(respBytes, &apiResp); err != nil {
+		return 0, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if !apiResp.Success {
+		return 0, parseAPIError(apiResp.Error, apiResp.RequestID)
+	}
+
+	return apiResp.Data.Approved, nil
+}
+
+// BlockTools blocks specific tools or all pending/changed tools for a server
+// (Spec 032). Block atomically approves AND disables the tool so it is never
+// left in the approved+enabled state — mirroring the Web UI "Block" action.
+func (c *Client) BlockTools(ctx context.Context, serverName string, toolNames []string, blockAll bool) (int, error) {
+	url := fmt.Sprintf("%s/api/v1/servers/%s/tools/block", c.baseURL, serverName)
+
+	reqBody := struct {
+		Tools    []string `json:"tools,omitempty"`
+		BlockAll bool     `json:"block_all,omitempty"`
+	}{
+		Tools:    toolNames,
+		BlockAll: blockAll,
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return 0, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return 0, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.prepareRequest(ctx, req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("failed to call block tools API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(respBytes))
+	}
+
+	var apiResp struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Blocked int `json:"blocked"`
+		} `json:"data"`
+		Error     string `json:"error"`
+		RequestID string `json:"request_id"`
+	}
+
+	if err := json.Unmarshal(respBytes, &apiResp); err != nil {
+		return 0, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if !apiResp.Success {
+		return 0, parseAPIError(apiResp.Error, apiResp.RequestID)
+	}
+
+	return apiResp.Data.Blocked, nil
+}
+
+// ListRegistries returns the MCP server registries known to the daemon
+// (spec 070). Mirrors GetServers: GET /api/v1/registries → data.registries.
+func (c *Client) ListRegistries(ctx context.Context) ([]map[string]interface{}, error) {
+	u := c.baseURL + "/api/v1/registries"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	c.prepareRequest(ctx, req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call registries API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var apiResp struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Registries []map[string]interface{} `json:"registries"`
+		} `json:"data"`
+		Error     string `json:"error"`
+		RequestID string `json:"request_id"`
+	}
+	if err := json.Unmarshal(bodyBytes, &apiResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+	if !apiResp.Success {
+		return nil, parseAPIError(apiResp.Error, apiResp.RequestID)
+	}
+	return apiResp.Data.Registries, nil
+}
+
+// SearchRegistry searches the servers in a registry via the daemon (spec 070).
+// GET /api/v1/registries/{id}/servers?q=&tag=&limit= → data.servers.
+func (c *Client) SearchRegistry(ctx context.Context, registryID, tag, query string, limit int) ([]map[string]interface{}, error) {
+	u := fmt.Sprintf("%s/api/v1/registries/%s/servers", c.baseURL, url.PathEscape(registryID))
+	q := url.Values{}
+	if query != "" {
+		q.Set("q", query)
+	}
+	if tag != "" {
+		q.Set("tag", tag)
+	}
+	if limit > 0 {
+		q.Set("limit", fmt.Sprintf("%d", limit))
+	}
+	if encoded := q.Encode(); encoded != "" {
+		u += "?" + encoded
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	c.prepareRequest(ctx, req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call registry search API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var apiResp struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Servers []map[string]interface{} `json:"servers"`
+		} `json:"data"`
+		Error     string `json:"error"`
+		RequestID string `json:"request_id"`
+	}
+	if err := json.Unmarshal(bodyBytes, &apiResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+	if !apiResp.Success {
+		return nil, parseAPIError(apiResp.Error, apiResp.RequestID)
+	}
+	return apiResp.Data.Servers, nil
+}
+
+// RegistryAddError is the client-side projection of a failed add-from-registry
+// (spec 070). It carries the stable cross-surface Code and, for
+// missing_required_input, the names of the inputs the user must supply so the
+// CLI can name the exact --env keys.
+type RegistryAddError struct {
+	Code          string
+	Message       string
+	MissingInputs []string
+	RequestID     string
+}
+
+func (e *RegistryAddError) Error() string { return e.Message }
+
+// AddFromRegistry adds an upstream server from a registry reference via the
+// daemon (spec 070 keystone). The daemon re-derives the runnable config from
+// the registry entry — the client only sends optional overrides. On failure it
+// returns a *RegistryAddError carrying the stable code.
+func (c *Client) AddFromRegistry(ctx context.Context, registryID, serverID, name string, env map[string]string, enabled *bool) (*contracts.AddedServerSummary, error) {
+	body := contracts.AddFromRegistryRequest{Name: name, Env: env, Enabled: enabled}
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	u := fmt.Sprintf("%s/api/v1/registries/%s/servers/%s/add",
+		c.baseURL, url.PathEscape(registryID), url.PathEscape(serverID))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.prepareRequest(ctx, req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call add-from-registry API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	var apiResp struct {
+		Success       bool                           `json:"success"`
+		Data          *contracts.AddFromRegistryData `json:"data"`
+		Error         string                         `json:"error"`
+		Code          string                         `json:"code"`
+		MissingInputs []string                       `json:"missing_inputs"`
+		RequestID     string                         `json:"request_id"`
+	}
+	if err := json.Unmarshal(respBytes, &apiResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response (status %d): %s", resp.StatusCode, string(respBytes))
+	}
+
+	if !apiResp.Success || resp.StatusCode != http.StatusOK {
+		msg := apiResp.Error
+		if msg == "" {
+			msg = fmt.Sprintf("API returned status %d", resp.StatusCode)
+		}
+		return nil, &RegistryAddError{
+			Code:          apiResp.Code,
+			Message:       msg,
+			MissingInputs: apiResp.MissingInputs,
+			RequestID:     apiResp.RequestID,
+		}
+	}
+	if apiResp.Data == nil {
+		return nil, fmt.Errorf("daemon returned success with no server data")
+	}
+	return &apiResp.Data.Server, nil
+}
+
+// AddRegistrySource adds a user-supplied registry source via the daemon
+// (MCP-866). POST /api/v1/registries → data.registry. On failure it returns a
+// *RegistryAddError carrying the stable cross-surface code.
+func (c *Client) AddRegistrySource(ctx context.Context, sourceURL, protocol, id, name string) (*contracts.RegistrySummary, error) {
+	body := contracts.AddRegistrySourceRequest{URL: sourceURL, Protocol: protocol, ID: id, Name: name}
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	u := c.baseURL + "/api/v1/registries"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.prepareRequest(ctx, req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call add-registry-source API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	var apiResp struct {
+		Success   bool                             `json:"success"`
+		Data      *contracts.AddRegistrySourceData `json:"data"`
+		Error     string                           `json:"error"`
+		Code      string                           `json:"code"`
+		RequestID string                           `json:"request_id"`
+	}
+	if err := json.Unmarshal(respBytes, &apiResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response (status %d): %s", resp.StatusCode, string(respBytes))
+	}
+
+	if !apiResp.Success || resp.StatusCode != http.StatusOK {
+		msg := apiResp.Error
+		if msg == "" {
+			msg = fmt.Sprintf("API returned status %d", resp.StatusCode)
+		}
+		return nil, &RegistryAddError{Code: apiResp.Code, Message: msg, RequestID: apiResp.RequestID}
+	}
+	if apiResp.Data == nil {
+		return nil, fmt.Errorf("daemon returned success with no registry data")
+	}
+	return &apiResp.Data.Registry, nil
+}
+
+// RemoveRegistrySource removes a user-added custom registry source via the daemon
+// (MCP-1057). DELETE /api/v1/registries/{id} → data.registry. On failure it
+// returns a *RegistryAddError carrying the stable cross-surface code
+// (registry_not_found, registry_shadows_builtin, registries_locked).
+func (c *Client) RemoveRegistrySource(ctx context.Context, id string) (*contracts.RegistrySummary, error) {
+	u := c.baseURL + "/api/v1/registries/" + url.PathEscape(id)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, u, http.NoBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	c.prepareRequest(ctx, req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call remove-registry-source API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	var apiResp struct {
+		Success   bool                                `json:"success"`
+		Data      *contracts.RemoveRegistrySourceData `json:"data"`
+		Error     string                              `json:"error"`
+		Code      string                              `json:"code"`
+		RequestID string                              `json:"request_id"`
+	}
+	if err := json.Unmarshal(respBytes, &apiResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response (status %d): %s", resp.StatusCode, string(respBytes))
+	}
+
+	if !apiResp.Success || resp.StatusCode != http.StatusOK {
+		msg := apiResp.Error
+		if msg == "" {
+			msg = fmt.Sprintf("API returned status %d", resp.StatusCode)
+		}
+		return nil, &RegistryAddError{Code: apiResp.Code, Message: msg, RequestID: apiResp.RequestID}
+	}
+	if apiResp.Data == nil {
+		return nil, fmt.Errorf("daemon returned success with no registry data")
+	}
+	return &apiResp.Data.Registry, nil
+}
+
+// EditRegistrySource updates a user-added custom registry source via the daemon
+// (MCP-1072). PUT /api/v1/registries/{id} → data.registry. Empty fields are left
+// unchanged. On failure it returns a *RegistryAddError carrying the stable
+// cross-surface code (registry_not_found, registry_shadows_builtin,
+// registries_locked, invalid_registry_url).
+func (c *Client) EditRegistrySource(ctx context.Context, id, name, sourceURL, serversURL string) (*contracts.RegistrySummary, error) {
+	body := contracts.EditRegistrySourceRequest{Name: name, URL: sourceURL, ServersURL: serversURL}
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	u := c.baseURL + "/api/v1/registries/" + url.PathEscape(id)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, u, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.prepareRequest(ctx, req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call edit-registry-source API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	var apiResp struct {
+		Success   bool                              `json:"success"`
+		Data      *contracts.EditRegistrySourceData `json:"data"`
+		Error     string                            `json:"error"`
+		Code      string                            `json:"code"`
+		RequestID string                            `json:"request_id"`
+	}
+	if err := json.Unmarshal(respBytes, &apiResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response (status %d): %s", resp.StatusCode, string(respBytes))
+	}
+
+	if !apiResp.Success || resp.StatusCode != http.StatusOK {
+		msg := apiResp.Error
+		if msg == "" {
+			msg = fmt.Sprintf("API returned status %d", resp.StatusCode)
+		}
+		return nil, &RegistryAddError{Code: apiResp.Code, Message: msg, RequestID: apiResp.RequestID}
+	}
+	if apiResp.Data == nil {
+		return nil, fmt.Errorf("daemon returned success with no registry data")
+	}
+	return &apiResp.Data.Registry, nil
+}
+
+// Preflight runs a required-tools preflight against the daemon (Spec 098).
+//
+// The verdict is DATA, not an error: a 200 carrying `blocked` comes back as a
+// response with no error, and the caller turns it into an exit code. Only a
+// request the daemon refused (400/503) or a transport failure is an error here.
+func (c *Client) Preflight(ctx context.Context, request *contracts.PreflightRequest) (*contracts.PreflightResponse, error) {
+	url := fmt.Sprintf("%s/api/v1/preflight", c.baseURL)
+
+	bodyBytes, err := json.Marshal(request)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.prepareRequest(ctx, req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call preflight API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	var apiResp struct {
+		Success   bool                         `json:"success"`
+		Data      *contracts.PreflightResponse `json:"data"`
+		Error     string                       `json:"error"`
+		RequestID string                       `json:"request_id"`
+	}
+	if err := json.Unmarshal(respBytes, &apiResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response (status %d): %s", resp.StatusCode, string(respBytes))
+	}
+
+	if !apiResp.Success || resp.StatusCode != http.StatusOK {
+		msg := apiResp.Error
+		if msg == "" {
+			msg = fmt.Sprintf("API returned status %d", resp.StatusCode)
+		}
+		return nil, parseAPIError(msg, apiResp.RequestID)
+	}
+	if apiResp.Data == nil {
+		return nil, fmt.Errorf("daemon returned success with no preflight data")
+	}
+	return apiResp.Data, nil
+}

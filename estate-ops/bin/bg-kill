@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""bg-kill — terminate a registered task by registry id, with PID-reuse guard.
+
+Usage: bg-kill ID [--force]
+
+SAFETY (non-negotiable, Chris's standing rule):
+  * Only acts on registry ids, never raw pids.
+  * Refuses when the live cmdline no longer matches the registered cmd0
+    (PID reuse) — resolves to REPORT, not kill.
+  * SIGTERM first, bounded wait, SIGKILL only with --force.
+  * Marks the registry entry retired and appends to the event log.
+  * No bulk kills. When in doubt, leave it running and flag it.
+"""
+import argparse
+import os
+import signal
+import sys
+import time
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "..", "bg-tracker", "lib"))
+import bgcommon as C
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("id")
+    ap.add_argument("--force", action="store_true",
+                    help="escalate to SIGKILL after SIGTERM timeout")
+    a = ap.parse_args()
+
+    reg = C.load_reg()
+    t = reg["tasks"].get(a.id)
+    if not t:
+        sys.exit("bg-kill: unknown id %s" % a.id)
+    if t.get("status") != "active":
+        sys.exit("bg-kill: id %s already %s" % (a.id, t.get("status")))
+    pid = t["pid"]
+    cur = C.proc_cmdline(pid)
+    if cur is None:
+        print("bg-kill: pid %d already gone; marking retired" % pid)
+        t["status"] = "retired"
+        t["retire_reason"] = "already gone at kill time"
+        C.save_reg(reg)
+        C.log_event({"type": "retire", "id": a.id, "name": t["name"],
+                     "reason": "already gone"})
+        return
+    if t.get("cmd0") and not cur.startswith(t["cmd0"]):
+        sys.exit("bg-kill: REFUSED — pid %d reused by %r (expected %r). "
+                 "Investigate, do not kill." % (pid, cur[:60], t["cmd0"]))
+
+    os.kill(pid, signal.SIGTERM)
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if C.proc_cmdline(pid) is None:
+            break
+        time.sleep(0.2)
+    if C.proc_cmdline(pid) is not None:
+        if not a.force:
+            sys.exit("bg-kill: pid %d survived SIGTERM; use --force or "
+                     "investigate" % pid)
+        os.kill(pid, signal.SIGKILL)
+        time.sleep(0.5)
+
+    t["status"] = "retired"
+    t["retire_reason"] = "bg-kill%s" % (" --force" if a.force else "")
+    t["retired_at"] = time.time()
+    C.save_reg(reg)
+    C.log_event({"type": "kill", "id": a.id, "name": t["name"],
+                 "pid": pid, "force": a.force})
+    print("killed id=%s pid=%d name=%s" % (a.id, pid, t["name"]))
+
+
+if __name__ == "__main__":
+    main()

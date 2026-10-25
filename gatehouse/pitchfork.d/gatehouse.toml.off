@@ -1,0 +1,18 @@
+# ranch/barn/gatehouse — project-owned daemon manifest. Source of truth for 'gatehouse'.
+# Owned by the ranch/barn/gatehouse project; the parent only composes it.
+
+
+
+
+
+[daemons.gatehouse]
+health_http = { url = "http://127.0.0.1:25127/health", interval = "30s", timeout = "5s", retries = 3 }
+port = 25127
+# gatehouse-serve.sh self-heals: bootstraps gitignored mcp_config.json from .dist when missing,
+# injects secrets from /home/toxic/.secrets (gatehouse direct-run crash-loops without it).
+run = "exec /home/toxic/estate/ranch/range/bin/gatehouse-serve.sh"
+dir = "/home/toxic/estate/ranch/barn/gatehouse"
+mise = false
+retry = true
+ready_http = "http://127.0.0.1:25127/health"
+auto = ["start"]

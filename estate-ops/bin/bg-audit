@@ -1,0 +1,171 @@
+#!/usr/bin/env python3
+"""bg-audit — read-only audit of backgrounded/detached processes vs the registry.
+
+Compares live `ps` against the bg-tracker registry and classifies every
+detached process (PPID 1, or session leader):
+
+  KNOWN-SYSTEM        allowlisted OS/runtime daemon — informational only
+  SUPERVISED          descendant of the pitchfork supervisor — owned elsewhere
+  REGISTERED-OK       in registry, pid alive, cmd matches, heartbeat fresh
+  REGISTERED-STALE    in registry, pid alive, heartbeat older than ttl
+  REGISTERED-DEAD     in registry, pid gone
+  UNREGISTERED        detached, not in registry, not allowlisted — investigate
+  AMP-VICTIM          PPID 1 bash -c wrapper from the `&`-scoping bug
+
+Read-only: never kills, restarts, or modifies anything. Exit 1 on any
+REGISTERED-DEAD / REGISTERED-STALE / UNREGISTERED / AMP-VICTIM finding,
+0 when clean. --json for machine consumption.
+"""
+import argparse
+import json
+import os
+import re
+import sys
+import time
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "..", "bg-tracker", "lib"))
+import bgcommon as C
+
+# OS/runtime daemons that are legitimately detached and need no tracking.
+ALLOW = [
+    r"^/usr/lib/systemd/", r"/systemd", r"systemd-",
+    r"dbus", r"polkitd", r"polkit-1",
+    r"pipewire", r"wireplumber", r"at-spi", r"xdg-", r"gvfsd",
+    r"cupsd", r"cups-browsed", r"avahi-daemon", r"bluetoothd",
+    r"tailscaled", r"sshd", r"wpa_supplicant", r"udisksd",
+    r"upowerd", r"power-profiles-daemon", r"rtkit-daemon",
+    r"geoclue", r"sddm", r"seatd", r"nvidia-persistenced",
+    r"ananicy", r"bpftune", r"containerd", r"dockerd",
+    r"containerd-shim", r"postgres", r"BubbleUPnP",
+    r"crashhelper", r"dirmngr", r"archlinux-keyring",
+    r"snapperd", r"limine-snapper", r"lact daemon",
+    r"scx_loader", r"waydroid", r"fusermount3",
+    r"dconf-service", r"gnome-keyring", r"start-hyprland",
+    r"ModemManager", r"iwd", r"chronyd", r"cron$",
+    r"hypridle", r"cockpit-ws", r"cockpit-tls",
+]
+ALLOW_RE = re.compile("|".join("(%s)" % p for p in ALLOW))
+
+
+def find_pitchfork(procs):
+    for p in procs:
+        if "pitchfork" in p["args"] and "supervisor" in p["args"]:
+            return p["pid"]
+    return None
+
+
+def ancestors(pid, by_pid):
+    seen = set()
+    while pid and pid not in seen:
+        seen.add(pid)
+        p = by_pid.get(pid)
+        if not p or p["ppid"] == pid:
+            break
+        pid = p["ppid"]
+        yield pid
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--json", action="store_true")
+    a = ap.parse_args()
+
+    reg = C.load_reg()
+    procs = C.ps_all()
+    by_pid = {p["pid"]: p for p in procs}
+    pitchfork = find_pitchfork(procs)
+    now = time.time()
+
+    # index registry by pid
+    reg_by_pid = {}
+    for tid, t in reg["tasks"].items():
+        if t.get("status") == "active":
+            reg_by_pid.setdefault(t["pid"], []).append((tid, t))
+
+    findings = []  # (severity, classification, pid, detail)
+    seen_pids = set()
+
+    for p in procs:
+        pid = p["pid"]
+        if pid == 1:
+            continue
+        detached = (p["ppid"] == 1) or (p["pid"] == p["sid"])
+        if not detached:
+            continue
+        seen_pids.add(pid)
+        args = p["args"]
+
+        if ALLOW_RE.search(args):
+            findings.append(("info", "KNOWN-SYSTEM", pid, args[:100]))
+            continue
+        if pitchfork and (pitchfork in ancestors(pid, by_pid)
+                          or p["ppid"] == pitchfork):
+            findings.append(("info", "SUPERVISED", pid, args[:100]))
+            continue
+
+        entries = reg_by_pid.get(pid, [])
+        matched = None
+        for tid, t in entries:
+            cur = C.proc_cmdline(pid) or ""
+            # PID-reuse guard: recorded cmd0 must still prefix the cmdline
+            if t.get("cmd0") and cur.startswith(t["cmd0"]):
+                matched = (tid, t)
+                break
+        if matched:
+            tid, t = matched
+            hb_age = now - t.get("heartbeat_at", t.get("started_at", now))
+            ttl = t.get("ttl_sec")
+            if ttl and hb_age > ttl:
+                findings.append(("warn", "REGISTERED-STALE", pid,
+                                 "%s id=%s heartbeat %.0fs > ttl %ds" %
+                                 (t["name"], tid, hb_age, ttl)))
+            else:
+                findings.append(("ok", "REGISTERED-OK", pid,
+                                 "%s id=%s" % (t["name"], tid)))
+            continue
+
+        # `&`-scoping bug victim: orphaned bash -c wrapper
+        if (p["ppid"] == 1 and "bash" in args and
+                re.search(r"&\s*(echo|sleep|;|cat|ps)", args)):
+            findings.append(("warn", "AMP-VICTIM", pid, args[:140]))
+            continue
+
+        findings.append(("warn", "UNREGISTERED", pid,
+                         "ppid=%d sid=%d etime=%s %s" %
+                         (p["ppid"], p["sid"], p["etime"], args[:120])))
+
+    # registry entries whose pid is gone (or reused by something else)
+    for tid, t in reg["tasks"].items():
+        if t.get("status") != "active":
+            continue
+        pid = t["pid"]
+        cur = C.proc_cmdline(pid)
+        alive = cur is not None
+        matches = bool(alive and t.get("cmd0") and cur.startswith(t["cmd0"]))
+        if not alive or not matches:
+            # avoid double-report if it was already classified above
+            findings.append(("warn", "REGISTERED-DEAD", pid,
+                             "%s id=%s (%s)" %
+                             (t["name"], tid,
+                              "pid gone" if not alive else "pid reused")))
+
+    bad = [f for f in findings if f[0] == "warn"]
+    if a.json:
+        print(json.dumps(
+            [{"severity": s, "class": c, "pid": p, "detail": d}
+             for s, c, p, d in findings], indent=1))
+    else:
+        print("bg-audit box=%s pitchfork=%s" % (C.box(), pitchfork))
+        cur_cls = None
+        for s, c, p, d in sorted(findings, key=lambda f: (f[1], f[2])):
+            if c != cur_cls:
+                print("== %s ==" % c)
+                cur_cls = c
+            print("  [%s] pid=%d %s" % (s, p, d))
+        print("%d findings, %d need attention" % (len(findings), len(bad)))
+    sys.exit(1 if bad else 0)
+
+
+if __name__ == "__main__":
+    main()

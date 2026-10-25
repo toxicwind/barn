@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# worker-queue-dispatch — cron dispatcher for the persistent worker queue.
+#
+# Runs periodically (cron). Checks:
+# 1. Are there pending items with available worker slots? → Alert via squawk
+# 2. Are active workers stuck (no heartbeat)? → Alert
+# 3. Is the queue backing up? → Alert
+#
+# The dispatcher does NOT spawn workers itself (it runs as a cron agent,
+# not as Ember). It signals via squawk fleet so Ember (or a coordinator)
+# can dispatch.
+#
+# Usage: worker-queue-dispatch [--quiet]
+
+set -euo pipefail
+
+QUIET="${1:-}"
+
+QUEUE_DIR="${WORKER_QUEUE_DIR:-$HOME/workspace/queue}"
+CONFIG_FILE="$QUEUE_DIR/config.json"
+
+[ -f "$CONFIG_FILE" ] || exit 0
+
+max_workers=$(jq -r '.max_workers' "$CONFIG_FILE")
+
+count_state() {
+    local state="$1"
+    local count=0
+    for f in "$QUEUE_DIR/$state/"*.json; do
+        [ -f "$f" ] && count=$((count + 1))
+    done
+    echo "$count"
+}
+
+pending=$(count_state pending)
+active=$(count_state active)
+failed=$(count_state failed)
+available=$((max_workers - active))
+[ $available -lt 0 ] && available=0
+
+alert() {
+    local msg="$1"
+    if [ "$QUIET" != "--quiet" ]; then
+        echo "$msg"
+    fi
+    # Post to squawk fleet if available
+    if [ -x "$HOME/workspace/bin/squawk" ]; then
+        SQUAWK_SENDER="worker-queue" "$HOME/workspace/bin/squawk" send fleet "$msg" 2>/dev/null || true
+    fi
+}
+
+# 1. Capacity available with pending work
+if [ "$pending" -gt 0 ] && [ "$available" -gt 0 ]; then
+    dispatch_n=$(( pending < available ? pending : available ))
+    alert "📋 Worker queue: $dispatch_n item(s) ready to dispatch ($pending pending, $available/$max_workers slots free). Run: worker-queue next"
+fi
+
+# 2. Queue backing up (more pending than 2x max workers)
+backup_threshold=$((max_workers * 2))
+if [ "$pending" -gt "$backup_threshold" ]; then
+    alert "⚠️ Worker queue backing up: $pending pending (threshold: $backup_threshold). Consider raising max_workers or triaging."
+fi
+
+# 3. Failed items need attention
+if [ "$failed" -gt 0 ]; then
+    alert "❌ Worker queue: $failed failed item(s) need review. Run: worker-queue list failed"
+fi
+
+# 4. Stuck workers (active > 2 hours with no completion)
+stuck=0
+now_epoch=$(date +%s)
+for f in "$QUEUE_DIR/active/"*.json; do
+    [ -f "$f" ] || continue
+    started=$(jq -r '.started // empty' "$f")
+    if [ -n "$started" ]; then
+        started_epoch=$(date -d "$started" +%s 2>/dev/null || echo "0")
+        age=$((now_epoch - started_epoch))
+        if [ "$age" -gt 7200 ]; then
+            stuck=$((stuck + 1))
+        fi
+    fi
+done
+if [ "$stuck" -gt 0 ]; then
+    alert "🕐 Worker queue: $stuck worker(s) active >2h, may be stuck. Run: worker-queue list active"
+fi
+
+# Quiet exit if nothing to report
+if [ "$pending" -eq 0 ] && [ "$failed" -eq 0 ] && [ "$stuck" -eq 0 ]; then
+    [ "$QUIET" != "--quiet" ] && echo "Queue healthy: $active/$max_workers active, nothing pending"
+fi

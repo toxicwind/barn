@@ -1,0 +1,5 @@
+#!/usr/bin/env bun
+/** delend-code-race — sub-4s breach auto-racer. Thin launcher over the
+ * @delendai/code-race first-class plugin (canonical, not a bespoke bin). */
+import { main } from "/home/toxic/pens/barn/corral/delendai/plugins/code-race/src/index.ts";
+if (import.meta.main) process.exit(await main(process.argv.slice(2)));

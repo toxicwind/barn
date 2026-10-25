@@ -1,0 +1,3 @@
+#!/bin/sh
+# Thin wrapper: the hardened audit lives in bin/port-audit.py (single source of truth).
+exec python3 "$(dirname "$0")/port-audit.py" "$@"
