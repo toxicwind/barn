@@ -1,0 +1,5 @@
+# mise.toml — runtime/language versions for <PEN_NAME>.
+# Example:
+# [tools]
+# bun = "catalog:"
+# go = "catalog:"
