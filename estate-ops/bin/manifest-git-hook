@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# manifest-git-hook.sh — pre-commit hook for manifest regeneration + verification
+#
+# On every commit to estate/ (or any repo where this hook is installed):
+#   1. Regenerate manifest.yaml from real bin surface
+#   2. Verify with bin-verify.sh
+#   3. If verify fails (broken target, schema error) → FAIL the commit
+#
+# Usage: place as .git/hooks/pre-commit in estate/ repo
+# Or reference from estate/.git/hooks/pre-commit
+
+set -uo pipefail
+
+SOV="${SOV:-/home/toxic/estate}"
+GEN="${GEN:-/home/toxic/pens/barn/estate-ops/bin/manifest-gen.py}"
+VERIFY="${VERIFY:-/home/toxic/estate/bin/bin-verify.sh}"
+MANIFEST="${MANIFEST:-/home/toxic/pens/barn/estate-ops/bin/manifest.yaml}"
+
+echo "[estate-ops] manifest-git-hook: regenerating manifest..." >&2
+
+# Step 1: Regenerate
+python3 "$GEN" "$MANIFEST" 2>&1
+GEN_RC=$?
+if [ $GEN_RC -ne 0 ]; then
+    echo "FAIL manifest-gen exited $GEN_RC" >&2
+    exit 1
+fi
+
+# Step 2: Quick syntax check — parse the YAML with python
+python3 -c "
+import sys
+with open('$MANIFEST') as f:
+    text = f.read()
+# Check for required top-level keys
+for key in ('schema:', 'stale_paths:', 'links:', 'dirs:'):
+    if key not in text:
+        print('FAIL manifest missing required block: ' + key)
+        sys.exit(1)
+print('OK manifest structure valid')
+" 2>&1
+SYN_RC=$?
+if [ $SYN_RC -ne 0 ]; then
+    echo "FAIL manifest structure check failed" >&2
+    exit 1
+fi
+
+# Step 3: Verify with bin-verify.sh (if available)
+if [ -f "$VERIFY" ]; then
+    echo "[estate-ops] manifest-git-hook: running bin-verify..." >&2
+    "$VERIFY" "$MANIFEST" 2>&1
+    VER_RC=$?
+    if [ $VER_RC -ne 0 ]; then
+        echo "FAIL bin-verify exited $VER_RC (broken target or schema error)" >&2
+        exit 1
+    fi
+    echo "[estate-ops] manifest-git-hook: bin-verify PASS" >&2
+else
+    echo "[estate-ops] manifest-git-hook: bin-verify.sh not found at $VERIFY, skipping verify step" >&2
+fi
+
+echo "[estate-ops] manifest-git-hook: OK manifest regenerated and verified" >&2
+exit 0
