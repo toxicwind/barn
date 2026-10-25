@@ -1,0 +1,9 @@
+*
+!.gitignore
+!README.md
+!LICENSE
+!package.json
+!mise.toml
+!AGENTS.md
+!bin/
+!bin/**
