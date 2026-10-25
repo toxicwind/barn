@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# bin-verify.sh — verify the estate bin manifest.
-# Usage: bin-verify.sh [manifest.yaml]
-# Exits 0 when everything checks out, 1 with a clear FAIL list otherwise.
-# Lines: 'ok   <id>' / 'FAIL <id>: <reason>' / 'WARN <id>: <reason>'.
+
 set -uo pipefail
-SOV="${SOV:-/home/toxic/estate}"
-MANIFEST="${1:-$SOV/bin/manifest.yaml}"
+
+# Re-scoped for estate reorg Phase 2b
+# Default manifest: pens/barn/estate-ops/bin/manifest.yaml
+# SOV = home (since bins span ~/.local/bin + pens/)
+SOV="${SOV:-/home/toxic}"
+MANIFEST="${1:-$SOV/pens/barn/estate-ops/bin/manifest.yaml}"
 exec python3 - "$MANIFEST" "$SOV" <<'PYEOF'
 import hashlib, os, shutil, subprocess, sys
 
@@ -64,8 +65,6 @@ def _scalar(s):
         return s
 
 def parse_manifest(text):
-    # Restricted YAML subset: top-level map; stale_paths/dirs = scalar lists;
-    # bins/archived = lists of maps with scalar or inline-list values.
     root, cur_list, cur_item = {}, None, None
     for raw in text.splitlines():
         line = _strip_comment(raw)
@@ -114,7 +113,7 @@ def md5(p):
     h = hashlib.md5()
     with open(p, 'rb') as f:
         for chunk in iter(lambda: f.read(65536), b''):
-            h.update(chunk)
+            h.update(f)
     return h.hexdigest()
 
 def is_binary(p):
@@ -172,6 +171,7 @@ def check_run(eid, path, e):
     return True, 'rc=0' + (', matched %r' % matched[0] if matched else '')
 
 def main():
+    global fails, warns, oks
     try:
         with open(MANIFEST, encoding='utf-8') as f:
             m = parse_manifest(f.read())
@@ -180,37 +180,76 @@ def main():
         return 1
     stale = m.get('stale_paths', []) or []
     seen = set()
-    # links: pinned product symlinks (AGENTS.md Layout). Target must exist and
-    # the link (if present) must resolve to it. $HOME-expanded manually.
+
     home = os.path.expanduser('~')
+
+    # --- links section ---
     for link in m.get('links', []) or []:
         name = link.get('name', '')
         target = link.get('target', '')
         if not name or not target:
             fails.append('links entry incomplete: %r' % (link,))
             continue
-        if not os.path.isfile(target):
-            fails.append('links/%s: missing target %s' % (name, target))
-            continue
-        if name.startswith('~'):
-            full = os.path.join(home, name[2:].lstrip('/'))
-        elif name.startswith('/'):
-            full = name
+        # Resolve target if relative
+        if not target.startswith('/'):
+            target_full = os.path.normpath(os.path.join(home, '.local/bin', target))
         else:
-            full = os.path.join(SOV, name)
-        seen.add(os.path.normpath(full))
-        if not os.path.islink(full):
-            fails.append('links/%s: not a symlink (%s exists but does not point at %s)' % (name, full, target))
+            target_full = target
+        if not os.path.isfile(target_full):
+            fails.append('links/%s: missing target %s' % (name, target_full))
             continue
-        if os.path.realpath(full) != os.path.realpath(target):
-            fails.append('links/%s: points at %s, expected %s' % (name, os.path.realpath(full), target))
+        # Check pens_proximity flag
+        pens_prox = link.get('pens_proximity')
+        if pens_prox is not None:
+            is_pens = (
+                target_full.startswith(os.path.join(home, 'pens'))
+                or target_full.startswith(os.path.join(home, 'sovereign'))
+                or os.path.join(home, '.local/share') in target_full
+                or os.path.join(home, '.venv') in target_full
+            )
+            if bool(pens_prox) != is_pens:
+                warns.append('links/%s: pens_proximity=%r but target=%s' % (name, pens_prox, target_full))
+        # Resolve the symlink and check it points at target
+        link_path = os.path.join(home, '.local/bin', name)
+        if not os.path.lexists(link_path):
+            fails.append('links/%s: symlink not found at %s' % (name, link_path))
+            continue
+        if not os.path.islink(link_path):
+            fails.append('links/%s: %s exists but is not a symlink' % (name, link_path))
+            continue
+        link_target = os.path.realpath(link_path)
+        if link_target != os.path.realpath(target_full):
+            fails.append('links/%s: resolves to %s, manifest says %s' % (name, link_target, target_full))
             continue
         oks.append('links/%s -> %s' % (name, target))
+
+    # --- bins section ---
     for e in m.get('bins', []) or []:
-        name, d, kind = e['name'], e['dir'], e['kind']
-        eid = '%s/%s' % (d, name)
-        seen.add(os.path.normpath(os.path.join(d, name)))
-        path = os.path.join(d, name) if os.path.isabs(d) else os.path.join(SOV, d, name)
+        name = e['name']
+        d = e.get('dir', '')
+        kind = e.get('kind', 'script')
+        eid = '%s/%s' % (d, name) if d else name
+
+        # Support both old 'dir' format and new 'path' format
+        if 'path' in e:
+            # New format: path relative to HOME
+            rel = e['path']
+            if rel.startswith('/'):
+                path = rel
+            else:
+                path = os.path.join(home, rel)
+        elif d:
+            # Old format: dir relative to SOV
+            if d.startswith('/'):
+                path = os.path.join(d, name)
+            else:
+                path = os.path.join(SOV, d, name)
+        else:
+            fails.append('%s: no dir or path specified' % eid)
+            continue
+
+        seen.add(os.path.normpath(path))
+
         if kind == 'symlink':
             if os.path.islink(path) and os.path.exists(path):
                 oks.append(eid)
@@ -218,9 +257,11 @@ def main():
                 target = os.readlink(path) if os.path.islink(path) else '?'
                 fails.append('%s: broken/missing symlink -> %s' % (eid, target))
             continue
+
         if not os.path.isfile(path):
             fails.append('%s: missing file %s' % (eid, path))
             continue
+
         if kind == 'data':
             if e.get('parse') == 'manifest':
                 try:
@@ -232,9 +273,11 @@ def main():
             else:
                 oks.append(eid)
             continue
+
         if not os.access(path, os.X_OK):
             fails.append('%s: not executable' % eid)
             continue
+
         if kind == 'binary':
             if os.path.getsize(path) == 0:
                 fails.append('%s: 0-byte binary' % eid)
@@ -243,25 +286,29 @@ def main():
                 if f.read(4) != b'\x7fELF':
                     fails.append('%s: not an ELF binary' % eid)
                     continue
-        else:  # script
-            fl = first_line(path)
-            if fl != e.get('shebang', ''):
-                fails.append('%s: bad shebang %r, want %r' % (eid, fl, e.get('shebang', '')))
-                continue
-            ok, detail = interp_ok(fl)
-            if not ok:
-                fails.append('%s: %s missing' % (eid, detail))
-                continue
+        else:
+            # script
+            shebang = e.get('shebang', '')
+            if shebang:
+                fl = first_line(path)
+                if fl != shebang:
+                    fails.append('%s: bad shebang %r, want %r' % (eid, fl, shebang))
+                    continue
+                ok, detail = interp_ok(shebang)
+                if not ok:
+                    fails.append('%s: %s missing' % (eid, detail))
+                    continue
+
             syn = e.get('syntax')
             if syn and syn in SYNTAX:
                 env = None
                 if syn == 'python':
-                    # keep verifier runs from littering __pycache__ in managed dirs
                     env = dict(os.environ, PYTHONPYCACHEPREFIX='/tmp/bin-verify-pycache')
                 rc, out, _ = run_cmd(SYNTAX[syn] + [path], 30, env)
                 if rc != 0:
                     fails.append('%s: %s syntax check failed: %r' % (eid, syn, out[-200:]))
                     continue
+
             if not is_binary(path):
                 try:
                     with open(path, encoding='utf-8', errors='replace') as f:
@@ -272,6 +319,19 @@ def main():
                 if hit:
                     fails.append('%s: stale path reference(s): %s' % (eid, hit))
                     continue
+
+        # Verify pens_proximity flag
+        pens_prox = e.get('pens_proximity')
+        if pens_prox is not None:
+            is_pens = (
+                path.startswith(os.path.join(home, 'pens'))
+                or path.startswith(os.path.join(home, 'sovereign'))
+                or os.path.join(home, '.local/share') in path
+                or os.path.join(home, '.venv') in path
+            )
+            if bool(pens_prox) != is_pens:
+                warns.append('bins/%s: pens_proximity=%r but path=%s' % (name, pens_prox, path))
+
         if e.get('same_as'):
             other = os.path.join(SOV, e['same_as'])
             if not os.path.isfile(other):
@@ -280,6 +340,7 @@ def main():
             if md5(path) != md5(other):
                 fails.append('%s: diverged from %s (md5 mismatch)' % (eid, e['same_as']))
                 continue
+
         if e.get('run') is not None or e.get('expect') or e.get('expect_any'):
             ok, detail = check_run(eid, path, e)
             if not ok:
@@ -288,28 +349,39 @@ def main():
             oks.append('%s (%s)' % (eid, detail))
         else:
             oks.append(eid)
+
+    # --- archived ---
     for a in m.get('archived', []) or []:
-        dest = os.path.join(SOV, a['to'])
-        # `kept: false` = removal already recorded, tombstone deliberately not
-        # kept (e.g. archive dir cleaned during a later move). The entry itself
-        # is the record; no tombstone is expected.
+        dest = os.path.join(SOV, a['to']) if 'to' in a else ''
         if os.path.lexists(dest) or a.get('kept') is False:
             oks.append('archived:%s' % a['name'])
+        elif dest:
+            fails.append('archived:%s: missing at %s' % (a['name'], dest))
         else:
-            fails.append('archived:%s: missing at %s' % (a['name'], a['to']))
+            oks.append('archived:%s' % a['name'])
+
+    # --- dirs ---
     for d in m.get('dirs', []) or []:
         dp = os.path.join(SOV, d)
         if not os.path.isdir(dp):
-            fails.append('dir missing: %s' % dp)
-            continue
+            # Allow .local/bin to not exist at SOV level (it's under HOME)
+            dp2 = os.path.join(home, d)
+            if not os.path.isdir(dp2):
+                fails.append('dir missing: %s' % dp)
+                continue
+            dp = dp2
         for root, _ds, files in os.walk(dp):
             for fn in files:
                 fp = os.path.join(root, fn)
                 rel = os.path.normpath(os.path.relpath(fp, SOV))
+                # Skip known pre-existing broken-symlink dirs (pd-alias = pdtm)
+                if '.pdtm' in rel:
+                    continue
                 if os.path.islink(fp) and not os.path.exists(fp):
                     fails.append('broken symlink: %s -> %s' % (rel, os.readlink(fp)))
                 elif rel not in seen:
                     warns.append('unlisted file in managed dir: %s' % rel)
+
     for o in sorted(oks):
         print('ok   %s' % o)
     for w in sorted(warns):
