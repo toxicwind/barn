@@ -1,0 +1,27 @@
+{
+  "name": "delendai/heredoc-fix",
+  "version": "0.1.0",
+  "kind": "sub-4s-breach-auto-racer-shim",
+  "description": "Autonomous command/heredoc fixer shim. Fixes the recurring failure class where an agent command chain carries complex nesting that the exec frame mangles: backquotes, `<<'PY'` heredocs, nested `$()` / `(...)` inside single-quoted ssh/bash -c, `2>&1`. Rebuilds a de-nested single script, writes it to a temp file, runs it via a clean bash --noprofile env.",
+  "entrypoint": "/home/toxic/pens/barn/estate-ops/heredoc-fix.ts",
+  "bin": "heredoc-fix",
+  "invoke": ["bun", "/home/toxic/pens/barn/estate-ops/heredoc-fix.ts"],
+  "usage": [
+    "heredoc-fix --script 'echo $x; ssh host \"cmd\"'",
+    "heredoc-fix --stdin-file /tmp/cmd.txt",
+    "printf '%s' \"cmd\" | heredoc-fix --pipe",
+    "heredoc-fix --quote -- ls -la $(pwd)"
+  ],
+  "exit_codes": {
+    "0": "ran clean (no de-nest needed)",
+    "2": "fixed + ran clean (a de-nest/fix was applied)",
+    "3": "could not de-nest"
+  },
+  "behavior": {
+    "deterministic": true,
+    "idempotent": true,
+    "daemon": false,
+    "restartLoopSafe": true,
+    "resourceSafe": true
+  }
+}
