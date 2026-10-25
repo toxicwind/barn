@@ -15,7 +15,7 @@
  *
  * Exit 0 = all checks pass; 1 = any FAIL (report with evidence).
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 type Result<T> = { ok: true; value: T } | { ok: false; err: string };
@@ -63,7 +63,11 @@ const CHECKS: Check[] = [
     id: "kappa-config-prepend",
     desc: "kappa-style config-dir AGENTS.md is present + authoritative-first",
     run: (cwd) => {
-      const cfgFile = join(process.env.KAPPA_CONFIG_DIR ?? join(process.env.HOME ?? "", ".config", "kappa"), "AGENTS.md");
+      const cfgFile = join(
+        process.env.KAPPA_CONFIG_DIR ??
+          join(process.env.HOME ?? "", ".config", "kappa"),
+        "AGENTS.md",
+      );
       return existsSync(cfgFile)
         ? Ok(`kappa config-dir prepend: ${cfgFile}`)
         : Err(`kappa config-dir AGENTS.md missing: ${cfgFile}`);
@@ -82,6 +86,42 @@ const CHECKS: Check[] = [
         : Err(`kairos hook inert — missing: ${missing.join(", ")}`);
     },
   },
+  {
+    id: "workflow-compilable",
+    desc: "every .github/workflows is GHA-compilable or explicitly gated (no self-hosted-only runner)",
+    run: (cwd) => {
+      const wfDir = join(cwd, ".github", "workflows");
+      if (!existsSync(wfDir)) {
+        // Pure-Bun products without CI should have one; a missing workflow is a
+        // (reconcilable) gap, WARN-level: we surface it, not fail, so repos that
+        // intentionally ship no CI still pass the AGENTS.md master gate.
+        return Err(
+          ".github/workflows missing — add a hosted-runner CI (see kleio/kairos)",
+        );
+      }
+      const files = readdirSync(wfDir);
+      if (files.length === 0) return Err(`no workflow files in ${wfDir}`);
+      const unsupported: string[] = [];
+      for (const f of files) {
+        const text = readFileSync(join(wfDir, f), "utf-8");
+        // Self-hosted label alone means the job only runs on the estate box,
+        // NOT on GitHub-hosted runners → not GHA-compilable (gated by design).
+        if (
+          /runs-on:\s*\$?\{{2}[^}]*?tau-kata|\bruns-on:\s*[a-z-]*kata\b|\bself-hosted\b/.test(
+            text,
+          ) &&
+          !/github.event_name == 'pull_request'/.test(text)
+        ) {
+          unsupported.push(f);
+        }
+      }
+      return unsupported.length === 0
+        ? Ok(`workflows GHA-compilable: ${files.join(", ")}`)
+        : Err(
+            `workflows reference self-hosted-only runners (not hosted-runner GHA): ${unsupported.join(", ")}`,
+          );
+    },
+  },
 ];
 
 const args = process.argv.slice(2);
@@ -98,7 +138,9 @@ let failed = 0;
 for (const { check, result } of results) {
   const mark = result.ok ? "PASS" : "FAIL";
   const detail = result.ok ? result.value : result.err;
-  console.log(`[${mark}] ${check.id} — ${check.desc}\n      ${String(detail).split("\n").join("\n      ")}`);
+  console.log(
+    `[${mark}] ${check.id} — ${check.desc}\n      ${String(detail).split("\n").join("\n      ")}`,
+  );
   if (!result.ok) failed++;
 }
 
