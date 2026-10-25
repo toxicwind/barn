@@ -4,3 +4,13 @@
 /rosec/
 /weave/
 /weave-sub/
+
+# runtime/cache artifacts - never commit
+__pycache__/
+*.pyc
+.cache/
+.agent-orchestration/
+tmp-reaper/
+node_modules/
+*.db-shm
+*.db-wal
