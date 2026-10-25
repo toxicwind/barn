@@ -1,0 +1,40 @@
+# ffs upstream provenance + weave merge tracking
+#
+# `ffs` (this binary) is a rebuild of the upstream Rust workspace:
+#
+#   upstream:   https://github.com/quangdang46/fast_file_search
+#   version:    0.1.30
+#   commit:     399c263 "chore: bump version to 0.1.30"
+#   crates:     ffs-core, ffs-cli, ffs-grep, ffs-symbol, ffs-query-parser,
+#               ffs-budget, ffs-engine, ffs-mcp, ffs-c, vendor/tree-sitter-verse
+#
+# Status (verified 2026-10-25):
+#   - `ffs --help`   : 25 subcommands, byte-identical to upstream 0.1.30
+#   - `ffs guide`    : embedded guide, byte-identical
+#   - `ffs --version`: "ffs 0.1.30", identical
+#   → This is STOCK upstream at 0.1.30 (399c263), NOT a functional fork.
+#     Binary size delta (~50 KiB smaller) is toolchain/static-lib variance,
+#     not source divergence. No source tree is committed here; only the
+#     compiled artifact at ./ffs.
+#
+# Weave merge tracking: to reconcile future upstream bumps into this artifact
+# via weave (entity-level merge), re-clone the upstream source, weave-merge
+# crates/*, then rebuild. Example:
+#
+#   git clone https://github.com/quangdang46/fast_file_search /tmp/ffs-upstream
+#   cd /tmp/ffs-upstream && cargo build --release -p ffs-cli
+#   weave land --onto origin/main --check sem     # gate the merged crates
+#   cp target/release/ffs /home/toxic/pens/barn/estate-ops/ffs
+#
+# Weaver driver (entity merge, not line merge):
+#
+#   weave setup            # in the ffs SOURCE checkout (not this artifact dir)
+[upstream]
+repo = "https://github.com/quangdang46/fast_file_search"
+version = "0.1.30"
+commit = "399c263"
+forked_at = "<= 0.1.30 (stock; no functional divergence)"
+
+[weave]
+merge_driver = "entity"   # tree-sitter entity merge via weave
+gate = "sem"              # semantic gate before landing upstream merges
