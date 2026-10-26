@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# estate-do — scripted estate ops helper with Thresher-MCP fallover.
+#
+# WHY: agent shells reset per call and the raw tools (git add -A on a monorepo
+# with 60+ embedded submodules) blow up interactively. This helper does the
+# common operations directly when fast, and falls back to the Thresher MCP
+# (127.0.0.1:25127/mcp) for anything that needs federation (bm25 search,
+# memory, github). It NEVER touches live tau/kappa processes.
+#
+# Usage:
+#   estate-do git-all <repo> [message]   # add -A (gitlink-safe) + commit
+#   estate-do push <repo> [remote] [br]  # push work-ref (auto-detects remote name)
+#   estate-do status <repo>              # porcelain summary (no paging)
+#   estate-do daemon <id> <start|stop>   # pitchfork daemon op
+#   estate-do health <port>              # curl /health on a port
+#   estate-do mcp <method> [params-json] # direct Thresher MCP call
+#
+# SAFETY:
+#  - refuses `git add -A` if the repo root contains an UNCOMMITTED nested git
+#    repo with no commits (the kimi-auto failure mode) — adds it as a gitlink
+#    only when it has a HEAD.
+#  - never kills or signals any tau/kappa process.
+
+set -uo pipefail
+THRESHER="http://127.0.0.1:25127/mcp"
+
+die() { echo "estate-do: $*" >&2; exit 1; }
+
+# --- MCP fallback -------------------------------------------------------------
+mcp_call() { # $1=method $2=params-json  -> prints result JSON or empty
+  local method="$1" params="${2:-{\}}"
+  local sid
+  sid=$(curl -s --max-time 6 "$THRESHER" -X POST \
+    -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"estate-do","version":"1.0"}}}' \
+    | grep -o '"Mcp-Session-Id[^,]*' 2>/dev/null) || true
+  # session id comes back as a header, not body — capture separately
+  local hdr
+  hdr=$(curl -s --max-time 6 -D - -o /dev/null "$THRESHER" -X POST \
+    -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"estate-do","version":"1.0"}}}' \
+    | grep -i '^mcp-session-id:' | tr -d '\r' | awk '{print $2}')
+  curl -s --max-time 15 "$THRESHER" -X POST \
+    -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+    ${hdr:+-H "Mcp-Session-Id: $hdr"} \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"$method\",\"params\":$params}"
+}
+
+# --- git-all: gitlink-safe add+commit -----------------------------------------
+git_all() {
+  local repo="$1" msg="${2:-wip fold-forward}"
+  cd "$repo" || die "no repo $repo"
+  # find untracked dirs that are git repos WITHOUT commits (blocks `add -A`)
+  local blockers=()
+  while IFS= read -r d; do
+    [ -d "$d/.git" ] && ! git -C "$d" rev-parse HEAD >/dev/null 2>&1 && blockers+=("$d")
+  done < <(git status --porcelain | awk '$1=="??"{print $2}' | grep -v '/$' )
+  while IFS= read -r d; do
+    [ -d "$d/.git" ] && ! git -C "$d" rev-parse HEAD >/dev/null 2>&1 && blockers+=("$d")
+  done < <(git status --porcelain | awk '$1=="??"{sub(/\/$/,"",$2); print $2}')
+  if [ ${#blockers[@]} -gt 0 ]; then
+    echo "estate-do: excluding uncommitted nested repos: ${blockers[*]}" >&2
+    local exclude=()
+    for b in "${blockers[@]}"; do exclude+=(":!$b"); done
+    git add -A -- . "${exclude[@]}"
+  else
+    git add -A -- .
+  fi
+  git commit -q -m "$msg" && echo "committed: $msg" || echo "nothing to commit"
+}
+
+# --- push: auto-detect remote (origin or product-named) ------------------------
+push_ref() {
+  local repo="$1" remote="${2:-}" br="${3:-}"
+  cd "$repo" || die "no repo $repo"
+  br="${br:-$(git branch --show-current)}"
+  if [ -z "$remote" ]; then
+    remote=$(git remote | grep -qx origin && echo origin || git remote | head -n1)
+  fi
+  # never push a branch that touches .github/workflows without workflow scope —
+  # check if any UNPUSHED commit modifies workflows; warn loudly.
+  local wf
+  wf=$(git diff --name-only "@{push}"..HEAD -- '.github/workflows/' 2>/dev/null | head -n 1)
+  [ -n "$wf" ] && echo "estate-do: WARNING unpushed workflow changes ($wf) — push may be rejected without PAT workflow scope" >&2
+  git push "$remote" "$br" 2>&1 | tail -n 1
+}
+
+# --- daemon / health -----------------------------------------------------------
+daemon_op() { ~/.local/share/mise/installs/pitchfork/2.32.1/pitchfork "$2" "estate/$1" 2>&1 | tail -n 1; }
+health() { curl -s -o /dev/null -w "%{http_code}" --max-time 4 "http://127.0.0.1:$1/health"; echo; }
+
+case "${1:-}" in
+  git-all)  shift; git_all "$@" ;;
+  push)     shift; push_ref "$@" ;;
+  status)   cd "$2" && git status --porcelain | awk '{print $1}' | sort | uniq -c ;;
+  daemon)   shift; daemon_op "$@" ;;
+  health)   shift; health "$1" ;;
+  mcp)      shift; mcp_call "$@" ;;
+  tau-safe) # list tau/kappa processes (read-only proof we never touch them)
+            pgrep -af 'tau|kappa' | grep -vE 'grep|estate-do' ;;
+  *) cat <<'USAGE'
+estate-do — usage:
+  git-all <repo> [msg]       gitlink-safe add -A + commit
+  push <repo> [remote] [br]  push with remote auto-detect + workflow warning
+  status <repo>              porcelain summary by state
+  daemon <id> <start|stop>   pitchfork daemon op (estate/ prefix implied)
+  health <port>              GET /health status code
+  mcp <method> [params]      raw Thresher MCP JSON-RPC call
+  tau-safe                   list live tau/kappa procs (never touched)
+USAGE
+esac
