@@ -5,7 +5,7 @@ has its own stack and its own lane; this directory is the pen, not a project.
 
 | Component | Stack | Check |
 |---|---|---|
-| gatehouse | Go | `go build ./...` |
+| thresher | Go | `go build ./...` |
 | secretsmith | Python | `python -m unittest discover -s tests` (12 tests) |
 | gemini-mcp | Python | `py_compile server.py` |
 | lookout | TOML | `tomllib` parse of `pitchfork.fragment.toml` |

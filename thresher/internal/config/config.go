@@ -244,7 +244,7 @@ type Config struct {
 	// destructive-variant split is noise. When true, the intent-declaration
 	// mismatch that would otherwise reject a non-destructive variant on a
 	// destructive tool is skipped (a warning is still logged). Default: false,
-	// preserving upstream mcpproxy behavior. (estate fork: Gatehouse)
+	// preserving upstream mcpproxy behavior. (estate fork: Thresher)
 	ToolsAllowDestructiveViaGenericCall bool `json:"tools_allow_destructive_via_generic_call,omitempty" mapstructure:"tools-allow-destructive-via-generic-call"`
 
 	// Concurrency limits (spec 093, GH #955). Scope (a) of FR-020: the GLOBAL

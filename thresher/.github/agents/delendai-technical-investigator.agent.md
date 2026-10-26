@@ -1,7 +1,7 @@
 ---
 name: delendai-technical-investigator
 description: Focused technical investigation
-tools: [read, search, edit, execute, todo, DelendAI:gatehouse/*]
+tools: [read, search, edit, execute, todo, DelendAI:thresher/*]
 user-invocable: false
 ---
 

@@ -1,6 +1,6 @@
 {
 	"mcpServers": {
-		"DelendAI:gatehouse": {
+		"DelendAI:thresher": {
 			"type": "stdio",
 			"command": "bunx",
 			"args": [
@@ -11,7 +11,7 @@
 				"--workspace",
 				".",
 				"--name",
-				"DelendAI:gatehouse"
+				"DelendAI:thresher"
 			]
 		}
 	}

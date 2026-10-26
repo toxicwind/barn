@@ -1,0 +1,18 @@
+# ranch/barn/thresher — project-owned daemon manifest. Source of truth for 'thresher'.
+# Owned by the ranch/barn/thresher project; the parent only composes it.
+
+
+
+
+
+[daemons.thresher]
+health_http = { url = "http://127.0.0.1:25127/health", interval = "30s", timeout = "5s", retries = 3 }
+port = 25127
+# thresher-serve.ts self-heals: bootstraps gitignored mcp_config.json from .dist when missing,
+# injects secrets from /home/toxic/.secrets (thresher direct-run crash-loops without it).
+run = "exec /home/toxic/estate/ranch/range/bin/thresher-serve.ts"
+dir = "/home/toxic/estate/ranch/barn/thresher"
+mise = false
+retry = true
+ready_http = "http://127.0.0.1:25127/health"
+auto = ["start"]

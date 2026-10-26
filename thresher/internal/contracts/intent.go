@@ -175,7 +175,7 @@ func (i *IntentDeclaration) ValidateAgainstServerAnnotations(toolVariant, server
 	if annotations.DestructiveHint != nil && *annotations.DestructiveHint {
 		if toolVariant == ToolVariantRead || toolVariant == ToolVariantWrite {
 			if allowDestructiveViaGeneric {
-				// Gatehouse config `tools_allow_destructive_via_generic_call`:
+				// Thresher config `tools_allow_destructive_via_generic_call`:
 				// let generic call_tool / call_tool_write invoke destructive tools
 				// without forcing call_tool_destructive.
 				return nil

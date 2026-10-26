@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 BUILD_CMD=$(cat <<'BUILD'
 set -euo pipefail
-cd gatehouse && go build ./... && cd ..
+cd thresher && go build ./... && cd ..
 cd secretsmith && /usr/bin/python3 -m unittest discover -s tests && cd ..
 /usr/bin/python3 -m py_compile gemini-mcp/server.py
 /usr/bin/python3 -c "import tomllib; tomllib.load(open('lookout/pitchfork.fragment.toml','rb'))"

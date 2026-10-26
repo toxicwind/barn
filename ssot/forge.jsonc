@@ -1,0 +1,13 @@
+{
+  // forge SSOT — the one true config. bin/forge.ts reads:
+  //   ports      → ../ports.env (never duplicated here)
+  //   winnersLog → env WINNERS_LOG or /var/cache/pattern-forge/winners.jsonl
+  "patternForge": {
+    "topDefault": 6,
+    "perPage": 4
+  },
+  "race": {
+    "timeoutS": 120,
+    "hedgeMs": 0
+  }
+}

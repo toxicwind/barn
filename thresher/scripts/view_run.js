@@ -1,4 +1,4 @@
-// Gatehouse Stored Script: view_run
+// Thresher Stored Script: view_run
 // Inspects a run directory in /home/toxic/estate/runs/
 let runId = input?.run_id;
 

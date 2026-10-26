@@ -450,7 +450,7 @@
       "enabled": true
     },
     {
-      "name": "gatehouse",
+      "name": "thresher",
       "url": "http://127.0.0.1:25127/mcp",
       "protocol": "http",
       "oauth": null,
@@ -490,7 +490,7 @@
       "quarantined": false,
       "name": "github",
       "protocol": "stdio",
-      "command": "/home/toxic/estate/ranch/barn/gatehouse/bin/github-mcp.sh",
+      "command": "/home/toxic/pens/ranch/barn/thresher/bin/github-mcp.sh",
       "oauth": null,
       "enabled": true,
       "auto_approve_tool_changes": true,

@@ -53,11 +53,11 @@ DAEMONS = {
     "whatsapp-mcp": 25146,
     "toolcall-llm": 25152,
     "stoat": 25104,
-    # 2026-09-29: herd/model-guard/gatehouse were invisible to the watchdog;
-    # herd sat stopped ~8h (gatehouse dep) with no alert. Added for coverage.
+    # 2026-09-29: herd/model-guard/thresher were invisible to the watchdog;
+    # herd sat stopped ~8h (thresher dep) with no alert. Added for coverage.
     "herd": 25100,
     "model-guard": 25101,
-    "gatehouse": 25127,
+    "thresher": 25127,
 }
 STUCK_UNSEEN_S = 180      # task_post with no ledger trace older than this
 STUCK_WEDGED_S = 1800     # task_open but no terminal event older than this

@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 HOME = os.path.expanduser("~")
 LOCAL_BIN = os.path.join(HOME, ".local/bin")
 PENS_ROOT = os.path.join(HOME, "pens")
-SOVEREIGN = os.path.join(HOME, "sovereign")
+SOVEREIGN = os.path.join(HOME, "pens", "geode", "skills")  # skills home moved to the geode pen (2026-10-25)
 PRODUCT_BIN_LIST = os.path.join(HOME, "pens/barn/estate-ops/product-bin-dirs.txt")
 
 SHEBANG_LANG_MAP = {
@@ -315,7 +315,7 @@ def yaml_emit(links, bins, manifest_path):
 
     # dirs
     lines.append("dirs:")
-    for d in [".local/bin", "sovereign", "estate/bin"]:
+    for d in [".local/bin", "estate/bin"]:
         lines.append("  - " + yaml_scalar(d))
     lines.append("")
 

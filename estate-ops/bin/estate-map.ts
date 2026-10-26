@@ -40,7 +40,7 @@ const OUT_MD = join(SOV, "docs/estate-map.md");
 // list is not part of the map; add it when it becomes load-bearing.
 const REPO_CANDIDATES = [
   { name: "estate", path: SOV, role: "control plane: pitchfork.toml, config/, bin/, bridge/, agents/, docs/, projects/" },
-  { name: "ranch", path: join(SOV, "ranch"), role: "the inference estate monorepo: herd, flock, gatehouse, squawk, oracle, and the mesh provider catalog" },
+  { name: "ranch", path: join(SOV, "ranch"), role: "the inference estate monorepo: herd, flock, thresher, squawk, oracle, and the mesh provider catalog" },
   { name: "ranch", path: join(HOME, "ranch"), role: "SECOND checkout of toxicwind/ranch — duplicate, not the daemon target" },
   { name: "tau-config", path: TAU_DIR, role: "coding-agent engine config (config.yml, models.yml, model-router.json, mcp.json)" },
 ];

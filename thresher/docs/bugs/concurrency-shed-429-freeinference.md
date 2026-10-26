@@ -1,14 +1,14 @@
 # Concurrency-shed 429 for FreeInference (and unregistered upstreams) — behavior + guidance
 
 > Filing (2026-10-22). Owner: awrawr-pc estate recon. Documents a **behavior of
-> Gatehouse's concurrency shedder** observed against FreeInference, and how
+> Thresher's concurrency shedder** observed against FreeInference, and how
 > clients should consume the resulting 429. Keep this as the **diagnostic reference
 > for the 429-origin**: the durable _fix_ for client stalls is a direct Tau/Kappa
 > patch (client rides the shed through when opted in) — see cross-links.
 
 ## Symptom
 
-Agents calling Gatehouse's REST tool-call surface against FreeInference saw
+Agents calling Thresher's REST tool-call surface against FreeInference saw
 `HTTP 429` with `Retry-After: 1` and stalled, mistaking it for a FreeInference
 "usage limit / maxConcurrency: 2 per key."
 
@@ -34,7 +34,7 @@ must not treat it as terminal.
 ## Guidance
 
 1. **If an upstream should not be shed aggressively**, register it as a real
-   Gatehouse upstream and give the scope a positive `queue_timeout` / queue size,
+   Thresher upstream and give the scope a positive `queue_timeout` / queue size,
    or raise `MCPPROXY_MAX_CONCURRENT_REQUESTS/_QUEUE_SIZE/_QUEUE_TIMEOUT` so the
    limiter queues instead of sheds.
 2. **Client consumption**: a concurrency-contained 429 should be retried

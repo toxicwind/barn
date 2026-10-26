@@ -1,4 +1,4 @@
-// Gatehouse Stored Script: list_runs
+// Thresher Stored Script: list_runs
 // Lists recent runs in /home/toxic/estate/runs/
 const limit = input?.limit ?? 10;
 const listRes = call_tool("desktop-commander", "start_process", {

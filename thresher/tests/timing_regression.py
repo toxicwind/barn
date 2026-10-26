@@ -33,7 +33,7 @@ def resolve_key(explicit: str | None) -> str | None:
     """API key from --key, then the environment, then the secretsmith/`.secrets` fallback."""
     if explicit:
         return explicit
-    for name in ("MCPPROXY_API_KEY", "GATEHOUSE_KEY"):
+    for name in ("MCPPROXY_API_KEY", "THRESHER_KEY"):
         value = os.environ.get(name)
         if value:
             return value.strip().strip("'\"")

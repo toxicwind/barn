@@ -1,4 +1,4 @@
-// Gatehouse Stored Script: stage_run
+// Thresher Stored Script: stage_run
 // Stages run files and metadata into /home/toxic/estate/runs/<run_id>/
 const now = new Date();
 const pad = (n) => String(n).padStart(2, "0");

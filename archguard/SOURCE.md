@@ -7,7 +7,7 @@ SKfaizan-786/ArchGuard), pinned at upstream tip:
 - **Imported:** 2026-10-20, via `git archive <SHA>` from the Phase-1 scratch clone
   (`/home/toxic/kite/forge-archguard-p1/archguard`) — tracked files only, byte-exact.
 - **Reference mechanism:** in-tree directory, mirroring how ranch references
-  `barn/gatehouse` (one-directory-per-component, owning-repo rule; ranch README
+  `barn/thresher` (one-directory-per-component, owning-repo rule; ranch README
   contract). Not a gitlink: the estate seed, ADR nodes, and pitchfork wiring are
   estate-specific and live here; genuine fork fixes go to the toxicwind/archguard
   fork, never to an upstream.

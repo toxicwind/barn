@@ -8,5 +8,8 @@
     "check": "bunx oxlint . && bunx oxfmt --check '*.ts'",
     "lint": "bunx oxlint .",
     "readme": "bun ./bin/readme-gen.ts"
+  },
+  "dependencies": {
+    "dbus-next": "^0.10.2"
   }
 }

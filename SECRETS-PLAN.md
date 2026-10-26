@@ -17,4 +17,4 @@
 1. Install/configure rosec with Bitwarden provider
 2. Audit ~/.secrets for what moves vs stays local
 3. Script the import (bw create item or rosec import)
-4. Update skills (exa, pattern-forge, gatehouse) to prefer rosec/bw over flat file
+4. Update skills (exa, pattern-forge, thresher) to prefer rosec/bw over flat file

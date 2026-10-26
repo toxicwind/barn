@@ -345,7 +345,7 @@ func TestIntentDeclaration_ValidateAgainstServerAnnotations(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "call_tool_read on destructiveHint=true - allowed even under strict when gatehouse allowDestructive flag is set",
+			name: "call_tool_read on destructiveHint=true - allowed even under strict when thresher allowDestructive flag is set",
 			intent: IntentDeclaration{
 				OperationType: OperationTypeRead,
 			},

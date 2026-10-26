@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""verify_gatehouse.py — Gatehouse MCP fleet verification harness.
+"""verify_thresher.py — Thresher MCP fleet verification harness.
 
 Catches two failure classes found on the estate (2026-10-13):
   1. Silent drift: live mcp_config.json (gitignored) diverges from the
@@ -11,14 +11,14 @@ Catches two failure classes found on the estate (2026-10-13):
 Sections:
   INVENTORY — parse live + dist configs; report counts, live-only servers
              (restart-survival risk), dist-only servers, per-entry drift.
-  LIVENESS  — for each enabled server: tools/list via the Gatehouse client.
+  LIVENESS  — for each enabled server: tools/list via the Thresher client.
              Zero tools or an error => DEAD-EMPTY.
   PROBE     — call one deterministically-chosen read-only safe tool per
              live server (status|ping|health|list|info|version|ls); record
              ok/fail + latency. Mutating tools are never called.
 
 Usage:
-  python3 verify_gatehouse.py [--quick] [--out report.json]
+  python3 verify_thresher.py [--quick] [--out report.json]
     --quick   skip PROBE (inventory + liveness only)
     --out     also write the JSON report to a file
 
@@ -36,10 +36,10 @@ import sys
 import time
 from pathlib import Path
 
-BASE = Path("/home/toxic/estate/ranch/barn/gatehouse")
+BASE = Path("/home/toxic/estate/ranch/barn/thresher")
 LIVE_CFG = BASE / "mcp_config.json"
 DIST_CFG = BASE / "mcp_config.json.dist"
-CLIENT = Path("/home/toxic/.local/bin/gatehouse-client.py")
+CLIENT = Path("/home/toxic/.local/bin/thresher-client.py")
 
 CALL_DEADLINE_S = 60
 WORKERS = 6
@@ -59,12 +59,12 @@ DANGER_TOOL_RE = re.compile(
 
 
 def fail(msg):
-    print(f"verify_gatehouse: {msg}", file=sys.stderr)
+    print(f"verify_thresher: {msg}", file=sys.stderr)
     sys.exit(2)
 
 
 def run_client(op, args, deadline=CALL_DEADLINE_S):
-    """Invoke the yote-side Gatehouse client; return (rc, stdout, err_text)."""
+    """Invoke the yote-side Thresher client; return (rc, stdout, err_text)."""
     try:
         p = subprocess.run(
             [sys.executable, str(CLIENT), op, *args],
@@ -288,7 +288,7 @@ def main():
     print(out)
 
     s = sys.stderr
-    print(f"\nGATEHOUSE VERIFY — live={inv['live_count']} "
+    print(f"\nTHRESHER VERIFY — live={inv['live_count']} "
           f"dist={inv['dist_count']} enabled={len(enabled)} "
           f"dead_empty={len(dead_empty)} "
           f"probe_fail={len(probe_fail)} "

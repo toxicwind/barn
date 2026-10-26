@@ -57,7 +57,7 @@ export async function seedEstateDatabase(tenantGraphName = GRAPH_NAME): Promise<
       author_handle: 'chris',
       content:
         'Standing ruling (Chris, 2026-10-19): 127.0.0.1:25193 = hodos, keep. The NIM/NVCF ' +
-        'router gateway lives on port 25193. Model-guard, the bidder fleet, gatehouse and the ' +
+        'router gateway lives on port 25193. Model-guard, the bidder fleet, thresher and the ' +
         'oracle executor lanes all route through it. Any proposal re-pointing this port trips EST-001.',
     },
     {
@@ -156,7 +156,7 @@ export async function seedEstateDatabase(tenantGraphName = GRAPH_NAME): Promise<
     { id: 'svc-squawk-ws', name: 'squawk-ws', tier: 'tier-0', port: '25147', team: 'estate-pack', description: 'Fleet chat bus (WebSocket)' },
     { id: 'svc-awrawr-mcp', name: 'awrawr-mcp', tier: 'tier-0', port: '25198', team: 'estate-pack', description: 'Output-persistence MCP server' },
     { id: 'svc-cuttinggate', name: 'cuttinggate', tier: 'tier-0', port: '25200', team: 'estate-pack', description: 'Bidder executor route-1 gateway' },
-    { id: 'svc-gatehouse', name: 'gatehouse', tier: 'tier-1', port: '25127', team: 'estate-pack', description: 'MCP proxy, ~50 servers' },
+    { id: 'svc-thresher', name: 'thresher', tier: 'tier-1', port: '25127', team: 'estate-pack', description: 'MCP proxy, ~50 servers' },
     { id: 'svc-keypool', name: 'keypool', tier: 'tier-1', port: '25109', team: 'estate-pack', description: 'Keypool sidecar' },
     { id: 'svc-herd', name: 'herd', tier: 'retired', port: '25100', team: 'estate-pack', description: 'Legacy router, dark API since de-herd 2026-10-13' },
     { id: 'svc-oracle-market', name: 'oracle-market', tier: 'tier-1', port: 'daemon', team: 'estate-pack', description: 'Oracle task market + tamper-evident ledger' },
@@ -196,7 +196,7 @@ export async function seedEstateDatabase(tenantGraphName = GRAPH_NAME): Promise<
     { consumer: 'bidder-fleet', consumesPath: 'hodos:/v1/models' },
     { consumer: 'bidder-fleet', consumesPath: 'hodos:/v1/chat/completions' },
     { consumer: 'oracle-market', consumesPath: 'hodos:/v1/chat/completions' },
-    { consumer: 'gatehouse', consumesPath: 'hodos:/v1/models' },
+    { consumer: 'thresher', consumesPath: 'hodos:/v1/models' },
     { consumer: 'executor', consumesPath: 'oracle-market:/ledger/settle' },
     { consumer: 'kappa-code', consumesPath: 'kappa-code:gateway-display' },
     { consumer: 'ranch-ci', consumesPath: 'repo:remote-config' },

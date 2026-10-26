@@ -1,6 +1,6 @@
 {
 	"servers": {
-		"DelendAI:gatehouse": {
+		"DelendAI:thresher": {
 			"type": "stdio",
 			"command": "bunx",
 			"args": [
@@ -11,7 +11,7 @@
 				"--workspace",
 				"${workspaceFolder}",
 				"--name",
-				"DelendAI:gatehouse"
+				"DelendAI:thresher"
 			]
 		}
 	}
