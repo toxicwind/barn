@@ -480,7 +480,7 @@ bins:
   - name: "cffi-gen-src"
     dir: .local/bin
     kind: script
-    shebang: "#!/home/toxic/.local/share/mise/installs/python/3.12.13/bin/python3"
+    shebang: "#!/home/toxic/.local/share/mise/installs/python/3.14.7/bin/python3"
     syntax: python
     md5: 05762d0d55865ba7a03de0d3c41e70f1
     size: 212
@@ -634,7 +634,7 @@ bins:
   - name: distro
     dir: .local/bin
     kind: script
-    shebang: "#!/home/toxic/.local/share/mise/installs/python/3.12.13/bin/python3"
+    shebang: "#!/home/toxic/.local/share/mise/installs/python/3.14.7/bin/python3"
     syntax: python
     md5: 83ea12a0c18f656d395e44e0b19cbffb
     size: 209
@@ -849,7 +849,7 @@ bins:
   - name: idna
     dir: .local/bin
     kind: script
-    shebang: "#!/home/toxic/.local/share/mise/installs/python/3.12.13/bin/python3"
+    shebang: "#!/home/toxic/.local/share/mise/installs/python/3.14.7/bin/python3"
     syntax: python
     md5: c69d3b56263928ab6e46bb64fb1c8948
     size: 204
@@ -947,7 +947,7 @@ bins:
   - name: normalizer
     dir: .local/bin
     kind: script
-    shebang: "#!/home/toxic/.local/share/mise/installs/python/3.12.13/bin/python3"
+    shebang: "#!/home/toxic/.local/share/mise/installs/python/3.14.7/bin/python3"
     syntax: python
     md5: 8e2bf23401415e4e5fb921c819996a84
     size: 230
@@ -1051,7 +1051,7 @@ bins:
   - name: pyhttpx
     dir: .local/bin
     kind: script
-    shebang: "#!/home/toxic/.local/share/mise/installs/python/3.12.13/bin/python3"
+    shebang: "#!/home/toxic/.local/share/mise/installs/python/3.14.7/bin/python3"
     syntax: python
     md5: 44a2fa9c8d8cefa95780e88f0307acae
     size: 201
