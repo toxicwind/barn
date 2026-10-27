@@ -134,6 +134,10 @@ def scan_local_bin():
                 "target": resolved,
                 "broken": not os.path.exists(full),
             })
+            # The link lives in ~/.local/bin (the ONE bin surface). Emit the
+            # path relative to $HOME so the verifier resolves it the same way
+            # regardless of what SOV is set to.
+            entries[-1]["name"] = "~/.local/bin/" + name
         elif os.path.isfile(full) and not _should_exclude(name):
             kind = classify_file(full)
             sheb = first_shebang(full)
@@ -315,7 +319,9 @@ def yaml_emit(links, bins, manifest_path):
 
     # dirs
     lines.append("dirs:")
-    for d in [".local/bin", "estate/bin"]:
+    # estate/bin was retired 2026-10-27 (its contents live in
+    # pens/barn/estate-ops/bin now). ~/.local/bin is the ONE bin surface.
+    for d in [".local/bin"]:
         lines.append("  - " + yaml_scalar(d))
     lines.append("")
 

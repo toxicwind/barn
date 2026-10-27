@@ -4,13 +4,22 @@
 # Exits 0 when everything checks out, 1 with a clear FAIL list otherwise.
 # Lines: 'ok   <id>' / 'FAIL <id>: <reason>' / 'WARN <id>: <reason>'.
 set -uo pipefail
-SOV="${SOV:-/home/toxic/estate}"
-MANIFEST="${1:-$SOV/bin/manifest.yaml}"
+# The manifest lives beside this script (pens/barn/estate-ops/bin). The old
+# estate/bin/ mirror was retired 2026-10-27 — it pointed at the pre-reorg
+# layout and was the source of 282 phantom warnings.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOV="${SOV:-/home/toxic}"
+MANIFEST="${1:-$HERE/manifest.yaml}"
 exec python3 - "$MANIFEST" "$SOV" <<'PYEOF'
 import hashlib, os, shutil, subprocess, sys
 
 MANIFEST, SOV = sys.argv[1], sys.argv[2]
 fails, warns, oks = [], [], []
+
+# Paths under the managed dirs that are intentionally NOT manifest entries:
+# pd-alias/ is a tool's own data dir (base64-named alias payloads) and
+# frida-compile is a standalone script the generator excludes from the scan.
+SKIP_UNLISTED = {'pd-alias', 'frida-compile'}
 
 def _strip_comment(line):
     out, q = [], None
@@ -306,9 +315,17 @@ def main():
             for fn in files:
                 fp = os.path.join(root, fn)
                 rel = os.path.normpath(os.path.relpath(fp, SOV))
+                # `seen` holds absolute paths; the walk produces SOV-relative
+                # ones. Compare on the same footing so a listed ~/.local/bin
+                # link is not also reported as unlisted.
+                rel_abs = os.path.normpath(fp)
+                # Deliberately-unlisted entries: files the generator excludes
+                # from the bin scan (tool data dirs, standalone scripts).
+                if any(part in SKIP_UNLISTED for part in rel.split(os.sep)):
+                    continue
                 if os.path.islink(fp) and not os.path.exists(fp):
-                    fails.append('broken symlink: %s -> %s' % (rel, os.readlink(fp)))
-                elif rel not in seen:
+                    fails.append('broken symlink: %s -> %s' % (rel, os.path.readlink(fp)))
+                elif rel not in seen and rel_abs not in seen:
                     warns.append('unlisted file in managed dir: %s' % rel)
     for o in sorted(oks):
         print('ok   %s' % o)
