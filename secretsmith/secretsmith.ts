@@ -848,7 +848,26 @@ async function cmdEnv(
     }
   } else {
     let found = await svc.search(parseAttrs(a.attr ?? []), a.collection);
-    if (a.app) found = found.filter((it) => it.attributes.service === a.app);
+    if (a.app) {
+      // 2026-10-27: exact `service === app` silently dropped
+      // KAPPA_SERVER_PASSWORD (that item has NO `service` attribute), so
+      // `secretsmith env --app kappa` emitted only HODOS_API_KEY and the
+      // kappa server booted UNSECURED ("KAPPA_SERVER_PASSWORD is not set").
+      // An app owns a secret when EITHER the service attribute names it OR
+      // the label/key belongs to it (case-insensitive prefix match).
+      const app = a.app;
+      const appUpper = app.toUpperCase();
+      const appLower = app.toLowerCase();
+      found = found.filter((it) => {
+        const svcAttr = (it.attributes.service ?? "").toLowerCase();
+        if (svcAttr === appLower || svcAttr === appUpper) return true;
+        const label = (it.label ?? "").toUpperCase();
+        const key = (it.attributes.key ?? "").toUpperCase();
+        for (const cand of [label, key])
+          if (cand === appUpper || cand.startsWith(appUpper + "_")) return true;
+        return false;
+      });
+    }
     found = found.filter((it) => shellIdent.test(it.label ?? ""));
     await svc.ensureUnlockedItems(found);
     for (const it of found) {
