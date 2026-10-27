@@ -97,6 +97,10 @@ export class SecretService {
   }
 
   private obj(path: string) {
+    if (typeof path !== "string")
+      throw new SecretsmithError(
+        `dbus object path must be a string, got ${typeof path}: ${String(path)}`,
+      );
     return this.bus.getProxyObject(BUS_NAME, path);
   }
   private iface(path: string, name: string) {
@@ -149,7 +153,11 @@ export class SecretService {
   }
 
   async defaultCollection(): Promise<string | null> {
-    const p = String((await this.service()).ReadAlias("default"));
+    // ReadAlias is an async dbus call: the result is a PROMISE, and
+    // String(promise) is "[object Promise]" — which later blew up as
+    // "Invalid object path: [object Promise]". Await it first.
+    const raw = await (await this.service()).ReadAlias("default");
+    const p = String(raw);
     return p === "/" ? null : p;
   }
 
