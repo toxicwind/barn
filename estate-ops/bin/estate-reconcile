@@ -12,7 +12,7 @@
 #   estate-reconcile proc-audit               declared vs /proc exe for the daemons
 #
 # Environment:
-#   ESTATE_ROOT   estate worktree (default /home/toxic/estate)
+#   ESTATE_ROOT   estate SSOT (default /home/toxic/pens/estate; /home/toxic/estate is ABSENT per lease)
 #   SQUAWK_ROOT   squawk root (default /home/toxic/.fleet-bus/squawk-root);
 #                 unset/no-fleet-dir => squawk alerts no-op (sandbox-safe)
 #
@@ -23,7 +23,10 @@
 # crews' live WIP.
 set -euo pipefail
 
-ESTATE_ROOT="${ESTATE_ROOT:-/home/toxic/estate}"
+# NOTE 2026-10-28: default MUST be pens (estate lease — /home/toxic/estate is
+# deliberately ABSENT; a literal estate-root would re-create the ghost path and
+# daemons would silently read the wrong tree).
+ESTATE_ROOT="${ESTATE_ROOT:-/home/toxic/pens/estate}"
 MANIFEST_DEFAULT="$ESTATE_ROOT/deploy/manifest.yaml"
 LOG_DIR="$ESTATE_ROOT/log"
 AUDIT_DIR="$LOG_DIR/drift-audit"
