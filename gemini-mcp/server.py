@@ -6,7 +6,7 @@ $HOME/.secrets (0600) and are NEVER logged, returned, or committed --
 logs reference keys by label (GEMINI_API_KEY_2) or fingerprint only.
 
 Tools: list_models, generate_content, count_tokens, keys_status.
-Transport: FastMCP Streamable HTTP on 127.0.0.1:$GEMINI_MCP_PORT (25202),
+Transport: FastMCP Streamable HTTP on 127.0.0.1:$GEMINI_MCP_PORT (25227),
 path /mcp, header auth X-MCP-Token == ~/.gemini_mcp_token.
 GET /health (no auth, content-free) for pitchfork readiness.
 """
@@ -24,7 +24,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import PlainTextResponse, JSONResponse
 from starlette.routing import Route
 
-PORT = int(os.environ.get("GEMINI_MCP_PORT", "25202"))
+PORT = int(os.environ.get("GEMINI_MCP_PORT", "25227"))
 TOKEN_FILE = os.path.expanduser("~/.gemini_mcp_token")
 SECRETS_FILE = os.path.expanduser("~/.secrets")
 AUDIT = os.path.expanduser("~/.gemini_mcp_audit.jsonl")
