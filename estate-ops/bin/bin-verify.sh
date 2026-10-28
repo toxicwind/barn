@@ -324,7 +324,7 @@ def main():
                 if any(part in SKIP_UNLISTED for part in rel.split(os.sep)):
                     continue
                 if os.path.islink(fp) and not os.path.exists(fp):
-                    fails.append('broken symlink: %s -> %s' % (rel, os.path.readlink(fp)))
+                    fails.append('broken symlink: %s -> %s' % (rel, os.readlink(fp)))
                 elif rel not in seen and rel_abs not in seen:
                     warns.append('unlisted file in managed dir: %s' % rel)
     for o in sorted(oks):

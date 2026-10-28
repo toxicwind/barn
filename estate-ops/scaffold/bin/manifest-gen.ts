@@ -24,11 +24,10 @@
  *   bun manifest-gen.ts --write         # rewrite the manifest
  *   bun manifest-gen.ts --write --apply  # rewrite + install ~/.local/bin links
  */
-import { readdirSync, statSync, readFileSync, writeFileSync, existsSync, lstatSync, readlinkSync, symlinkSync, unlinkSync, mkdirSync } from "node:fs";
+import { stat, lstat, readlink, readdir, readFile, writeFile, mkdir, symlink, unlink } from "node:fs/promises";
 import { join, dirname, resolve, relative, basename } from "node:path";
-import { fileURLToPath } from "node:url";
 
-const here = dirname(fileURLToPath(import.meta.url));
+const here = import.meta.dir; // Bun-native: no fileURLToPath ceremony
 const PENS_ROOT = resolve(here, "../../../.."); // pens/
 const LOCAL_BIN = "/home/toxic/.local/bin";
 const MANIFEST = join(PENS_ROOT, "barn/estate-ops/bin/manifest.yaml");
@@ -44,20 +43,21 @@ interface BinEntry {
   product: string;
 }
 
-function isDir(p: string): boolean {
+async function isDir(p: string): Promise<boolean> {
   try {
-    return statSync(p).isDirectory();
+    const s = await stat(p);
+    return s.isDirectory();
   } catch {
     return false;
   }
 }
 
-function isExecutable(p: string): boolean {
+async function isExecutable(p: string): Promise<boolean> {
   try {
-    const st = statSync(p);
+    const st = await stat(p);
     if (!st.isFile()) return false;
     // A shebang script is an entrypoint even without +x (bun runs it directly).
-    const head = readFileSync(p, "utf8").slice(0, 2);
+    const head = (await readFile(p, "utf8")).slice(0, 2);
     return (st.mode & 0o111) !== 0 || head === "#!";
   } catch {
     return false;
@@ -71,9 +71,9 @@ function isExecutable(p: string): boolean {
  * entrypoint count. We do NOT walk whole product trees — that would pick up
  * thousands of vendored scripts and turn the manifest into noise.
  */
-function discover(): BinEntry[] {
+async function discover(): Promise<BinEntry[]> {
   const out: BinEntry[] = [];
-  const pens = readdirSync(PENS_ROOT, { withFileTypes: true })
+  const pens = (await readdir(PENS_ROOT, { withFileTypes: true }))
     .filter((d) => d.isDirectory() && d.name !== ".git")
     .map((d) => d.name);
 
@@ -82,10 +82,10 @@ function discover(): BinEntry[] {
 
     // The pen's own bin/ surface.
     const penBin = join(penDir, "bin");
-    if (isDir(penBin)) {
-      for (const f of readdirSync(penBin)) {
+    if (await isDir(penBin)) {
+      for (const f of await readdir(penBin)) {
         const full = join(penBin, f);
-        if (isExecutable(full)) {
+        if (await isExecutable(full)) {
           out.push({ name: f, dir: relative(PENS_ROOT, penBin), kind: "script", pen, product: pen });
         }
       }
@@ -93,15 +93,15 @@ function discover(): BinEntry[] {
 
     // Each product's bin/ directory.
     const productsDir = join(penDir, "products");
-    if (!isDir(productsDir)) continue;
-    for (const prod of readdirSync(productsDir)) {
+    if (!(await isDir(productsDir))) continue;
+    for (const prod of await readdir(productsDir)) {
       const prodDir = join(productsDir, prod);
-      if (!isDir(prodDir)) continue;
+      if (!(await isDir(prodDir))) continue;
       const prodBin = join(prodDir, "bin");
-      if (!isDir(prodBin)) continue;
-      for (const f of readdirSync(prodBin)) {
+      if (!(await isDir(prodBin))) continue;
+      for (const f of await readdir(prodBin)) {
         const full = join(prodBin, f);
-        if (isExecutable(full)) {
+        if (await isExecutable(full)) {
           out.push({ name: f, dir: relative(PENS_ROOT, prodBin), kind: "script", pen, product: prod });
         }
       }
@@ -147,20 +147,25 @@ function render(entries: BinEntry[]): string {
   return lines.join("\n");
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const write = argv.includes("--write");
   const apply = argv.includes("--apply");
 
-  const entries = discover().sort((a, b) => a.name.localeCompare(b.name) || a.dir.localeCompare(b.dir));
+  const entries = (await discover()).sort((a, b) => a.name.localeCompare(b.name) || a.dir.localeCompare(b.dir));
   const next = render(entries);
 
-  const prev = existsSync(MANIFEST) ? readFileSync(MANIFEST, "utf8") : "";
+  let prev = "";
+  try {
+    prev = await readFile(MANIFEST, "utf8");
+  } catch {
+    prev = "";
+  }
   if (prev === next) {
     console.log(`[manifest] current — ${entries.length} entries, no change`);
   } else if (write) {
-    mkdirSync(dirname(MANIFEST), { recursive: true });
-    writeFileSync(MANIFEST, next, "utf8");
+    await mkdir(dirname(MANIFEST), { recursive: true });
+    await writeFile(MANIFEST, next, "utf8");
     console.log(`[manifest] wrote ${MANIFEST} — ${entries.length} entries`);
   } else {
     console.log(`[manifest] would rewrite ${MANIFEST} — ${entries.length} entries (use --write)`);
@@ -172,29 +177,34 @@ function main(): void {
   }
 
   // Install links. Only create/replace links this manifest owns.
-  mkdirSync(LOCAL_BIN, { recursive: true });
+  await mkdir(LOCAL_BIN, { recursive: true });
   let created = 0;
   let repointed = 0;
   for (const e of entries) {
     const target = join("/home/toxic", e.dir, e.name);
-    if (!existsSync(target)) continue;
+    try {
+      await stat(target);
+    } catch {
+      continue;
+    }
     const link = join(LOCAL_BIN, e.name);
     let current = "";
     try {
-      if (lstatSync(link).isSymbolicLink()) current = readlinkSync(link);
+      const st = await lstat(link);
+      if (st.isSymbolicLink()) current = await readlink(link);
     } catch {
       current = "";
     }
     if (current === target) continue;
     if (current) {
-      unlinkSync(link);
+      await unlink(link);
       repointed++;
     } else {
       created++;
     }
-    symlinkSync(target, link);
+    await symlink(target, link);
   }
   console.log(`[manifest] links: ${created} created, ${repointed} repointed`);
 }
 
-main();
+await main();

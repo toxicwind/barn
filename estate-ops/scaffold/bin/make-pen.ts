@@ -46,11 +46,10 @@
  * NEVER removes `products/`, `docs/`, or anything else. There is no code path
  * that deletes a pen. To truly reset a pen, a human does it deliberately.
  */
-import { mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { mkdir, readdir } from "node:fs/promises";
 import { join, dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 
-const here = dirname(fileURLToPath(import.meta.url));
+const here = import.meta.dir; // Bun-native: no fileURLToPath ceremony
 const PENS_ROOT = resolve(here, "../../../.."); // pens/
 
 interface Options {
@@ -237,19 +236,19 @@ index.
 `;
 }
 
-function writeFile(path: string, content: string): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, content, "utf8");
+async function writeFile(path: string, content: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  await Bun.write(path, content); // Bun-native atomic write
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const o = parseArgs();
   const root = join(PENS_ROOT, o.pen);
   const products = join(root, "products");
 
   // SAFETY: never delete a pen. --force only overwrites metadata.
-  if (existsSync(products)) {
-    const existing = (await import("node:fs")).readdirSync(products);
+  try {
+    const existing = await readdir(products);
     if (existing.length > 0 && !o.force) {
       console.log(
         `[make-pen] ${root}/products/ already has ${existing.length} entries — ` +
@@ -257,17 +256,19 @@ function main(): void {
       );
       return;
     }
+  } catch {
+    // products/ does not exist yet — fresh pen, fine.
   }
 
-  mkdirSync(products, { recursive: true });
-  mkdirSync(join(root, "docs"), { recursive: true });
-  mkdirSync(join(root, "bin"), { recursive: true });
+  await mkdir(products, { recursive: true });
+  await mkdir(join(root, "docs"), { recursive: true });
+  await mkdir(join(root, "bin"), { recursive: true });
 
-  writeFile(join(root, ".gitignore"), gitignore(o.title));
-  writeFile(join(root, "README.md"), readme(o));
-  writeFile(join(root, "package.json"), packageJson(o));
-  writeFile(join(root, "mise.toml"), miseToml(o));
-  writeFile(join(root, "AGENTS.md"), agentsMd(o));
+  await writeFile(join(root, ".gitignore"), gitignore(o.title));
+  await writeFile(join(root, "README.md"), readme(o));
+  await writeFile(join(root, "package.json"), packageJson(o));
+  await writeFile(join(root, "mise.toml"), miseToml(o));
+  await writeFile(join(root, "AGENTS.md"), agentsMd(o));
 
   console.log(`✔ pen scaffold ready: pens/${o.pen}`);
   console.log(`  · metadata written; products/ left untouched`);
@@ -275,4 +276,4 @@ function main(): void {
   console.log(`  · clone products into products/<name>/ (auto-ignored)`);
 }
 
-main();
+await main();

@@ -24,6 +24,9 @@ echo "sync-estate-ns: config/ports.env"
 mkdir -p "$PEN/config"
 cp "$CLONE/config/ports.env" "$PEN/config/ports.env"
 
+echo "sync-estate-ns: qdrant-config.yaml"
+cp "$CLONE/qdrant-config.yaml" "$PEN/qdrant-config.yaml"
+
 if [[ -f "$CLONE/config/thresher/mcp_config.json" ]]; then
   echo "sync-estate-ns: thresher mcp_config -> pens/ranch/thresher/"
   mkdir -p /home/toxic/pens/ranch/thresher
