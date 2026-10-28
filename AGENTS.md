@@ -45,3 +45,6 @@ index.
 - **Pen-owned documentation** → `docs/`.
 - **Estate-wide documentation** (architecture, daemons, conventions) →
   `pens/estate/docs/`.
+
+## Resident rig
+tack 🔧 (barn-hand) — estate-ops/forge/corral/pitchfork hygiene. Day-cycle: `rig cron` hourly at :07. Squawk lane: barn-ops.
