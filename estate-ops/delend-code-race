@@ -2,5 +2,5 @@
 /** delend-code-race — sub-4s breach auto-racer. Thin launcher over the
  * @delendai/code-race first-class plugin (canonical, not a bespoke bin).
  * Plugin relocated to the ergasterion/hephaistos product during the reorg. */
-import { main } from "/home/toxic/pens/olympus/products/ergasterion/hephaistos/plugins/code-race/src/index.ts";
+import { main } from "/home/toxic/pens/ergasterion/hephaistos/plugins/code-race/src/index.ts";
 if (import.meta.main) process.exit(await main(process.argv.slice(2)));

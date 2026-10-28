@@ -52,10 +52,10 @@ links:
     target: "/home/toxic/pens/barn/estate-ops/delend-code-race"
     pens_proximity: true
   - name: "~/.local/bin/delend-code-race-line"
-    target: "/home/toxic/pens/olympus/products/ergasterion/hephaistos/plugins/code-race/bin/race-line.ts"
+    target: "/home/toxic/pens/ergasterion/hephaistos/plugins/code-race/bin/race-line.ts"
     pens_proximity: true
   - name: "~/.local/bin/delend-code-race-rs"
-    target: "/home/toxic/pens/olympus/products/ergasterion/hephaistos/plugins/code-race/crates/code-race/target/release/delend-code-race"
+    target: "/home/toxic/pens/ergasterion/hephaistos/plugins/code-race/crates/code-race/target/release/delend-code-race"
     pens_proximity: true
   - name: "~/.local/bin/delend-experimental"
     target: "/home/toxic/pens/barn/estate-ops/delend-experimental"
@@ -91,7 +91,7 @@ links:
     target: "/home/toxic/pens/barn/estate-ops/delend-working-dirty"
     pens_proximity: true
   - name: ~/.local/bin/delendai
-    target: /home/toxic/pens/olympus/products/ergasterion/hephaistos/packages/cli/dist/index.js
+    target: /home/toxic/pens/ergasterion/hephaistos/packages/cli/dist/index.js
     pens_proximity: true
   - name: "~/.local/bin/ego-browser"
     target: "/home/toxic/pens/ranch/ego-lite/package/ego-browser/dist/out/index.js"
