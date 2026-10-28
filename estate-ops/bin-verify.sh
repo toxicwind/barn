@@ -210,7 +210,14 @@ def main():
             if bool(pens_prox) != is_pens:
                 warns.append('links/%s: pens_proximity=%r but target=%s' % (name, pens_prox, target_full))
         # Resolve the symlink and check it points at target
-        link_path = os.path.join(home, '.local/bin', name)
+        # Names may be emitted as `~/.local/bin/<name>` (generator contract) —
+        # expand the ~, never double-join under .local/bin again.
+        if name.startswith('~/'):
+            link_path = os.path.join(home, name[2:])
+        elif not name.startswith('/'):
+            link_path = os.path.join(home, '.local/bin', name)
+        else:
+            link_path = name
         if not os.path.lexists(link_path):
             fails.append('links/%s: symlink not found at %s' % (name, link_path))
             continue
@@ -221,6 +228,8 @@ def main():
         if link_target != os.path.realpath(target_full):
             fails.append('links/%s: resolves to %s, manifest says %s' % (name, link_target, target_full))
             continue
+        seen.add(os.path.normpath(link_path))
+        seen.add(os.path.normpath(os.path.relpath(link_path, SOV)))
         oks.append('links/%s -> %s' % (name, target))
 
     # --- bins section ---
