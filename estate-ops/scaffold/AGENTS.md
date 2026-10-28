@@ -65,3 +65,29 @@ pens/<PEN_NAME>/
 ├── bin/         # <PEN_NAME> owned entrypoints, symlinks, or thin shims
 └── <product>/   # peer standalone checkout — IGNORED, not a submodule
 ```
+
+## The resident rig (Harvest Moon law — EVERY pen has one)
+
+Every pen is a farmstead with a RESIDENT RIG — a fleet-joined OpenFang agent
+that IS the pen's interface, plus squawk presence. The pen is not "done"
+without its villager.
+
+1. **Join the rig** (idempotent):
+   ```bash
+   bun /home/toxic/pens/ranch/squawk/join/fleet-join.ts \
+     --name <rig-name> --species <species> \
+     --personality "<persona, concrete, no roleplay fluff>" \
+     --lane <pen>-ops --task "<the pen's duty>" --sigil <emoji>
+   ```
+   Renders estate/agents/<name>/agent.toml + system.md + ~/.openfang/agents/.
+2. **Day-cycle**: schedule the rig with `rig cron create <name> <cron-spec>
+   "<one-turn prompt>"` — stagger minutes across rigs so the village murmurs,
+   never choruses. NO bespoke sidecar clocks: the rig runtime IS the scheduler.
+3. **Squawk presence**: the rig narrates milestones in the fleet room
+   ([name]: [status]); DM-to-rig for direct tasking.
+4. **Model lane**: the rig's [model] block routes through the estate routers
+   (herd :25100 / rhodochrosite :25193) — never a hardcoded provider URL.
+5. **Dashboard**: the rig is visible on the Rig Dashboard (:25196).
+
+Current residents: geode (ranch), hephaistos+ergane+hestia (ergasterion),
+skopos/muse/keryx/kryptos/kairos (olympus), tack (barn), tau (the mountain).
