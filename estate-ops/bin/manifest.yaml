@@ -292,7 +292,7 @@ links:
     target: "/home/toxic/pens/barn/estate-ops/saturation-watchdog"
     pens_proximity: true
   - name: ~/.local/bin/secretsmith
-    target: /home/toxic/pens/barn/secretsmith/bin/secretsmith
+    target: /home/toxic/pens/olympus/products/kryptos/bin/secretsmith
     pens_proximity: true
   - name: "~/.local/bin/set-audio"
     target: "/home/toxic/pens/barn/estate-ops/set-audio"
@@ -2889,7 +2889,7 @@ bins:
     notes: script (bun); executable
     pens_proximity: true
   - name: secretsmith
-    dir: pens/barn/secretsmith/bin
+    dir: pens/olympus/products/kryptos/bin
     kind: script
     shebang: "#!/usr/bin/env bash"
     syntax: bash
