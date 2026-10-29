@@ -135,7 +135,9 @@
   },
   "mcpServers": [
     {
-      "args": ["agent-mcp-gateway"],
+      "args": [
+        "agent-mcp-gateway"
+      ],
       "command": "uvx",
       "enabled": false,
       "env": {
@@ -177,7 +179,9 @@
       "name": "arxiv",
       "protocol": "stdio",
       "command": "uvx",
-      "args": ["arxiv-mcp-server"],
+      "args": [
+        "arxiv-mcp-server"
+      ],
       "oauth": null,
       "enabled": true,
       "auto_approve_tool_changes": true,
@@ -214,14 +218,21 @@
       "name": "ash",
       "protocol": "stdio",
       "command": "/home/toxic/.local/bin/ash",
-      "args": ["--config", "/home/toxic/.config/ash/config.toml", "mcp"],
+      "args": [
+        "--config",
+        "/home/toxic/.config/ash/config.toml",
+        "mcp"
+      ],
       "oauth": null,
       "enabled": true,
       "auto_approve_tool_changes": true,
       "trust_mode": "auto"
     },
     {
-      "args": ["--root-dir", "/home/toxic"],
+      "args": [
+        "--root-dir",
+        "/home/toxic"
+      ],
       "auto_approve_tool_changes": true,
       "command": "/home/toxic/.local/bin/ast-grep-mcp",
       "enabled": false,
@@ -277,7 +288,9 @@
       "name": "browserless",
       "protocol": "stdio",
       "command": "/home/toxic/.local/share/mise/installs/node/22.12.0/bin/node",
-      "args": ["/home/toxic/pens/ranch/keeper/dist/index.js"],
+      "args": [
+        "/home/toxic/pens/ranch/keeper/dist/index.js"
+      ],
       "oauth": null,
       "enabled": true,
       "auto_approve_tool_changes": true,
@@ -333,7 +346,9 @@
       "name": "computer-use-linux",
       "protocol": "stdio",
       "command": "/home/toxic/.local/bin/computer-use-linux",
-      "args": ["mcp"],
+      "args": [
+        "mcp"
+      ],
       "oauth": null,
       "enabled": true,
       "auto_approve_tool_changes": true,
@@ -350,7 +365,10 @@
       "name": "context7",
       "protocol": "stdio",
       "command": "npx",
-      "args": ["-y", "@upstash/context7-mcp@latest"],
+      "args": [
+        "-y",
+        "@upstash/context7-mcp@latest"
+      ],
       "env": {
         "CONTEXT7_API_KEY": "${CONTEXT7_API_KEY}"
       },
@@ -369,7 +387,9 @@
       "name": "den",
       "protocol": "stdio",
       "command": "/home/toxic/.bun/bin/bun",
-      "args": ["/home/toxic/pens/ranch/ferret-den/src/index.ts"],
+      "args": [
+        "/home/toxic/pens/ranch/ferret-den/src/index.ts"
+      ],
       "env": {
         "PD_TOOLS_DIR": "/home/toxic/.pdtm/go/bin",
         "SHUFFLEDNS_BIN": "/home/toxic/.pdtm/go/bin/shuffledns"
@@ -382,7 +402,10 @@
       "name": "desktop-commander",
       "protocol": "stdio",
       "command": "/home/toxic/.bun/bin/bun",
-      "args": ["x", "@wonderwhy-er/desktop-commander@latest"],
+      "args": [
+        "x",
+        "@wonderwhy-er/desktop-commander@latest"
+      ],
       "oauth": null,
       "enabled": true,
       "auto_approve_tool_changes": true,
@@ -407,7 +430,10 @@
       "name": "ffs",
       "protocol": "stdio",
       "command": "/home/toxic/.local/bin/ffs",
-      "args": ["mcp", "/home/toxic"],
+      "args": [
+        "mcp",
+        "/home/toxic"
+      ],
       "oauth": null,
       "enabled": true,
       "trust_mode": "auto"
@@ -464,25 +490,12 @@
       "tool_discovery_interval": "2m0s"
     },
     {
-      "quarantined": false,
-      "name": "github",
-      "protocol": "stdio",
-      "command": "/home/toxic/pens/ranch/thresher/bin/github-mcp.sh",
-      "oauth": null,
-      "enabled": true,
-      "auto_approve_tool_changes": true,
-      "trust_mode": "auto",
-      "isolation": {
-        "enabled": false
-      },
-      "health_check_interval": "15s",
-      "tool_discovery_interval": "2m0s"
-    },
-    {
       "name": "grasp-hub",
       "protocol": "stdio",
       "command": "/home/toxic/.bun/bin/bun",
-      "args": ["/home/toxic/pens/geode/products/azurite/mcp/server.ts"],
+      "args": [
+        "/home/toxic/pens/geode/products/azurite/mcp/server.ts"
+      ],
       "oauth": null,
       "enabled": true,
       "trust_mode": "auto"
@@ -492,7 +505,10 @@
       "name": "hatch-mcp",
       "protocol": "stdio",
       "command": "python3",
-      "args": ["/home/toxic/pens/ranch/squawk/mcp_server.py"],
+      "args": [
+        "-m",
+        "identity_router.mcp_server"
+      ],
       "oauth": null,
       "enabled": true,
       "auto_approve_tool_changes": true,
@@ -501,7 +517,10 @@
         "enabled": false
       },
       "health_check_interval": "15s",
-      "tool_discovery_interval": "2m0s"
+      "tool_discovery_interval": "2m0s",
+      "env": {
+        "PYTHONPATH": "/home/toxic/pens/ranch/products/identity-router/src"
+      }
     },
     {
       "quarantined": false,
@@ -564,7 +583,12 @@
       "name": "lasso",
       "protocol": "stdio",
       "command": "uv",
-      "args": ["run", "--directory", "/home/toxic/pens/ranch/lasso", "hypruse"],
+      "args": [
+        "run",
+        "--directory",
+        "/home/toxic/pens/ranch/lasso",
+        "hypruse"
+      ],
       "oauth": null,
       "enabled": true,
       "auto_approve_tool_changes": true,
@@ -580,7 +604,9 @@
       "name": "markitdown",
       "protocol": "stdio",
       "command": "uvx",
-      "args": ["markitdown-mcp"],
+      "args": [
+        "markitdown-mcp"
+      ],
       "oauth": null,
       "enabled": true,
       "auto_approve_tool_changes": true,
@@ -622,7 +648,9 @@
       "name": "mise",
       "protocol": "stdio",
       "command": "mise",
-      "args": ["mcp"],
+      "args": [
+        "mcp"
+      ],
       "oauth": null,
       "enabled": true,
       "trust_mode": "auto"
@@ -688,7 +716,9 @@
     {
       "name": "pd",
       "command": "/home/toxic/.bun/bin/bun",
-      "args": ["/home/toxic/pens/ranch/mcp/pd-mcp-standalone/src/index.ts"],
+      "args": [
+        "/home/toxic/pens/ranch/mcp/pd-mcp-standalone/src/index.ts"
+      ],
       "env": {
         "PD_TOOLS_DIR": "${PD_TOOLS_DIR}",
         "SHUFFLEDNS_BIN": "${SHUFFLEDNS_BIN}"
@@ -708,7 +738,9 @@
       "name": "pitchfork",
       "protocol": "stdio",
       "command": "/home/toxic/.local/bin/pitchfork",
-      "args": ["mcp"],
+      "args": [
+        "mcp"
+      ],
       "oauth": null,
       "enabled": true,
       "trust_mode": "auto"
@@ -718,7 +750,9 @@
       "name": "prometheus",
       "protocol": "stdio",
       "command": "uvx",
-      "args": ["prometheus-mcp-server"],
+      "args": [
+        "prometheus-mcp-server"
+      ],
       "env": {
         "PROMETHEUS_URL": "${PROMETHEUS_URL}"
       },
@@ -738,7 +772,11 @@
       "name": "qdrant-mcp",
       "protocol": "stdio",
       "command": "uvx",
-      "args": ["--with", "mcp<2", "qdrant-mcp-server"],
+      "args": [
+        "--with",
+        "mcp<2",
+        "qdrant-mcp-server"
+      ],
       "env": {
         "QDRANT_URL": "http://127.0.0.1:6333",
         "HF_HUB_OFFLINE": "1"
@@ -759,7 +797,11 @@
       "name": "redis-mcp",
       "protocol": "stdio",
       "command": "uvx",
-      "args": ["redis-mcp-server", "--url", "redis://localhost:25199/0"],
+      "args": [
+        "redis-mcp-server",
+        "--url",
+        "redis://localhost:25199/0"
+      ],
       "oauth": null,
       "enabled": true,
       "auto_approve_tool_changes": true,
@@ -784,7 +826,11 @@
       "name": "rsync",
       "protocol": "stdio",
       "command": "/home/toxic/.bun/bin/bun",
-      "args": ["/home/toxic/pens/ranch/mcp/rsync-mcp/index.js", "--host", "pc"],
+      "args": [
+        "/home/toxic/pens/ranch/mcp/rsync-mcp/index.js",
+        "--host",
+        "pc"
+      ],
       "env": {
         "RSYNC_FLAGS": "${RSYNC_FLAGS}",
         "RSYNC_HOST": "${RSYNC_HOST}",
@@ -826,7 +872,10 @@
       "name": "sequential-thinking-thin",
       "protocol": "stdio",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sequential-thinking"
+      ],
       "oauth": null,
       "enabled": true,
       "auto_approve_tool_changes": true,
@@ -854,7 +903,10 @@
       "name": "smarter-ast-mcp",
       "protocol": "stdio",
       "command": "bunx",
-      "args": ["smarter-faster-better-mcp", "/home/toxic"],
+      "args": [
+        "smarter-faster-better-mcp",
+        "/home/toxic"
+      ],
       "env": {
         "SCOUT_API_KEY": "${SCOUT_API_KEY}",
         "SCOUT_BASE_URL": "${SCOUT_BASE_URL}",
@@ -875,7 +927,9 @@
       "name": "smithers",
       "protocol": "stdio",
       "command": "/home/toxic/.bun/bin/smithers",
-      "args": ["--mcp"],
+      "args": [
+        "--mcp"
+      ],
       "oauth": null,
       "enabled": true,
       "trust_mode": "auto"
@@ -907,7 +961,9 @@
       "name": "squawk",
       "protocol": "stdio",
       "command": "python3",
-      "args": ["/home/toxic/pens/ranch/squawk/mcp_server.py"],
+      "args": [
+        "/home/toxic/pens/ranch/products/squawk/mcp_server.py"
+      ],
       "oauth": null,
       "enabled": true,
       "trust_mode": "auto"
@@ -916,7 +972,9 @@
       "quarantined": false,
       "name": "tmux",
       "command": "/home/toxic/.bun/bin/bun",
-      "args": ["/home/toxic/pens/estate/tools/tmux-mcp/server.ts"],
+      "args": [
+        "/home/toxic/pens/estate/tools/tmux-mcp/server.ts"
+      ],
       "oauth": null,
       "enabled": true
     },
@@ -938,14 +996,19 @@
       "name": "websearch-mcp",
       "protocol": "stdio",
       "command": "python3",
-      "args": ["/home/toxic/pens/estate/tools/websearch-mcp/server.py"],
+      "args": [
+        "/home/toxic/pens/estate/tools/websearch-mcp/server.py"
+      ],
       "oauth": null,
       "enabled": true,
       "auto_approve_tool_changes": true,
       "trust_mode": "auto"
     },
     {
-      "args": ["websearch-skill", "mcp"],
+      "args": [
+        "websearch-skill",
+        "mcp"
+      ],
       "command": "uvx",
       "enabled": false,
       "health_check_interval": "15s",
@@ -965,7 +1028,9 @@
       "name": "wezterm",
       "protocol": "stdio",
       "command": "/home/toxic/.bun/bin/bun",
-      "args": ["/home/toxic/pens/ranch/wezterm-agent-mcp/build/cli.js"],
+      "args": [
+        "/home/toxic/pens/ranch/wezterm-agent-mcp/build/cli.js"
+      ],
       "env": {
         "WEZTERM_UNIX_SOCKET": "${WEZTERM_UNIX_SOCKET}"
       },
@@ -984,7 +1049,9 @@
       "name": "xray",
       "protocol": "stdio",
       "command": "/home/toxic/.local/bin/xray-mcp",
-      "args": ["--stdio"],
+      "args": [
+        "--stdio"
+      ],
       "oauth": null,
       "enabled": true,
       "trust_mode": "auto"
@@ -993,7 +1060,9 @@
       "name": "sigma-guard",
       "protocol": "stdio",
       "command": "bun",
-      "args": ["/home/toxic/pens/olympus/products/sigma/dist/sigma-guard.js"],
+      "args": [
+        "/home/toxic/pens/olympus/products/sigma/dist/sigma-guard.js"
+      ],
       "env": {
         "SIGMA_MCP_PROXY": "http://127.0.0.1:8787"
       },
@@ -1051,7 +1120,9 @@
       "name": "forge-mcp",
       "protocol": "stdio",
       "command": "/home/toxic/.bun/bin/bun",
-      "args": ["/home/toxic/pens/ranch/forge-mcp/src/server.ts"],
+      "args": [
+        "/home/toxic/pens/ranch/forge-mcp/src/server.ts"
+      ],
       "oauth": null,
       "enabled": true,
       "trust_mode": "auto",
@@ -1064,7 +1135,9 @@
       "name": "azurite",
       "protocol": "stdio",
       "command": "/home/toxic/.bun/bin/bun",
-      "args": ["/home/toxic/pens/geode/products/azurite/mcp/server.ts"],
+      "args": [
+        "/home/toxic/pens/geode/products/azurite/mcp/server.ts"
+      ],
       "oauth": null,
       "enabled": true,
       "trust_mode": "auto",
@@ -1076,7 +1149,10 @@
       "name": "bornite-test",
       "protocol": "stdio",
       "command": "/home/toxic/.bun/bin/bun",
-      "args": ["run", "/home/toxic/pens/estate/src/mcp/bornite.ts"],
+      "args": [
+        "run",
+        "/home/toxic/pens/estate/src/mcp/bornite.ts"
+      ],
       "oauth": null,
       "enabled": true,
       "auto_approve_tool_changes": true,
@@ -1110,7 +1186,9 @@
       "name": "kleio",
       "protocol": "stdio",
       "command": "/home/toxic/.bun/bin/bun",
-      "args": ["/home/toxic/pens/olympus/products/kleio/mcp-server.ts"],
+      "args": [
+        "/home/toxic/pens/olympus/products/kleio/mcp-server.ts"
+      ],
       "oauth": null,
       "enabled": true,
       "auto_approve_tool_changes": true,
@@ -1125,7 +1203,9 @@
       "name": "rclone",
       "protocol": "stdio",
       "command": "/home/toxic/.local/bin/rclone-mcp",
-      "args": ["stdio"],
+      "args": [
+        "stdio"
+      ],
       "env": {
         "RCLONE_URL": "http://127.0.0.1:5572"
       },
@@ -1145,7 +1225,9 @@
       "name": "docs-mcp",
       "protocol": "stdio",
       "command": "python3",
-      "args": ["/home/toxic/pens/estate/products/docs-mcp/docs_mcp.py"],
+      "args": [
+        "/home/toxic/pens/estate/products/docs-mcp/docs_mcp.py"
+      ],
       "oauth": null,
       "enabled": true,
       "quarantined": false,
@@ -1199,6 +1281,45 @@
       "enabled": true,
       "created": "2026-10-28T03:30:00.000000-06:00",
       "updated": "2026-10-28T03:30:00.000000-06:00"
+    },
+    {
+      "quarantined": false,
+      "name": "pens-completions",
+      "url": "http://127.0.0.1:25252/mcp",
+      "protocol": "http",
+      "command": "",
+      "args": [],
+      "env": {},
+      "oauth": null,
+      "enabled": true,
+      "created": "2026-10-29T06:33:46.577Z",
+      "updated": "2026-10-29T06:33:46.577Z"
+    },
+    {
+      "quarantined": false,
+      "name": "desktop-commander-keeper",
+      "protocol": "stdio",
+      "command": "/home/toxic/.bun/bin/bun",
+      "args": [
+        "x",
+        "@wonderwhy-er/desktop-commander@latest"
+      ],
+      "env": {
+        "DISPLAY": ":99",
+        "SHELL": "/bin/bash",
+        "ALLOW_COMMANDS": "true",
+        "DC_SHELL_ALLOWLIST": ""
+      },
+      "oauth": null,
+      "enabled": true,
+      "auto_approve_tool_changes": true,
+      "trust_mode": "auto",
+      "isolation": {
+        "enabled": false
+      },
+      "health_check_interval": "15s",
+      "tool_discovery_interval": "2m0s",
+      "_note": "keeper-owned desktop commander (max-yolo): DISPLAY :99 drives the skopos Xvnc desktop; second DC alongside the default one"
     }
   ],
   "oauth_expiry_warning_hours": 4,
@@ -1219,7 +1340,12 @@
     "spotlight_untrusted": true,
     "response_action": "spotlight",
     "strip_control_chars": true,
-    "strip_classes": ["ansi", "c0c1", "bidi", "zero_width"],
+    "strip_classes": [
+      "ansi",
+      "c0c1",
+      "bidi",
+      "zero_width"
+    ],
     "max_redactions": 500
   },
   "output_validation": {
@@ -1237,7 +1363,10 @@
       "description": "The official Model Context Protocol server registry",
       "url": "https://registry.modelcontextprotocol.io/",
       "servers_url": "https://registry.modelcontextprotocol.io/v0.1/servers",
-      "tags": ["verified", "official"],
+      "tags": [
+        "verified",
+        "official"
+      ],
       "protocol": "modelcontextprotocol/registry",
       "provenance": "official"
     },
@@ -1247,7 +1376,11 @@
       "description": "Curated @modelcontextprotocol reference servers",
       "url": "https://github.com/modelcontextprotocol/servers",
       "servers_url": "builtin://reference",
-      "tags": ["verified", "official", "reference"],
+      "tags": [
+        "verified",
+        "official",
+        "reference"
+      ],
       "protocol": "builtin/reference",
       "provenance": "official"
     },
@@ -1257,7 +1390,11 @@
       "description": "A collection of secure, high-quality MCP servers as docker images",
       "url": "https://hub.docker.com/catalogs/mcp",
       "servers_url": "https://hub.docker.com/v2/repositories/mcp/",
-      "tags": ["verified", "official", "reference"],
+      "tags": [
+        "verified",
+        "official",
+        "reference"
+      ],
       "protocol": "custom/docker",
       "provenance": "official"
     },
@@ -1267,7 +1404,10 @@
       "description": "Curated directory of MCP servers",
       "url": "https://glama.ai/mcp/",
       "servers_url": "https://glama.ai/api/mcp/servers",
-      "tags": ["community", "curated"],
+      "tags": [
+        "community",
+        "curated"
+      ],
       "protocol": "custom/glama",
       "provenance": "community"
     }
