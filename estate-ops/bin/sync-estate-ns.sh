@@ -11,21 +11,30 @@
 #                           config path, gitignored by design)
 # What it does NOT do: restart daemons (run pitchfork restart per-daemon).
 set -euo pipefail
-CLONE="${ESTATE_ROOT:-/home/toxic/estate}"
+# 2026-10-28: /home/toxic/estate must NOT exist (single-truth lease). The
+# default clone root is the pens SSOT itself; ESTATE_ROOT only overrides when
+# a separate working clone is intentionally in play.
+CLONE="${ESTATE_ROOT:-/home/toxic/pens/estate}"
 PEN="${PENS_ESTATE:-/home/toxic/pens/estate}"
 
 echo "sync-estate-ns: pitchfork.toml"
-cp "$CLONE/pitchfork.toml" "$PEN/pitchfork.toml"
+if [[ ! "$CLONE/pitchfork.toml" -ef "$PEN/pitchfork.toml" ]]; then
+  cp "$CLONE/pitchfork.toml" "$PEN/pitchfork.toml"
+fi
 
 echo "sync-estate-ns: stack/ (mirror)"
 ESTATE_ROOT="$CLONE" PENS_ESTATE="$PEN" bash /home/toxic/pens/barn/estate-ops/bin/sync-stack.sh
 
 echo "sync-estate-ns: config/ports.env"
 mkdir -p "$PEN/config"
-cp "$CLONE/config/ports.env" "$PEN/config/ports.env"
+if [[ ! "$CLONE/config/ports.env" -ef "$PEN/config/ports.env" ]]; then
+  cp "$CLONE/config/ports.env" "$PEN/config/ports.env"
+fi
 
 echo "sync-estate-ns: qdrant-config.yaml"
-cp "$CLONE/qdrant-config.yaml" "$PEN/qdrant-config.yaml"
+if [[ ! "$CLONE/qdrant-config.yaml" -ef "$PEN/qdrant-config.yaml" ]]; then
+  cp "$CLONE/qdrant-config.yaml" "$PEN/qdrant-config.yaml"
+fi
 
 if [[ -f "$CLONE/config/thresher/mcp_config.json" ]]; then
   echo "sync-estate-ns: thresher mcp_config -> pens/ranch/thresher/"
