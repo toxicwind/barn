@@ -1,11 +1,11 @@
 # Per-pen pitchfork config partitioned from estate monolith 2026-10-29
 [daemons.delendai-web]
-run = "exec /home/toxic/pens/barn/corral/delendai/apps/web/node_modules/.bin/astro preview --host 127.0.0.1 --port 25197"
+run = "exec /home/toxic/pens/ergasterion/hephaistos/apps/web/node_modules/.bin/astro preview --host 127.0.0.1 --port 25197"
 auto = []
 retry = true
 ready_http = "http://127.0.0.1:25197/"
 boot_start = false
-dir = "/home/toxic/pens/barn/corral/delendai/apps/web"
+dir = "/home/toxic/pens/ergasterion/hephaistos/apps/web"
 mise = true
 
 [daemons.thresher]
@@ -31,23 +31,23 @@ mise = true
 
 
 [daemons.forge-web]
-run = "exec /home/toxic/.bun/bin/bun run --cwd /home/toxic/pens/barn/nativelink/web/apps/web start --port 25164"
+run = "exec /home/toxic/.bun/bin/bun run --cwd /home/toxic/pens/barn/products/nativelink/web/apps/web start --port 25164"
 auto = ["start"]
 retry = true
 ready_http = "http://127.0.0.1:25164/"
 port = 25164
 boot_start = true
-dir = "/home/toxic/pens/barn/nativelink/web/apps/web"
+dir = "/home/toxic/pens/barn/products/nativelink/web/apps/web"
 mise = true
 
 [daemons.forge-docs]
-run = "exec /home/toxic/.bun/bin/bun run --cwd /home/toxic/pens/barn/nativelink/web/apps/docs start --port 25165"
+run = "exec /home/toxic/.bun/bin/bun run --cwd /home/toxic/pens/barn/products/nativelink/web/apps/docs start --port 25165"
 auto = ["start"]
 retry = true
 ready_http = "http://127.0.0.1:25165/"
 port = 25165
 boot_start = true
-dir = "/home/toxic/pens/barn/nativelink/web/apps/docs"
+dir = "/home/toxic/pens/barn/products/nativelink/web/apps/docs"
 mise = true
 
 [daemons.tau-chute]
@@ -56,7 +56,7 @@ auto = ["start"]
 retry = true
 ready_port = 25111
 port = 25111
-dir = "/home/toxic/pens/barn/chute"
+dir = "/home/toxic/pens/barn/products/chute"
 mise = true
 
 
