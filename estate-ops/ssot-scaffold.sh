@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ssot-scaffold — GLOBAL SSOT consolidation across all pens products.
 #
-# Every pens product should feed its config into /home/toxic/estate/config/<product>
+# Every pens product should feed its config into /home/toxic/pens/estate/config/<product>
 # as the canonical SSOT, with the product's on-disk config a SYMLINK to it (import,
 # never a duplicate). This is the "one source of truth, daemons import" doctrine.
 #
@@ -11,7 +11,7 @@
 #                       a real file, not a symlink -> a duplicate to reconcile)
 set -u
 
-SSOT_ROOT=/home/toxic/estate/config
+SSOT_ROOT=/home/toxic/pens/estate/config
 PRODUCTS="barn olympos ranch"   # pens/{barn,olympus,ranch}
 VERBOSE=0
 [ "${1:-}" = "--apply" ] && APPLY=1 || APPLY=0

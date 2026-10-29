@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ssot-sync.sh — import this pens' config files into /home/toxic/estate/config/<product>
+# ssot-sync.sh — import this pens' config files into /home/toxic/pens/estate/config/<product>
 # as the canonical SSOT (moving real file, symlinking back). Run after adding a
 # product/config surface. Delegates to the estate-ops reconciler.
 set -u
