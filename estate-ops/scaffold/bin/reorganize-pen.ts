@@ -5,8 +5,9 @@
  * MAXIMALLY NON-DESTRUCTIVE:
  *   - dry-run by default (prints moves, touches nothing) — safe to re-run
  *   - before any move, takes a hardlink snapshot (cp -al) of the whole pen
- *     root into archive/pre-reorg-<date>-<nanos>/ — instant byte-identical
- *     rollback source; nothing is deleted and the working tree is never emptied
+ *     root into /home/toxic/archive/pen-snapshots/<pen>-pre-reorg-<date>-<nanos>/ —
+ *     instant byte-identical rollback source; nothing is deleted and the working tree
+ *     is never emptied
  *   - only moves (rename), never deletes
  *   - never force-overwrites refs (-f is forbidden; names are unique per run)
  *   - never touches remotes (no git push --force)
@@ -22,6 +23,7 @@ import { join } from "path";
 import { execSync } from "child_process";
 
 const PENS_ROOT = "/home/toxic/pens";
+const SNAP_ROOT = "/home/toxic/archive/pen-snapshots";
 const SUPPORT = new Set([
 	"bin",
 	"docs",
@@ -105,7 +107,7 @@ const root = join(PENS_ROOT, pen);
 const products = join(root, "products");
 const datePart = new Date().toISOString().slice(0, 10).replace(/-/g, "");
 const nanos = Date.now();
-const snapshot = join(root, "archive", `pre-reorg-${datePart}-${nanos}`);
+const snapshot = join(SNAP_ROOT, `${pen}-pre-reorg-${datePart}-${nanos}`);
 
 async function isDir(p: string): Promise<boolean> {
 	try {
@@ -129,7 +131,7 @@ async function qualifies(dir: string): Promise<boolean> {
 /** Instant byte-identical rollback source. cp -al: nothing cleared, working tree intact. */
 async function snapshotPen(root: string, dest: string): Promise<void> {
 	await mkdir(dest, { recursive: true });
-	execSync(`cp -al "${root}/." "${dest}/"`, { stdio: "pipe", timeout: 600000 });
+	execSync(`cp -al "${root}" "${dest}"`, { stdio: "pipe", timeout: 600000 });
 }
 
 /** Record HEAD into a uniquely-named local ref. Never -f, never pushes. */
