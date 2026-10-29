@@ -9,11 +9,11 @@ dir = "/home/toxic/pens/barn/corral/delendai/apps/web"
 mise = true
 
 [daemons.thresher]
-run = "exec /home/toxic/.bun/bin/bun /home/toxic/pens/ranch/range/bin/thresher-serve.ts"
+run = "exec /home/toxic/.bun/bin/bun /home/toxic/pens/ranch/products/range/bin/thresher-serve.ts"
 auto = ["start"]
 retry = true
 ready_http = "http://127.0.0.1:25127/health"
-dir = "/home/toxic/pens/barn/thresher"
+dir = "/home/toxic/pens/barn/products/thresher"
 mise = true
 # NOTE: no `port` field — pitchfork's port pre-check binds 0.0.0.0 and false-
 # conflicts with tailscaled's SNI forwarder on 100.72.199.93:25127. Readiness
