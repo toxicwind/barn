@@ -1,0 +1,62 @@
+# Per-pen pitchfork config partitioned from estate monolith 2026-10-29
+[daemons.delendai-web]
+run = "exec /home/toxic/pens/barn/corral/delendai/apps/web/node_modules/.bin/astro preview --host 127.0.0.1 --port 25197"
+auto = []
+retry = true
+ready_http = "http://127.0.0.1:25197/"
+boot_start = false
+dir = "/home/toxic/pens/barn/corral/delendai/apps/web"
+mise = true
+
+[daemons.thresher]
+run = "exec /home/toxic/.bun/bin/bun /home/toxic/pens/ranch/range/bin/thresher-serve.ts"
+auto = ["start"]
+retry = true
+ready_http = "http://127.0.0.1:25127/health"
+dir = "/home/toxic/pens/barn/thresher"
+mise = true
+# NOTE: no `port` field — pitchfork's port pre-check binds 0.0.0.0 and false-
+# conflicts with tailscaled's SNI forwarder on 100.72.199.93:25127. Readiness
+# is health_http-only (2026-10-23, thresher barn move reconciliation).
+
+[daemons.mesh-hub]
+run = "exec bun run src/services/mesh-hub.ts"
+auto = ["start"]
+retry = true
+ready_http = "http://127.0.0.1:25115/health"
+port = 25115
+depends = ["thresher"]
+dir = "/home/toxic/pens/barn"
+mise = true
+
+
+[daemons.forge-web]
+run = "exec /home/toxic/.bun/bin/bun run --cwd /home/toxic/pens/barn/nativelink/web/apps/web start --port 25164"
+auto = ["start"]
+retry = true
+ready_http = "http://127.0.0.1:25164/"
+port = 25164
+boot_start = true
+dir = "/home/toxic/pens/barn/nativelink/web/apps/web"
+mise = true
+
+[daemons.forge-docs]
+run = "exec /home/toxic/.bun/bin/bun run --cwd /home/toxic/pens/barn/nativelink/web/apps/docs start --port 25165"
+auto = ["start"]
+retry = true
+ready_http = "http://127.0.0.1:25165/"
+port = 25165
+boot_start = true
+dir = "/home/toxic/pens/barn/nativelink/web/apps/docs"
+mise = true
+
+[daemons.tau-chute]
+run = "exec /usr/bin/node chute.mjs --port 25111 -- /home/toxic/.local/bin/tau acp"
+auto = ["start"]
+retry = true
+ready_port = 25111
+port = 25111
+dir = "/home/toxic/pens/barn/chute"
+mise = true
+
+
