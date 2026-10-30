@@ -13,7 +13,7 @@ Output format: matches bin-verify.sh expected schema
 
 Usage:
   python3 manifest-gen.py [manifest_path]
-  Default: writes to pens/barn/estate-ops/bin/manifest.yaml
+  Default: writes to pens/barn/products/estate-ops/bin/manifest.yaml
 """
 
 import hashlib
@@ -25,7 +25,7 @@ HOME = os.path.expanduser("~")
 LOCAL_BIN = os.path.join(HOME, ".local/bin")
 PENS_ROOT = os.path.join(HOME, "pens")
 SOVEREIGN = os.path.join(HOME, "pens", "geode", "skills")  # skills home moved to the geode pen (2026-10-25)
-PRODUCT_BIN_LIST = os.path.join(HOME, "pens/barn/estate-ops/product-bin-dirs.txt")
+PRODUCT_BIN_LIST = os.path.join(HOME, "pens/barn/products/estate-ops/product-bin-dirs.txt")
 
 SHEBANG_LANG_MAP = {
     "bash": "bash",
@@ -308,9 +308,9 @@ def yaml_emit(links, bins, manifest_path):
     # archived
     lines.append("archived:")
     for a in [
-        {"name": "tau-old", "to": "pens/barn/estate-ops/archived/tau-old"},
-        {"name": "omp-old", "to": "pens/barn/estate-ops/archived/omp-old"},
-        {"name": "pi-old", "to": "pens/barn/estate-ops/archived/pi-old"},
+        {"name": "tau-old", "to": "pens/barn/products/estate-ops/archived/tau-old"},
+        {"name": "omp-old", "to": "pens/barn/products/estate-ops/archived/omp-old"},
+        {"name": "pi-old", "to": "pens/barn/products/estate-ops/archived/pi-old"},
     ]:
         lines.append("  - name: " + yaml_scalar(a["name"]))
         lines.append("    to: " + yaml_scalar(a["to"]))
@@ -320,7 +320,7 @@ def yaml_emit(links, bins, manifest_path):
     # dirs
     lines.append("dirs:")
     # estate/bin was retired 2026-10-27 (its contents live in
-    # pens/barn/estate-ops/bin now). ~/.local/bin is the ONE bin surface.
+    # pens/barn/products/estate-ops/bin now). ~/.local/bin is the ONE bin surface.
     for d in [".local/bin"]:
         lines.append("  - " + yaml_scalar(d))
     lines.append("")
@@ -333,7 +333,7 @@ def yaml_emit(links, bins, manifest_path):
 
 def main():
     manifest_path = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
-        HOME, "pens/barn/estate-ops/bin/manifest.yaml"
+        HOME, "pens/barn/products/estate-ops/bin/manifest.yaml"
     )
 
     print("manifest-gen: scanning " + LOCAL_BIN, file=sys.stderr)

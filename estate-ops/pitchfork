@@ -57,30 +57,6 @@ if [ "${1:-}" = "status" ] && [ -z "${2:-}" ]; then
   exec "$REAL_PITCHFORK" list
 fi
 
-case "${1:-}" in
-  stop|restart|kill|clean|c|disable|d|enable|e|start|run|r)
-    _pf_ids=""
-    for _arg in "${@:2}"; do
-      case "$_arg" in
-        sovereign/*)
-          _short="${_arg#sovereign/}"
-          # Fetch the registered daemon id list once per invocation.
-          if [ -z "$_pf_ids" ]; then
-            _pf_ids="$("$REAL_PITCHFORK" list 2>/dev/null | awk '{print $1}')"
-          fi
-          if printf '%s\n' "$_pf_ids" | grep -qx "sovereign/${_short}"; then
-            : # genuinely registered under sovereign/ — pass through
-          elif printf '%s\n' "$_pf_ids" | grep -qx "estate/${_short}"; then
-            printf 'pitchfork: REFUSED: "%s" is not a registered daemon id.\n' "$_arg" >&2
-            printf 'pitchfork: the live daemon is "estate/%s" — sovereign/ is a deprecated prefix.\n' "$_short" >&2
-            printf 'pitchfork: re-run with the estate/ name, or "pitchfork list" to see registered ids.\n' >&2
-            exit 1
-          fi
-          # else: unknown entirely — pass through and let pitchfork report it
-          ;;
-      esac
-    done
-    ;;
-esac
+
 
 exec "$REAL_PITCHFORK" "$@"
