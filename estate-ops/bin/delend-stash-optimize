@@ -1,7 +1,0 @@
-#!/usr/bin/env bun
-/**
- * delend-stash-optimize — delend-first reconciliation of working-tree work with
- * DelendAI durable work-refs. Thin shim over @delendai/work-refs plugin.
- */
-import { stashOptimizeMain } from "/home/toxic/pens/barn/corral/delendai/plugins/work-refs/src/index.ts";
-if (import.meta.main) process.exit(stashOptimizeMain(process.argv.slice(2)));
