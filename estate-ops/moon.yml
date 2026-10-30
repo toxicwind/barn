@@ -1,9 +1,0 @@
-$schema: 'https://moonrepo.dev/schemas/project.json'
-
-# ops — ranch component (Greek-named where descriptive).
-language: 'typescript'
-stack: 'backend'
-type: 'library'
-tags:
-  - 'ranch'
-  - 'component'
