@@ -1,7 +1,0 @@
-#!/usr/bin/env bun
-/**
- * delend-rig-c2 — quick diagnostics for the forever-loop C2 rig.
- * Thin shim over the @delendai/rig-c2 plugin (DelendAI first-class plugin).
- */
-import { main } from "/home/toxic/pens/barn/corral/delendai/plugins/rig-c2/src/index.ts";
-if (import.meta.main) process.exit(main(process.argv.slice(2)));

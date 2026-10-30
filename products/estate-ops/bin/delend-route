@@ -1,7 +1,0 @@
-#!/usr/bin/env bun
-/**
- * delend-route — the zero* fast-intent router for delend.
- * Thin shim over the @delendai/intent-router plugin (DelendAI first-class plugin).
- */
-import { main } from "/home/toxic/pens/barn/corral/delendai/plugins/intent-router/src/index.ts";
-if (import.meta.main) process.exit(main(process.argv.slice(2)));

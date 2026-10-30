@@ -1,7 +1,0 @@
-#!/usr/bin/env bun
-/**
- * delend-model-race — MODULAR PROFILE RUNNER.
- * Thin shim over the @delendai/model-race plugin (DelendAI first-class plugin).
- */
-import { main } from "/home/toxic/pens/barn/corral/delendai/plugins/model-race/src/index.ts";
-if (import.meta.main) process.exit(main(process.argv.slice(2)));

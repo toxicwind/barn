@@ -1,9 +1,0 @@
-#!/usr/bin/env bun
-/**
- * delend-oracle — reconcile the estate oracle market with the recursive
- * emergent mandate. Thin shim over @delendai/oracle-market plugin.
- */
-import { main } from "/home/toxic/pens/barn/corral/delendai/plugins/oracle-market/src/index.ts";
-if (import.meta.main) {
-  main(process.argv.slice(2)).then((rc) => process.exit(rc));
-}
