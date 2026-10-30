@@ -50,7 +50,7 @@ import { mkdir, readdir } from "node:fs/promises";
 import { join, dirname, resolve } from "node:path";
 
 const here = import.meta.dir; // Bun-native: no fileURLToPath ceremony
-const PENS_ROOT = resolve(here, "../../../.."); // pens/
+const PENS_ROOT = resolve(here, "../../.."); // pens/
 
 interface Options {
   pen: string;

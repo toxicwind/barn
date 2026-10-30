@@ -1,0 +1,52 @@
+[tools]
+go = "1.24"
+
+[tasks.serve]
+description = "Build + run thresher with hot reload; launch web app with kilo.ai"
+run = """
+  mkdir -p web/frontend/dist && touch web/frontend/dist/.gitkeep
+  echo "Building thresher..."
+  go build -o bin/thresher ./cmd/mcpproxy
+  echo "Launching thresher on :25127..."
+  exec bin/thresher serve
+"""
+
+[tasks.build]
+description = "Build thresher binary only"
+run = """
+  mkdir -p web/frontend/dist && touch web/frontend/dist/.gitkeep
+  go build -o bin/thresher ./cmd/mcpproxy
+  echo "Built: $(du -h bin/thresher | cut -f1)"
+"""
+
+[tasks.dev]
+description = "Hot-reload dev: rebuild on Go file changes, launch browser with kilo.ai"
+run = """
+  mkdir -p web/frontend/dist && touch web/frontend/dist/.gitkeep
+  while true; do
+    echo "Building..."
+    go build -o bin/thresher ./cmd/mcpproxy
+    bin/thresher serve
+    echo "Thresher stopped. Watching for changes..."
+    sleep 2
+  done
+"""
+
+[tasks.fresh]
+description = "Full rebuild and restart (used after config changes)"
+run = [
+  "build",
+  "serve",
+]
+
+[tasks.health]
+description = "Check thresher health endpoint"
+run = "curl -sf http://127.0.0.1:25127/health && echo ''"
+
+[tasks.open-web]
+description = "Open thresher web UI in browser with kilo.ai open"
+run = """
+  xdg-open http://127.0.0.1:25127/web &
+  xdg-open https://kilo.ai &
+  echo "Opened browser (http://127.0.0.1:25127/web + https://kilo.ai)"
+"""

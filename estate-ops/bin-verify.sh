@@ -6,7 +6,9 @@ set -uo pipefail
 # Default manifest: pens/barn/estate-ops/bin/manifest.yaml
 # SOV = home (since bins span ~/.local/bin + pens/)
 SOV="${SOV:-/home/toxic}"
-MANIFEST="${1:-$SOV/pens/barn/estate-ops/bin/manifest.yaml}"
+# Manifest default: next to this script (portable across product moves), overridable via $1
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MANIFEST="${1:-$SCRIPT_DIR/bin/manifest.yaml}"
 exec python3 - "$MANIFEST" "$SOV" <<'PYEOF'
 import hashlib, os, shutil, subprocess, sys
 

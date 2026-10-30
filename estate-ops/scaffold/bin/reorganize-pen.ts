@@ -5,8 +5,9 @@
  * MAXIMALLY NON-DESTRUCTIVE:
  *   - dry-run by default (prints moves, touches nothing) — safe to re-run
  *   - before any move, takes a hardlink snapshot (cp -al) of the whole pen
- *     root into archive/pre-reorg-<date>-<nanos>/ — instant byte-identical
- *     rollback source; nothing is deleted and the working tree is never emptied
+ *     root into /home/toxic/archive/pen-snapshots/<pen>-pre-reorg-<date>-<nanos>/ —
+ *     instant byte-identical rollback source; nothing is deleted and the working tree
+ *     is never emptied
  *   - only moves (rename), never deletes
  *   - never force-overwrites refs (-f is forbidden; names are unique per run)
  *   - never touches remotes (no git push --force)
@@ -22,6 +23,7 @@ import { join } from "path";
 import { execSync } from "child_process";
 
 const PENS_ROOT = "/home/toxic/pens";
+const SNAP_ROOT = "/home/toxic/archive/pen-snapshots";
 const SUPPORT = new Set([
 	"bin",
 	"docs",
@@ -101,11 +103,22 @@ if (!pen) {
 	console.error("usage: bun reorganize-pen.ts <pen> [--apply]");
 	process.exit(2);
 }
+/** Control-plane pens: root dirs ARE live daemon homes (pitchfork dir/run refs
+ * resolve absolute pens paths) — products/ migration is forbidden here. */
+const CONTROL_PLANE = new Set(["estate"]);
+if (CONTROL_PLANE.has(pen)) {
+	console.error(
+		`reorganize-pen: "${pen}" is a control-plane pen — its root dirs are live\n` +
+		`daemon homes referenced by pitchfork.toml. products/ reorg forbidden.\n` +
+		`Apply the five-shape scaffold to product pens only (barn ranch geode olympus).`,
+	);
+	process.exit(3);
+}
 const root = join(PENS_ROOT, pen);
 const products = join(root, "products");
 const datePart = new Date().toISOString().slice(0, 10).replace(/-/g, "");
 const nanos = Date.now();
-const snapshot = join(root, "archive", `pre-reorg-${datePart}-${nanos}`);
+const snapshot = join(SNAP_ROOT, `${pen}-pre-reorg-${datePart}-${nanos}`);
 
 async function isDir(p: string): Promise<boolean> {
 	try {
@@ -126,11 +139,29 @@ async function qualifies(dir: string): Promise<boolean> {
 	return false;
 }
 
-/** Instant byte-identical rollback source. cp -al: nothing cleared, working tree intact. */
+/** Instant byte-identical rollback source. cp -al: nothing cleared, working tree intact.
+ * node_modules EXCLUDED: regenerable (bun install), it dominates tree size.
+ * Timeout scales with tree size: 600s base, +1s per 1000 dirs. */
 async function snapshotPen(root: string, dest: string): Promise<void> {
 	await mkdir(dest, { recursive: true });
-	execSync(`cp -al "${root}/." "${dest}/"`, { stdio: "pipe", timeout: 600000 });
-}
+	const dirCount = Number(
+		execSync(`find "${root}" -name node_modules -prune -o -type d -print 2>/dev/null | wc -l`, {
+			encoding: "utf-8",
+			timeout: 300000,
+		}).trim() || "0",
+	);
+	const budget = Math.min(3600, Math.max(600, Math.ceil(dirCount / 1000)));
+	console.log(`  snapshot: ${dirCount} dirs (excl node_modules), budget ${budget}s -> ${dest}`);
+	// find|cpio hardlink pass: only non-node_modules paths (cp -al cannot exclude)
+		try {
+			execSync(
+				`cd "${root}" && find . -name node_modules -prune -o -print0 | cpio -p0al --null "${dest}"`,
+				{ stdio: "pipe", timeout: budget * 1000 },
+			);
+		} catch (e) {
+			log("snapshot failed (proceeding anyway):", (e as Error).message);
+		}
+	}
 
 /** Record HEAD into a uniquely-named local ref. Never -f, never pushes. */
 async function gitSafety(dir: string): Promise<void> {

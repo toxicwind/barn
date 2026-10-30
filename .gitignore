@@ -14,3 +14,7 @@ tmp-reaper/
 node_modules/
 *.db-shm
 *.db-wal
+
+# peer products: referenced not owned, auto-ignored (submoduleless doctrine)
+/products/
+/archive/
