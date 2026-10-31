@@ -149,7 +149,7 @@
       "oauth": null,
       "enabled": false,
       "created": "2026-10-30T00:03:33.640356889-06:00",
-      "updated": "2026-10-30T23:21:24.723507941-06:00",
+      "updated": "2026-10-31T00:35:22.500447563-06:00",
       "isolation": {
         "enabled": false,
         "mode": "none"
@@ -171,7 +171,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640356939-06:00",
-      "updated": "2026-10-31T00:24:52.035180107-06:00",
+      "updated": "2026-10-31T00:35:22.529981293-06:00",
       "isolation": {
         "enabled": false
       },
@@ -187,13 +187,14 @@
         "/home/toxic/pens/fleet/devices/android-mcp/dist/index.js"
       ],
       "env": {
+        "ANDROID_MCP_ALLOW_SHELL": "true",
         "ANDROID_PROFILE": "hisense-wuyishan"
       },
       "oauth": null,
       "enabled": true,
       "trust_mode": "auto",
       "created": "2026-10-31T04:40:00Z",
-      "updated": "2026-10-30T23:47:38.59457095-06:00",
+      "updated": "2026-10-31T00:49:38.273542932-06:00",
       "health_check_interval": "15s",
       "tool_discovery_interval": "2m0s"
     },
@@ -210,7 +211,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640356979-06:00",
-      "updated": "2026-10-30T23:21:24.736888453-06:00",
+      "updated": "2026-10-31T00:35:22.561431619-06:00",
       "isolation": {
         "enabled": false,
         "mode": "none"
@@ -233,7 +234,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640357019-06:00",
-      "updated": "2026-10-30T23:21:24.746599809-06:00",
+      "updated": "2026-10-31T00:35:22.567394216-06:00",
       "isolation": {
         "enabled": false,
         "mode": "none"
@@ -255,7 +256,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640357049-06:00",
-      "updated": "2026-10-30T23:21:24.749274663-06:00"
+      "updated": "2026-10-31T00:35:22.571345898-06:00"
     },
     {
       "quarantined": false,
@@ -271,7 +272,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640357089-06:00",
-      "updated": "2026-10-30T23:21:24.757380496-06:00",
+      "updated": "2026-10-31T00:35:22.575021724-06:00",
       "isolation": {
         "enabled": false,
         "mode": "none"
@@ -289,7 +290,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640357129-06:00",
-      "updated": "2026-10-30T23:21:24.759801645-06:00",
+      "updated": "2026-10-31T00:35:22.578930907-06:00",
       "isolation": {
         "enabled": false,
         "mode": "none"
@@ -309,7 +310,7 @@
       "oauth": null,
       "enabled": false,
       "created": "2026-10-30T00:03:33.640357159-06:00",
-      "updated": "2026-10-30T23:21:24.767447265-06:00",
+      "updated": "2026-10-31T00:35:22.581539082-06:00",
       "isolation": {
         "enabled": false,
         "mode": "none"
@@ -328,7 +329,7 @@
       "enabled": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640357699-06:00",
-      "updated": "2026-10-30T23:21:24.770463714-06:00"
+      "updated": "2026-10-31T00:35:22.586140122-06:00"
     },
     {
       "quarantined": false,
@@ -344,7 +345,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-07-19T02:33:58.727152525-06:00",
-      "updated": "2026-10-30T23:21:24.773759458-06:00",
+      "updated": "2026-10-31T00:35:22.589225119-06:00",
       "isolation": {
         "enabled": false
       },
@@ -367,7 +368,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640357199-06:00",
-      "updated": "2026-10-31T00:24:51.509632192-06:00",
+      "updated": "2026-10-31T00:35:22.592896175-06:00",
       "isolation": {
         "enabled": false
       },
@@ -388,7 +389,7 @@
       "oauth": null,
       "enabled": true,
       "created": "2026-10-30T00:03:33.640357229-06:00",
-      "updated": "2026-10-30T23:21:24.787859349-06:00",
+      "updated": "2026-10-31T00:35:22.618987135-06:00",
       "isolation": {
         "enabled": false,
         "working_dir": "/home/toxic/.config/byte-vision"
@@ -410,7 +411,7 @@
       "enabled": true,
       "trust_mode": "auto",
       "created": "2026-10-30T20:50:00-06:00",
-      "updated": "2026-10-31T00:26:07.932177248-06:00",
+      "updated": "2026-10-31T00:35:22.622201099-06:00",
       "health_check_interval": "15s",
       "tool_discovery_interval": "2m0s"
     },
@@ -424,7 +425,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640357279-06:00",
-      "updated": "2026-10-30T23:21:24.809706369-06:00",
+      "updated": "2026-10-31T00:35:22.625392254-06:00",
       "isolation": {
         "enabled": false,
         "mode": "none"
@@ -445,7 +446,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640357319-06:00",
-      "updated": "2026-10-30T23:21:24.818925532-06:00",
+      "updated": "2026-10-31T00:35:22.630105252-06:00",
       "isolation": {
         "enabled": false,
         "mode": "none"
@@ -470,7 +471,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640357349-06:00",
-      "updated": "2026-10-30T23:21:24.822374644-06:00",
+      "updated": "2026-10-31T00:35:22.636111828-06:00",
       "isolation": {
         "enabled": false,
         "mode": "none"
@@ -490,7 +491,7 @@
       "enabled": true,
       "trust_mode": "auto",
       "created": "2026-10-30T21:43:46.899476Z",
-      "updated": "2026-10-31T00:14:10.721212404-06:00"
+      "updated": "2026-10-31T00:35:22.640747418-06:00"
     },
     {
       "name": "delendai",
@@ -506,7 +507,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-23T07:36:00Z",
-      "updated": "2026-10-30T23:21:24.8385098-06:00",
+      "updated": "2026-10-31T00:35:22.644062261-06:00",
       "isolation": {
         "enabled": false
       },
@@ -527,23 +528,22 @@
       "oauth": null,
       "enabled": true,
       "created": "2026-10-30T00:03:33.640357399-06:00",
-      "updated": "2026-10-30T23:21:24.847127134-06:00"
+      "updated": "2026-10-31T00:35:22.64699382-06:00"
     },
     {
       "quarantined": false,
       "name": "desktop-commander",
       "protocol": "stdio",
-      "command": "/home/toxic/.bun/bin/bun",
+      "command": "/usr/bin/node",
       "args": [
-        "x",
-        "@wonderwhy-er/desktop-commander@latest"
+        "/home/toxic/pens/ranch/vendored/organized-lattice-v3/adhoc-mcp-servers/mcp-installs/desktop-commander/node_modules/@wonderwhy-er/desktop-commander/dist/index.js"
       ],
       "oauth": null,
       "enabled": true,
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640357439-06:00",
-      "updated": "2026-10-30T23:21:24.858661038-06:00",
+      "updated": "2026-10-31T00:35:22.65223223-06:00",
       "isolation": {
         "enabled": false
       },
@@ -554,10 +554,9 @@
       "quarantined": false,
       "name": "desktop-commander-keeper",
       "protocol": "stdio",
-      "command": "/home/toxic/.bun/bin/bun",
+      "command": "/usr/bin/node",
       "args": [
-        "x",
-        "@wonderwhy-er/desktop-commander@latest"
+        "/home/toxic/pens/ranch/vendored/organized-lattice-v3/adhoc-mcp-servers/mcp-installs/desktop-commander/node_modules/@wonderwhy-er/desktop-commander/dist/index.js"
       ],
       "env": {
         "ALLOW_COMMANDS": "true",
@@ -570,7 +569,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640358979-06:00",
-      "updated": "2026-10-30T23:21:24.861684967-06:00",
+      "updated": "2026-10-31T00:35:22.657544898-06:00",
       "isolation": {
         "enabled": false
       },
@@ -590,7 +589,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-27T11:37:23.913249-06:00",
-      "updated": "2026-10-30T23:21:24.870416849-06:00",
+      "updated": "2026-10-31T00:35:22.660946479-06:00",
       "isolation": {
         "enabled": false
       },
@@ -607,7 +606,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640357469-06:00",
-      "updated": "2026-10-30T23:21:24.879608723-06:00"
+      "updated": "2026-10-31T00:35:22.665683037-06:00"
     },
     {
       "name": "ffs",
@@ -621,7 +620,7 @@
       "enabled": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640357509-06:00",
-      "updated": "2026-10-30T23:21:24.887378371-06:00"
+      "updated": "2026-10-31T00:35:22.669448532-06:00"
     },
     {
       "name": "filesystem",
@@ -637,7 +636,7 @@
       "oauth": null,
       "enabled": true,
       "created": "2026-10-30T00:03:33.640357539-06:00",
-      "updated": "2026-10-30T23:21:24.895894607-06:00"
+      "updated": "2026-10-31T00:35:22.673219907-06:00"
     },
     {
       "quarantined": false,
@@ -652,7 +651,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-27T09:44:01.423025-06:00",
-      "updated": "2026-10-30T23:21:24.905629602-06:00",
+      "updated": "2026-10-31T00:35:22.676300524-06:00",
       "isolation": {
         "enabled": false
       }
@@ -665,7 +664,7 @@
       "oauth": null,
       "enabled": true,
       "created": "2026-10-28T03:30:00-06:00",
-      "updated": "2026-10-31T00:26:39.900123757-06:00"
+      "updated": "2026-10-31T00:51:06.173009745-06:00"
     },
     {
       "name": "forensia",
@@ -681,7 +680,7 @@
       "enabled": true,
       "trust_mode": "auto",
       "created": "2026-10-30T19:40:00-06:00",
-      "updated": "2026-10-30T23:21:24.924519082-06:00",
+      "updated": "2026-10-31T00:35:22.683633707-06:00",
       "health_check_interval": "15s",
       "tool_discovery_interval": "2m0s"
     },
@@ -696,7 +695,7 @@
       "enabled": true,
       "trust_mode": "auto",
       "created": "2026-10-21T23:34:41Z",
-      "updated": "2026-10-30T23:21:24.933879873-06:00",
+      "updated": "2026-10-31T00:35:22.689309739-06:00",
       "health_check_interval": "15s",
       "tool_discovery_interval": "2m0s",
       "disabled_tools": [
@@ -715,7 +714,7 @@
       "oauth": null,
       "enabled": true,
       "created": "2026-10-27T21:48:40-06:00",
-      "updated": "2026-10-31T00:27:48.1466381-06:00"
+      "updated": "2026-10-31T00:35:22.694990151-06:00"
     },
     {
       "quarantined": false,
@@ -727,7 +726,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640357619-06:00",
-      "updated": "2026-10-30T23:21:24.951328837-06:00",
+      "updated": "2026-10-31T00:53:06.219659618-06:00",
       "isolation": {
         "enabled": false,
         "mode": "none"
@@ -743,7 +742,7 @@
       "oauth": null,
       "enabled": true,
       "created": "2026-10-30T00:03:33.640357659-06:00",
-      "updated": "2026-10-31T00:26:41.831993121-06:00",
+      "updated": "2026-10-31T00:35:22.703433045-06:00",
       "isolation": {
         "enabled": false
       },
@@ -767,7 +766,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640357739-06:00",
-      "updated": "2026-10-30T23:21:24.968389498-06:00",
+      "updated": "2026-10-31T00:35:22.70718885-06:00",
       "isolation": {
         "enabled": false
       },
@@ -787,7 +786,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640357779-06:00",
-      "updated": "2026-10-30T23:21:24.97707519-06:00",
+      "updated": "2026-10-31T00:35:22.710439634-06:00",
       "isolation": {
         "enabled": false
       },
@@ -806,7 +805,7 @@
       "oauth": null,
       "enabled": true,
       "created": "2026-10-30T00:03:33.640357809-06:00",
-      "updated": "2026-10-30T23:21:24.987192009-06:00",
+      "updated": "2026-10-31T00:35:22.716602577-06:00",
       "isolation": {
         "enabled": false
       },
@@ -823,7 +822,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-21T05:29:28.559Z",
-      "updated": "2026-10-30T23:21:24.996214806-06:00",
+      "updated": "2026-10-31T00:35:22.722023713-06:00",
       "isolation": {
         "enabled": false
       },
@@ -846,7 +845,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640357849-06:00",
-      "updated": "2026-10-31T00:15:10.958263896-06:00",
+      "updated": "2026-10-31T00:35:22.727848003-06:00",
       "isolation": {
         "enabled": false
       },
@@ -865,7 +864,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-23T04:42:43.241956386-06:00",
-      "updated": "2026-10-30T23:21:25.014309319-06:00",
+      "updated": "2026-10-31T00:35:22.730996708-06:00",
       "health_check_interval": "15s",
       "tool_discovery_interval": "2m0s"
     },
@@ -885,7 +884,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640357889-06:00",
-      "updated": "2026-10-30T23:21:25.023528532-06:00",
+      "updated": "2026-10-31T00:35:22.734553717-06:00",
       "isolation": {
         "enabled": false
       },
@@ -905,7 +904,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640357919-06:00",
-      "updated": "2026-10-30T23:21:25.032981602-06:00",
+      "updated": "2026-10-31T00:35:22.739618219-06:00",
       "isolation": {
         "enabled": false
       },
@@ -934,7 +933,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640357959-06:00",
-      "updated": "2026-10-30T23:21:25.042766566-06:00",
+      "updated": "2026-10-31T00:35:22.745639195-06:00",
       "isolation": {
         "enabled": false
       },
@@ -952,7 +951,7 @@
       "enabled": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640357989-06:00",
-      "updated": "2026-10-30T23:21:25.052609789-06:00"
+      "updated": "2026-10-31T00:35:22.748516276-06:00"
     },
     {
       "quarantined": false,
@@ -973,7 +972,7 @@
       "oauth": null,
       "enabled": false,
       "created": "2026-10-30T00:03:33.640358029-06:00",
-      "updated": "2026-10-30T23:21:25.058209334-06:00",
+      "updated": "2026-10-31T00:35:22.751179999-06:00",
       "isolation": {
         "enabled": false,
         "mode": "none"
@@ -989,7 +988,7 @@
       "enabled": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640358059-06:00",
-      "updated": "2026-10-30T23:21:25.065646328-06:00"
+      "updated": "2026-10-31T00:35:22.754350365-06:00"
     },
     {
       "quarantined": false,
@@ -1001,7 +1000,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640358139-06:00",
-      "updated": "2026-10-30T23:21:25.074443039-06:00"
+      "updated": "2026-10-31T00:35:22.75980381-06:00"
     },
     {
       "quarantined": false,
@@ -1018,7 +1017,7 @@
       "oauth": null,
       "enabled": false,
       "created": "2026-10-30T00:03:33.640358169-06:00",
-      "updated": "2026-10-30T23:21:25.082578301-06:00",
+      "updated": "2026-10-31T00:35:22.762817018-06:00",
       "isolation": {
         "enabled": false,
         "mode": "none"
@@ -1034,7 +1033,7 @@
       "oauth": null,
       "enabled": true,
       "created": "2026-10-29T06:33:46.577Z",
-      "updated": "2026-10-30T23:21:25.091446151-06:00"
+      "updated": "2026-10-31T00:35:22.766917477-06:00"
     },
     {
       "name": "pens-index",
@@ -1047,7 +1046,7 @@
       "enabled": true,
       "trust_mode": "auto",
       "created": "2026-10-30T22:39:52.459419337-06:00",
-      "updated": "2026-10-30T23:21:25.100981519-06:00"
+      "updated": "2026-10-31T00:35:22.772127167-06:00"
     },
     {
       "name": "pitchfork",
@@ -1060,7 +1059,7 @@
       "enabled": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640358209-06:00",
-      "updated": "2026-10-30T23:21:25.10449182-06:00"
+      "updated": "2026-10-31T00:35:22.777348517-06:00"
     },
     {
       "quarantined": false,
@@ -1078,7 +1077,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640358239-06:00",
-      "updated": "2026-10-30T23:21:25.108640499-06:00",
+      "updated": "2026-10-31T00:35:22.780302586-06:00",
       "isolation": {
         "enabled": false,
         "mode": "none"
@@ -1105,7 +1104,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640358289-06:00",
-      "updated": "2026-10-30T23:21:25.111800136-06:00",
+      "updated": "2026-10-31T00:35:22.783860195-06:00",
       "isolation": {
         "enabled": false,
         "mode": "none"
@@ -1129,7 +1128,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-27T00:35:16.641502-06:00",
-      "updated": "2026-10-30T23:21:25.115459344-06:00",
+      "updated": "2026-10-31T00:35:22.78932435-06:00",
       "isolation": {
         "enabled": false
       },
@@ -1151,27 +1150,13 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640358329-06:00",
-      "updated": "2026-10-30T23:21:25.11918755-06:00",
+      "updated": "2026-10-31T00:35:22.792734951-06:00",
       "isolation": {
         "enabled": false,
         "mode": "none"
       },
       "health_check_interval": "15s",
       "tool_discovery_interval": "2m0s"
-    },
-    {
-      "quarantined": false,
-      "name": "trio",
-      "protocol": "stdio",
-      "command": "/home/toxic/.bun/bin/bun",
-      "args": [
-        "/home/toxic/pens/geode/products/trio/mcp/server.ts"
-      ],
-      "oauth": null,
-      "enabled": true,
-      "trust_mode": "auto",
-      "created": "2026-10-30T22:39:52.459419277-06:00",
-      "updated": "2026-10-30T23:21:25.122876338-06:00"
     },
     {
       "name": "rig",
@@ -1181,7 +1166,7 @@
       "enabled": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640358359-06:00",
-      "updated": "2026-10-30T23:21:25.126149542-06:00"
+      "updated": "2026-10-31T00:35:22.798614169-06:00"
     },
     {
       "quarantined": false,
@@ -1205,7 +1190,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640358399-06:00",
-      "updated": "2026-10-31T00:15:15.486686805-06:00",
+      "updated": "2026-10-31T00:35:22.801947902-06:00",
       "isolation": {
         "enabled": false
       },
@@ -1222,11 +1207,11 @@
         "/home/toxic"
       ],
       "oauth": null,
-      "enabled": true,
+      "enabled": false,
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640358429-06:00",
-      "updated": "2026-10-30T23:21:25.133292441-06:00",
+      "updated": "2026-10-31T05:52:00-06:00",
       "isolation": {
         "enabled": false
       },
@@ -1245,7 +1230,20 @@
       "enabled": true,
       "trust_mode": "auto",
       "created": "2026-10-30T16:51:31.821189Z",
-      "updated": "2026-10-30T23:21:25.137055807-06:00"
+      "updated": "2026-10-31T00:35:22.813947844-06:00"
+    },
+    {
+      "name": "selenite",
+      "protocol": "stdio",
+      "command": "/home/toxic/.bun/bin/bun",
+      "args": [
+        "/home/toxic/pens/geode/products/selenite/src/server.ts"
+      ],
+      "oauth": null,
+      "enabled": true,
+      "trust_mode": "scan",
+      "created": "2026-10-31T00:56:47.907032187-06:00",
+      "updated": "2026-10-31T00:56:47.907033787-06:00"
     },
     {
       "quarantined": false,
@@ -1261,7 +1259,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640358469-06:00",
-      "updated": "2026-10-30T23:21:25.140516649-06:00",
+      "updated": "2026-10-31T00:35:22.817602941-06:00",
       "isolation": {
         "enabled": false,
         "mode": "none"
@@ -1285,7 +1283,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-27T09:40:56.091725-06:00",
-      "updated": "2026-10-30T23:21:25.147423002-06:00",
+      "updated": "2026-10-31T00:35:22.821646511-06:00",
       "isolation": {
         "enabled": false
       }
@@ -1309,7 +1307,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640358539-06:00",
-      "updated": "2026-10-30T23:21:25.150660667-06:00",
+      "updated": "2026-10-31T00:35:22.827015609-06:00",
       "isolation": {
         "enabled": false,
         "mode": "none"
@@ -1328,7 +1326,7 @@
       "enabled": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640358579-06:00",
-      "updated": "2026-10-30T23:21:25.153698145-06:00"
+      "updated": "2026-10-31T00:35:22.832609652-06:00"
     },
     {
       "quarantined": false,
@@ -1347,7 +1345,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640358609-06:00",
-      "updated": "2026-10-30T23:21:25.157214896-06:00",
+      "updated": "2026-10-31T00:35:22.835838656-06:00",
       "isolation": {
         "enabled": false,
         "mode": "none"
@@ -1366,7 +1364,7 @@
       "enabled": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640358649-06:00",
-      "updated": "2026-10-30T23:21:25.161320786-06:00"
+      "updated": "2026-10-31T00:35:22.83910889-06:00"
     },
     {
       "quarantined": false,
@@ -1376,7 +1374,7 @@
       "oauth": null,
       "enabled": true,
       "created": "2026-10-27T21:48:40-06:00",
-      "updated": "2026-10-31T00:26:41.796836517-06:00"
+      "updated": "2026-10-31T00:35:22.844480867-06:00"
     },
     {
       "name": "thresher",
@@ -1386,7 +1384,7 @@
       "enabled": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640357579-06:00",
-      "updated": "2026-10-30T23:21:25.168103361-06:00"
+      "updated": "2026-10-31T00:35:22.848246692-06:00"
     },
     {
       "quarantined": false,
@@ -1398,7 +1396,21 @@
       "oauth": null,
       "enabled": true,
       "created": "2026-10-30T00:03:33.640358679-06:00",
-      "updated": "2026-10-30T23:21:25.171450404-06:00"
+      "updated": "2026-10-31T00:35:22.851956838-06:00"
+    },
+    {
+      "quarantined": false,
+      "name": "trio",
+      "protocol": "stdio",
+      "command": "/home/toxic/.bun/bin/bun",
+      "args": [
+        "/home/toxic/pens/geode/products/trio/mcp/server.ts"
+      ],
+      "oauth": null,
+      "enabled": true,
+      "trust_mode": "auto",
+      "created": "2026-10-30T22:39:52.459419277-06:00",
+      "updated": "2026-10-31T00:35:22.795543063-06:00"
     },
     {
       "name": "triphylite",
@@ -1414,7 +1426,7 @@
       "enabled": false,
       "trust_mode": "auto",
       "created": "2026-10-30T19:50:00-06:00",
-      "updated": "2026-10-31T00:24:50.998521432-06:00",
+      "updated": "2026-10-31T00:35:22.855406428-06:00",
       "health_check_interval": "15s",
       "tool_discovery_interval": "2m0s"
     },
@@ -1426,7 +1438,7 @@
       "enabled": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640359019-06:00",
-      "updated": "2026-10-31T00:26:41.822597781-06:00"
+      "updated": "2026-10-31T00:35:22.859671944-06:00"
     },
     {
       "quarantined": false,
@@ -1436,7 +1448,7 @@
       "oauth": null,
       "enabled": true,
       "created": "2026-10-30T00:03:33.640358719-06:00",
-      "updated": "2026-10-30T23:21:25.182490707-06:00",
+      "updated": "2026-10-31T00:35:22.862926838-06:00",
       "isolation": {
         "enabled": false
       },
@@ -1456,7 +1468,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640358759-06:00",
-      "updated": "2026-10-30T23:21:25.186211074-06:00",
+      "updated": "2026-10-31T00:35:22.869223059-06:00",
       "disabled_tools": [
         "github_search"
       ]
@@ -1473,7 +1485,7 @@
       "oauth": null,
       "enabled": false,
       "created": "2026-10-30T00:03:33.640358789-06:00",
-      "updated": "2026-10-30T23:21:25.189654046-06:00",
+      "updated": "2026-10-31T00:35:22.875293564-06:00",
       "isolation": {
         "enabled": false,
         "mode": "none"
@@ -1487,7 +1499,7 @@
       "protocol": "stdio",
       "command": "/home/toxic/.bun/bin/bun",
       "args": [
-        "/home/toxic/pens/ranch/wezterm-agent-mcp/build/cli.js"
+        "/home/toxic/pens/ranch/products/wezterm-agent-mcp/build/cli.js"
       ],
       "env": {
         "WEZTERM_UNIX_SOCKET": "${WEZTERM_UNIX_SOCKET}"
@@ -1497,7 +1509,7 @@
       "auto_approve_tool_changes": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640358829-06:00",
-      "updated": "2026-10-30T23:21:25.19412764-06:00",
+      "updated": "2026-10-31T00:35:22.879216406-06:00",
       "isolation": {
         "enabled": false,
         "mode": "none"
@@ -1516,7 +1528,7 @@
       "enabled": true,
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640358859-06:00",
-      "updated": "2026-10-30T23:21:25.197856226-06:00"
+      "updated": "2026-10-31T00:35:22.882954732-06:00"
     }
   ],
   "oauth_expiry_warning_hours": 4,
