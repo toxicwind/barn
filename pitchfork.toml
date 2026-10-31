@@ -1,36 +1,25 @@
 # Per-pen pitchfork config partitioned from estate monolith 2026-10-29
+# Merge-conflict resolution 2026-10-31: took origin/main side (products/ + ergasterion
+# paths) for all blocks — HEAD side held stale pre-reorg paths (barn/corral/delendai,
+# ranch/range, barn/{nativelink,chute} at top level) that no longer exist.
+# Verified live: pens/ranch/products/range/bin/thresher-serve.ts,
+# pens/ergasterion/hephaistos/, pens/barn/products/{thresher,nativelink,chute}.
 [daemons.delendai-web]
-<<<<<<< HEAD
-run = "exec /home/toxic/pens/barn/corral/delendai/apps/web/node_modules/.bin/astro preview --host 127.0.0.1 --port 25197"
-=======
 run = "exec /home/toxic/pens/ergasterion/hephaistos/apps/web/node_modules/.bin/astro preview --host 127.0.0.1 --port 25197"
->>>>>>> origin/main
 auto = []
 retry = true
 ready_http = "http://127.0.0.1:25197/"
 boot_start = false
-<<<<<<< HEAD
-dir = "/home/toxic/pens/barn/corral/delendai/apps/web"
-mise = true
-
-[daemons.thresher]
-run = "exec /home/toxic/.bun/bin/bun /home/toxic/pens/ranch/range/bin/thresher-serve.ts"
-auto = ["start"]
-retry = true
-ready_http = "http://127.0.0.1:25127/health"
-dir = "/home/toxic/pens/barn/thresher"
-=======
 dir = "/home/toxic/pens/ergasterion/hephaistos/apps/web"
 mise = true
 
 [daemons.thresher]
-run = "exec /home/toxic/.bun/bin/bun /home/toxic/pens/ranch/products/range/bin/thresher-serve.ts"
+run = "exec /home/toxic/pens/barn/products/thresher/bin/serve-guarded.sh"
 auto = ["start"]
 retry = true
 ready_http = "http://127.0.0.1:25127/health"
 dir = "/home/toxic/pens/barn/products/thresher"
->>>>>>> origin/main
-mise = true
+mise = false
 # NOTE: no `port` field — pitchfork's port pre-check binds 0.0.0.0 and false-
 # conflicts with tailscaled's SNI forwarder on 100.72.199.93:25127. Readiness
 # is health_http-only (2026-10-23, thresher barn move reconciliation).
@@ -47,39 +36,23 @@ mise = true
 
 
 [daemons.forge-web]
-<<<<<<< HEAD
-run = "exec /home/toxic/.bun/bin/bun run --cwd /home/toxic/pens/barn/nativelink/web/apps/web start --port 25164"
-=======
 run = "exec /home/toxic/.bun/bin/bun run --cwd /home/toxic/pens/barn/products/nativelink/web/apps/web start --port 25164"
->>>>>>> origin/main
 auto = ["start"]
 retry = true
 ready_http = "http://127.0.0.1:25164/"
 port = 25164
 boot_start = true
-<<<<<<< HEAD
-dir = "/home/toxic/pens/barn/nativelink/web/apps/web"
-mise = true
-
-[daemons.forge-docs]
-run = "exec /home/toxic/.bun/bin/bun run --cwd /home/toxic/pens/barn/nativelink/web/apps/docs start --port 25165"
-=======
 dir = "/home/toxic/pens/barn/products/nativelink/web/apps/web"
 mise = true
 
 [daemons.forge-docs]
 run = "exec /home/toxic/.bun/bin/bun run --cwd /home/toxic/pens/barn/products/nativelink/web/apps/docs start --port 25165"
->>>>>>> origin/main
 auto = ["start"]
 retry = true
 ready_http = "http://127.0.0.1:25165/"
 port = 25165
 boot_start = true
-<<<<<<< HEAD
-dir = "/home/toxic/pens/barn/nativelink/web/apps/docs"
-=======
 dir = "/home/toxic/pens/barn/products/nativelink/web/apps/docs"
->>>>>>> origin/main
 mise = true
 
 [daemons.tau-chute]
@@ -88,11 +61,5 @@ auto = ["start"]
 retry = true
 ready_port = 25111
 port = 25111
-<<<<<<< HEAD
-dir = "/home/toxic/pens/barn/chute"
-=======
 dir = "/home/toxic/pens/barn/products/chute"
->>>>>>> origin/main
 mise = true
-
-
