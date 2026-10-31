@@ -1092,7 +1092,7 @@
       "command": "uvx",
       "args": [
         "--with",
-        "mcp\u003c2",
+        "mcp<2",
         "qdrant-mcp-server"
       ],
       "env": {
@@ -1335,7 +1335,7 @@
       "command": "uvx",
       "args": [
         "--with",
-        "mcp\u003c2",
+        "mcp<2",
         "mcp-server-sqlite",
         "--db-path",
         "/home/toxic/ast_matrix.db"
@@ -1529,6 +1529,18 @@
       "trust_mode": "auto",
       "created": "2026-10-30T00:03:33.640358859-06:00",
       "updated": "2026-10-31T00:35:22.882954732-06:00"
+    },
+    {
+      "name": "tau-agent",
+      "protocol": "stdio",
+      "command": "/home/toxic/.local/bin/tau-mcp",
+      "args": [],
+      "oauth": null,
+      "enabled": true,
+      "auto_approve_tool_changes": true,
+      "trust_mode": "auto",
+      "created": "2026-10-31T12:48:16.031011+00:00",
+      "updated": "2026-10-31T12:48:16.031011+00:00"
     }
   ],
   "oauth_expiry_warning_hours": 4,
