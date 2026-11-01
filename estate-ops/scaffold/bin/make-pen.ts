@@ -50,7 +50,10 @@ import { mkdir, readdir } from "node:fs/promises";
 import { join, dirname, resolve } from "node:path";
 
 const here = import.meta.dir; // Bun-native: no fileURLToPath ceremony
-const PENS_ROOT = resolve(here, "../../.."); // pens/
+// GHOST-ROOT FIX (2026-11-01): "../../.." from bin/ resolves to ~ (the home
+// dir), not to the real pens root — scripts then wrote pen metadata into a
+// ghost /home/toxic/<pen>/. Anchor on the canonical pens root instead.
+const PENS_ROOT = process.env.PENS_ROOT || "/home/toxic/pens";
 
 interface Options {
   pen: string;
@@ -135,9 +138,9 @@ ${o.pen}/
 - **bin surface**: entrypoints symlinked into \`~/.local/bin\`, pinned by
   \`pens/barn/estate-ops/bin/manifest.yaml\` and verified by
   \`pens/barn/estate-ops/bin/bin-verify.sh\`. A broken link is a FAIL, never a WARN.
-- **README**: generated from the pen's own product set by
-  \`pens/barn/estate-ops/scaffold/bin/readme-gen.ts\`; regenerate with
-  \`bun run readme\`.
+- **README**: generated from the pen's live product set + git remotes
+  + ports SSOT by the **master generator** \`pens/toolkit/readme-gen.ts\`;
+  regenerate with \`bun run readme\`.
 - **manifest**: regenerate with
   \`pens/barn/estate-ops/bin/manifest-gen.py\`.
 
@@ -169,7 +172,7 @@ function packageJson(o: Options): string {
           test: "bun test",
           check: "bunx oxlint . && bunx oxfmt --check '*.ts'",
           lint: "bunx oxlint .",
-          readme: "bun ./bin/readme-gen.ts",
+          readme: "bun /home/toxic/pens/toolkit/readme-gen.ts --pen " + o.pen,
         },
       },
       null,

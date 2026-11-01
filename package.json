@@ -11,7 +11,7 @@
     "test": "bun test",
     "check": "bunx oxlint . && bunx oxfmt --check '*.ts'",
     "lint": "bunx oxlint .",
-    "readme": "bun ./bin/readme-gen.ts"
+    "readme": "bun /home/toxic/pens/toolkit/readme-gen.ts --pen barn"
   },
   "dependencies": {
     "dbus-next": "^0.10.2"
