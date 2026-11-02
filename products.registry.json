@@ -1,0 +1,92 @@
+{
+  "products": {
+    ".ffs": {
+      "enabled": true,
+      "aliases": []
+    },
+    "archguard": {
+      "enabled": true,
+      "aliases": []
+    },
+    "chute": {
+      "enabled": true,
+      "aliases": []
+    },
+    "estate-tailscale": {
+      "enabled": true,
+      "aliases": []
+    },
+    "fanout": {
+      "enabled": true,
+      "aliases": []
+    },
+    "flatbread": {
+      "enabled": true,
+      "aliases": []
+    },
+    "gatehouse": {
+      "enabled": true,
+      "aliases": []
+    },
+    "gem-dredge": {
+      "enabled": true,
+      "aliases": []
+    },
+    "gemini-mcp": {
+      "enabled": true,
+      "aliases": []
+    },
+    "lookout": {
+      "enabled": true,
+      "aliases": []
+    },
+    "nativelink": {
+      "enabled": true,
+      "aliases": []
+    },
+    "rosec": {
+      "enabled": true,
+      "aliases": []
+    },
+    "secretsmith": {
+      "enabled": true,
+      "aliases": []
+    },
+    "thresher": {
+      "enabled": true,
+      "aliases": []
+    },
+    "weave": {
+      "enabled": true,
+      "aliases": []
+    },
+    "weave-sub": {
+      "enabled": true,
+      "aliases": []
+    },
+    "gatehouse-staging": {
+      "enabled": true,
+      "aliases": []
+    },
+    "forge": {
+      "enabled": true,
+      "aliases": []
+    },
+    "xerj": {
+      "enabled": true,
+      "aliases": []
+    },
+    "estate-mesh": {
+      "enabled": true,
+      "aliases": []
+    },
+    "estate-ops": {
+      "enabled": true,
+      "aliases": []
+    },
+    "pens-index": {
+      "enabled": true,
+      "aliases": []
+    }
+  }
+}
