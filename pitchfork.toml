@@ -63,3 +63,36 @@ ready_port = 25111
 port = 25111
 dir = "/home/toxic/pens/barn/products/chute"
 mise = true
+
+# blackbird — the barn product consolidating github-search + ghas (2026-11-02).
+# GitHub search lane: blackbird engine (UI index) first, REST fallback.
+# api :25112 · mcp :25113 (thresher upstream) · web :25114 (sveltekit).
+# blackbird daemons source estate ports.env first — the servers require
+# BLACKBIRD_*_PORT from env (estate/config/ports.env is the port registry
+# SSOT; without sourcing, the daemons crash on requirePort at boot).
+[daemons.blackbird-api]
+run = "exec bash -c 'set -a && . /home/toxic/pens/estate/config/ports.env && set +a && exec /home/toxic/.bun/bin/bun /home/toxic/pens/barn/products/blackbird/apps/api/src/server.ts'"
+auto = ["start"]
+retry = true
+ready_http = "http://127.0.0.1:25112/api/health"
+port = 25112
+dir = "/home/toxic/pens/barn/products/blackbird"
+mise = true
+
+[daemons.blackbird-mcp]
+run = "exec bash -c 'set -a && . /home/toxic/pens/estate/config/ports.env && set +a && exec /home/toxic/.bun/bin/bun /home/toxic/pens/barn/products/blackbird/apps/mcp/src/server.ts --mode http'"
+auto = ["start"]
+retry = true
+ready_http = "http://127.0.0.1:25113/health"
+port = 25113
+dir = "/home/toxic/pens/barn/products/blackbird"
+mise = true
+
+[daemons.blackbird-web]
+run = "exec bash -c 'set -a && . /home/toxic/pens/estate/config/ports.env && set +a && exec /home/toxic/.bun/bin/bun /home/toxic/pens/barn/products/blackbird/apps/web/build/index.js'"
+auto = ["start"]
+retry = true
+ready_http = "http://127.0.0.1:25114/"
+port = 25114
+dir = "/home/toxic/pens/barn/products/blackbird/apps/web"
+mise = true
