@@ -80,7 +80,7 @@ dir = "/home/toxic/pens/barn/products/blackbird"
 mise = true
 
 [daemons.blackbird-mcp]
-run = "exec bash -c 'set -a && . /home/toxic/pens/estate/config/ports.env && set +a && exec /home/toxic/.bun/bin/bun /home/toxic/pens/barn/products/blackbird/apps/mcp/src/server.ts --mode http'"
+run = "exec bash -c 'set -a && . /home/toxic/pens/estate/config/ports.env && set +a && exec /home/toxic/.bun/bin/bun /home/toxic/pens/barn/products/blackbird/apps/api/src/mcp/server.ts --mode http'"
 auto = ["start"]
 retry = true
 ready_http = "http://127.0.0.1:25113/health"
@@ -96,3 +96,27 @@ ready_http = "http://127.0.0.1:25114/"
 port = 25114
 dir = "/home/toxic/pens/barn/products/blackbird/apps/web"
 mise = true
+
+[daemons.freeinference-coordinator]
+# freeinference-coordinator — System-wide concurrency gate for freeinference.org (2 concurrent limit).
+# All freeinference traffic must acquire permit from this daemon.
+# Product: pens/barn/products/freeinference-coordinator
+run = "exec /home/toxic/.bun/bin/bun /home/toxic/pens/barn/products/freeinference-coordinator/src/coordinator.ts"
+auto = ["start"]
+retry = true
+ready_http = "http://127.0.0.1:25250/health"
+port = 25250
+dir = "/home/toxic/pens/barn/products/freeinference-coordinator"
+mise = false
+
+
+[daemons.gitleaks]
+# gitleaks — Estate-aware secret scanner (gitignore-aware, extends gitleaks defaults).
+# Runs daily scan of all pens products for hardcoded secrets.
+# Product: pens/barn/products/gitleaks; Config: pens/estate/.gitleaks.yaml
+run = "exec /home/toxic/.local/bin/gitleaks detect --source /home/toxic/pens --config /home/toxic/pens/estate/.gitleaks.yaml --verbose"
+auto = ["start"]
+retry = true
+interval = "24h"
+dir = "/home/toxic/pens/barn/products/gitleaks"
+mise = false

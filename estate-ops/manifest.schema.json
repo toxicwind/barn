@@ -1,0 +1,127 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Estate Product Manifest",
+  "type": "object",
+  "required": ["version", "product", "pen", "theme", "binaries", "pitchfork", "health", "ports", "secrets", "build", "repo", "blackbird", "freeinference"],
+  "properties": {
+    "version": { "type": "integer", "const": 2 },
+    "generated": { "type": "string", "format": "date-time" },
+    "product": {
+      "type": "object",
+      "required": ["name", "description", "repo", "branch"],
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "repo": { "type": "string", "format": "uri" },
+        "branch": { "type": "string", "default": "main" },
+        "tags": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "pen": { "type": "string", "enum": ["estate", "geode", "barn", "ranch", "olympus", "kelpie"] },
+    "theme": { "type": "string" },
+    "binaries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "source", "target", "description"],
+        "properties": {
+          "name": { "type": "string" },
+          "source": { "type": "string" },
+          "target": { "type": "string" },
+          "description": { "type": "string" },
+          "args": { "type": "array", "items": { "type": "string" } },
+          "env": { "type": "object" }
+        }
+      }
+    },
+    "pitchfork": {
+      "type": "object",
+      "required": ["daemonName", "run", "auto", "retry", "port", "health"],
+      "properties": {
+        "daemonName": { "type": "string" },
+        "run": { "type": "string" },
+        "auto": { "type": "array", "items": { "type": "string" } },
+        "retry": { "type": "boolean" },
+        "interval": { "type": "string" },
+        "port": { "type": ["integer", "null"] },
+        "health": { "type": "object" },
+        "depends": { "type": "array", "items": { "type": "string" } },
+        "dir": { "type": "string" },
+        "mise": { "type": "boolean" },
+        "env": { "type": "object" }
+      }
+    },
+    "health": {
+      "type": "object",
+      "properties": {
+        "endpoint": { "type": "string" },
+        "interval": { "type": "string" },
+        "timeout": { "type": "string" },
+        "retries": { "type": "integer" }
+      }
+    },
+    "ports": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "secrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["label", "attr", "required"],
+        "properties": {
+          "label": { "type": "string" },
+          "attr": { "type": "string" },
+          "required": { "type": "boolean" },
+          "description": { "type": "string" }
+        }
+      }
+    },
+    "build": {
+      "type": "object",
+      "required": ["command", "testCommand", "lintCommand"],
+      "properties": {
+        "command": { "type": "string" },
+        "testCommand": { "type": "string" },
+        "lintCommand": { "type": "string" },
+        "outputDir": { "type": "string" }
+      }
+    },
+    "repo": {
+      "type": "object",
+      "required": ["owner", "name", "defaultBranch"],
+      "properties": {
+        "owner": { "type": "string" },
+        "name": { "type": "string" },
+        "defaultBranch": { "type": "string" },
+        "private": { "type": "boolean" }
+      }
+    },
+    "blackbird": {
+      "type": "object",
+      "required": ["enabled", "engine", "fallback"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "engine": { "type": "string", "const": "blackbird" },
+        "fallback": { "type": "string", "enum": ["degraded", "none"] }
+      }
+    },
+    "freeinference": {
+      "type": "object",
+      "required": ["enabled", "coordinator", "models"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "coordinator": { "type": "string", "const": "http://127.0.0.1:25250" },
+        "models": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "binVerify": {
+      "type": "object",
+      "required": ["expectedLinks", "allowMissing"],
+      "properties": {
+        "expectedLinks": { "type": "array", "items": { "type": "string" } },
+        "allowMissing": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}
