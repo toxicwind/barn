@@ -1,0 +1,119 @@
+{
+  "version": 2,
+  "generated": "2026-11-03T21:00:00.000Z",
+  "description": "Estate-ops symlink manifest - defines which product binaries get symlinked to ~/.local/bin",
+  "binaries": [
+    {
+      "name": "thresher",
+      "source": "/home/toxic/pens/barn/products/thresher/bin/thresher",
+      "target": "/home/toxic/.local/bin/thresher",
+      "product": "thresher",
+      "pen": "barn"
+    },
+    {
+      "name": "thresher-mcp-stdio",
+      "source": "/home/toxic/pens/barn/products/thresher/bin/thresher-mcp-stdio",
+      "target": "/home/toxic/.local/bin/thresher-mcp-stdio",
+      "product": "thresher",
+      "pen": "barn"
+    },
+    {
+      "name": "forge",
+      "source": "/home/toxic/pens/barn/products/forge/bin/forge",
+      "target": "/home/toxic/.local/bin/forge",
+      "product": "forge",
+      "pen": "barn"
+    },
+    {
+      "name": "blackbird",
+      "source": "/home/toxic/pens/barn/products/blackbird/bin/blackbird",
+      "target": "/home/toxic/.local/bin/blackbird",
+      "product": "blackbird",
+      "pen": "barn"
+    },
+    {
+      "name": "secretsmith",
+      "source": "/home/toxic/pens/barn/products/secretsmith/bin/secretsmith",
+      "target": "/home/toxic/.local/bin/secretsmith",
+      "product": "secretsmith",
+      "pen": "barn"
+    },
+    {
+      "name": "squawk",
+      "source": "/home/toxic/pens/ranch/products/squawk/bin/squawk",
+      "target": "/home/toxic/.local/bin/squawk",
+      "product": "squawk",
+      "pen": "ranch"
+    },
+    {
+      "name": "rig",
+      "source": "/home/toxic/pens/ranch/products/rig/bin/rig",
+      "target": "/home/toxic/.local/bin/rig",
+      "product": "rig",
+      "pen": "ranch"
+    },
+    {
+      "name": "github-search",
+      "source": "/home/toxic/pens/ranch/products/github-search/bin/github-search",
+      "target": "/home/toxic/.local/bin/github-search",
+      "product": "github-search",
+      "pen": "ranch"
+    },
+    {
+      "name": "rename-roundup",
+      "source": "/home/toxic/pens/ranch/products/rename-roundup/bin/run-trio.ts",
+      "target": "/home/toxic/.local/bin/rename-roundup",
+      "product": "rename-roundup",
+      "pen": "ranch"
+    },
+    {
+      "name": "tau",
+      "source": "/home/toxic/pens/olympus/products/tau/bin/tau-mcp.ts",
+      "target": "/home/toxic/.local/bin/tau",
+      "product": "tau",
+      "pen": "olympus"
+    },
+    {
+      "name": "kappa",
+      "source": "/home/toxic/pens/olympus/products/kappa/bin/kappa",
+      "target": "/home/toxic/.local/bin/kappa",
+      "product": "kappa",
+      "pen": "olympus"
+    },
+    {
+      "name": "secretsmith",
+      "source": "/home/toxic/pens/olympus/products/kryptos/bin/secretsmith",
+      "target": "/home/toxic/.local/bin/secretsmith",
+      "product": "kryptos",
+      "pen": "olympus"
+    },
+    {
+      "name": "whistle",
+      "source": "/home/toxic/pens/kelpie/products/whistle/bin/whistle",
+      "target": "/home/toxic/.local/bin/whistle",
+      "product": "whistle",
+      "pen": "kelpie"
+    },
+    {
+      "name": "ww",
+      "source": "/home/toxic/pens/kelpie/products/ww/bin/ww",
+      "target": "/home/toxic/.local/bin/ww",
+      "product": "ww",
+      "pen": "kelpie"
+    },
+    {
+      "name": "gitleaks",
+      "source": "/home/toxic/pens/barn/products/gitleaks/bin/gitleaks",
+      "target": "/home/toxic/.local/bin/gitleaks",
+      "product": "gitleaks",
+      "pen": "barn"
+    },
+    {
+      "name": "freeinference-coordinator",
+      "source": "/home/toxic/pens/barn/products/freeinference-coordinator/src/coordinator.ts",
+      "target": "/home/toxic/.local/bin/freeinference-coordinator",
+      "product": "freeinference-coordinator",
+      "pen": "barn"
+    }
+  ]
+}

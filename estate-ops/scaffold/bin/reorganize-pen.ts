@@ -71,7 +71,7 @@ const LITTER = new Set([
 
 const GREEK = new Set([
 	"tau","kappa","sigma","keryx","muse","kryptos","kairos","skopos","hodos",
-	"theta","agon","didymos","opsis","pinax","propylon","pylae","agele",
+	"theta","agon","didymos","opsis","propylon","pylae","agele",
 	"chronos-forge","antilogos","kilo","morphe",
 ]);
 const MINERAL = new Set([
