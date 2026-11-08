@@ -25,7 +25,7 @@ export const BUN_DEV_SERVICE: ServiceDef = {
   id: "bun-dev",
   name: "bun-dev-server",
   portKey: "BUN_DEV_PORT",
-  run: "exec /home/toxic/projects/bun/bun --hot run /home/toxic/estate/src/index.ts",
+  run: "exec /home/toxic/projects/bun/bun --hot run /home/toxic/pens/estate/src/index.ts",
   dir: "/home/toxic/projects/bun",
   readyCmd: "sleep 3 && echo ready",
   group: "core",

@@ -20,6 +20,15 @@ retry = true
 ready_http = "http://127.0.0.1:25127/health"
 dir = "/home/toxic/pens/barn/products/thresher"
 mise = false
+<<<<<<< Updated upstream
+=======
+# 2026-10-30 impostor fix: the bun launcher (range/thresher-serve.ts) exits after
+# spawning its Go child; the child re-parents to systemd and pitchfork's tracked
+# PID dies → 'errored' → retry → new child dies on bolt config.db lock while the
+# orphaned one keeps the port. Running the binary directly keeps the tracked PID
+# = the socket owner. api_key already lives in mcp_config.json (synced once);
+# provider keys for plugin lanes come from the ambient environment.
+>>>>>>> Stashed changes
 # NOTE: no `port` field — pitchfork's port pre-check binds 0.0.0.0 and false-
 # conflicts with tailscaled's SNI forwarder on 100.72.199.93:25127. Readiness
 # is health_http-only (2026-10-23, thresher barn move reconciliation).
