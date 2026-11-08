@@ -1,5 +1,5 @@
 # Pitchfork daemon record — lookout (isolated agent-browser display + viewer).
-# Already merged into /home/toxic/estate/pitchfork.toml; this file is the
+# Already merged into /home/toxic/pens/estate/pitchfork.toml; this file is the
 # committed record, not a merge source. Owned restart from /home/toxic/estate:
 #   ./bin/pitchfork-restart <agent-display|agent-viewer> --reregister
 #

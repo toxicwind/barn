@@ -25,8 +25,8 @@ export const PERIPHERAL_SERVICES: ServiceDef[] = [
     // ranch/squawk/fleet-feed.ts (2026-10-02). The Rust tree had no Cargo.toml
     // left in the repo, so stack/services/rust-web.sh could only ever fall into
     // `cargo build` and fail. Same three surfaces: roster, history, live ws.
-    run: "exec bun /home/toxic/estate/ranch/squawk/fleet-feed.ts",
-    dir: "/home/toxic/estate/ranch/squawk",
+    run: "exec bun /home/toxic/pens/estate/ranch/squawk/fleet-feed.ts",
+    dir: "/home/toxic/pens/estate/ranch/squawk",
     readyHttp: "/health",
     group: "core",
     autoStart: true,

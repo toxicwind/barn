@@ -34,11 +34,11 @@ class HalConfig:
     sigil_roadmap: str = "[[OPHEL::ROADMAP]]"
     sigil_short: str = "[[OPHEL::SHORT]]"
     slot_id: int = 0
-    slot_save_path: str = "/home/toxic/estate/.cache/coyote/slots"
+    slot_save_path: str = "/home/toxic/pens/estate/.cache/coyote/slots"
     session_id: str = "default"
     tab_lock_ttl: int = 10
     tab_heartbeat_interval: float = 3.0
-    log_dir: str = "/home/toxic/estate/logs/coyote"
+    log_dir: str = "/home/toxic/pens/estate/logs/coyote"
     verbose: bool = True
     metrics_enabled: bool = True
     metrics_interval: float = 10.0

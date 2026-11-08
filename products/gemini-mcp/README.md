@@ -31,7 +31,7 @@ Rotation: round-robin over healthy keys; a key is cooled down 90 s on
 
 ## Run
 
-Managed by pitchfork (`gemini-mcp` daemon in `/home/toxic/estate/pitchfork.toml`).
+Managed by pitchfork (`gemini-mcp` daemon in `/home/toxic/pens/estate/pitchfork.toml`).
 Manual: `/home/toxic/.awrawr-mcp-venv/bin/python server.py`
 
 ## SDK

@@ -26,7 +26,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 TODO = Path("/home/toxic/TODO.md")
-PARQUET = Path("/home/toxic/estate/data/todos.parquet") if Path("/home/toxic/estate/data/todos.parquet").exists() else Path("/home/toxic/estate/src/todos.parquet")
+PARQUET = Path("/home/toxic/pens/estate/data/todos.parquet") if Path("/home/toxic/pens/estate/data/todos.parquet").exists() else Path("/home/toxic/pens/estate/src/todos.parquet")
 MAILBOX = Path("/tmp/todo_mailbox.jsonl")
 PIDFILE = Path("/tmp/todo_loop.pid")
 LOG = Path("/tmp/todo_loop.log")

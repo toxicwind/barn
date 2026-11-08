@@ -40,7 +40,7 @@ the agent's display. Both at once.
 ## Files
 
 - `pitchfork.fragment.toml` — daemon records for `agent-display` and
-  `agent-viewer`. Already merged into `/home/toxic/estate/pitchfork.toml`;
+  `agent-viewer`. Already merged into `/home/toxic/pens/estate/pitchfork.toml`;
   this is the committed record. Owned restart from `/home/toxic/estate`:
   `./bin/pitchfork-restart <agent-display|agent-viewer> --reregister`
 - `README.md` — this file
