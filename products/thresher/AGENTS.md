@@ -40,7 +40,7 @@ rebuild → restart → `curl -s http://127.0.0.1:25127/health`.
 
 ## Config
 
-- SSOT: `estate/ranch/thresher/mcp_config.json` (mode 0600).
+- SSOT: `/home/toxic/pens/barn/products/thresher/mcp_config.json` (mode 0600) — the ONLY mcp_config on the box. All estate/config/* copies were deleted 2026-11-04 (archived at pens/estate/archive/20261104-kappa-mcp-config-consolidation/). Never recreate copies or symlinks.
 - Seed from `mcp_config.json.dist` when missing (the serve script does it).
 - The API key comes from the **secretsmith keyring** (via `secretsmith env`,
   fallback `~/.secrets`) — never hardcoded, and **quotes must be stripped**
@@ -55,7 +55,7 @@ a decision, not an oversight.
 ## Verification before claiming done
 
 ```bash
-bash /home/toxic/pens/estate/bin/bin-verify.sh          # link contract (30 ok)
+bash /home/toxic/estate/bin/bin-verify.sh          # link contract (30 ok)
 /home/toxic/pens/audit-links.sh                     # product contract (26 ok)
 python3 /home/toxic/pens/barn/thresher/tests/timing_regression.py
 go test ./... -coverprofile=coverage.out            # see docs/COVERAGE.md

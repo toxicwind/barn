@@ -9,7 +9,7 @@
       "name": "estate-scripts-tools",
       "protocol": "stdio",
       "command": "bun",
-      "args": ["/home/toxic/pens/estate/helpers/estate-scripts-mcp-server.ts"],
+      "args": ["/home/toxic/estate/helpers/estate-scripts-mcp-server.ts"],
       "enabled": true
     }
   ]

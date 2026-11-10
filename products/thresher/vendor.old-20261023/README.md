@@ -38,5 +38,5 @@ graph TD
 ```bash
 # Build binary with Zen 4 optimization
 go build -v -ldflags="-s -w" -o mcpproxy .
-./mcpproxy --config /home/toxic/pens/estate/config/mcpproxy.json
+./mcpproxy --config /home/toxic/estate/config/mcpproxy.json
 ```

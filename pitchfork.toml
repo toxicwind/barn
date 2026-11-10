@@ -1,131 +1,42 @@
-# Per-pen pitchfork config partitioned from estate monolith 2026-10-29
-# Merge-conflict resolution 2026-10-31: took origin/main side (products/ + ergasterion
-# paths) for all blocks — HEAD side held stale pre-reorg paths (barn/corral/delendai,
-# ranch/range, barn/{nativelink,chute} at top level) that no longer exist.
-# Verified live: pens/ranch/products/range/bin/thresher-serve.ts,
-# pens/ergasterion/hephaistos/, pens/barn/products/{thresher,nativelink,chute}.
-[daemons.delendai-web]
-run = "exec /home/toxic/pens/ergasterion/hephaistos/apps/web/node_modules/.bin/astro preview --host 127.0.0.1 --port 25197"
-auto = []
-retry = true
-ready_http = "http://127.0.0.1:25197/"
-boot_start = false
-dir = "/home/toxic/pens/ergasterion/hephaistos/apps/web"
-mise = true
-
+# Restored 2026-11-09 from quarantine/mise-pitchfork/barn__pitchfork.toml (thresher only; additive).
 [daemons.thresher]
 run = "exec /home/toxic/pens/barn/products/thresher/bin/serve-guarded.sh"
-auto = ["start"]
 retry = true
 ready_http = "http://127.0.0.1:25127/health"
 dir = "/home/toxic/pens/barn/products/thresher"
 mise = false
-<<<<<<< Updated upstream
-=======
-# 2026-10-30 impostor fix: the bun launcher (range/thresher-serve.ts) exits after
-# spawning its Go child; the child re-parents to systemd and pitchfork's tracked
-# PID dies → 'errored' → retry → new child dies on bolt config.db lock while the
-# orphaned one keeps the port. Running the binary directly keeps the tracked PID
-# = the socket owner. api_key already lives in mcp_config.json (synced once);
-# provider keys for plugin lanes come from the ambient environment.
->>>>>>> Stashed changes
-# NOTE: no `port` field — pitchfork's port pre-check binds 0.0.0.0 and false-
-# conflicts with tailscaled's SNI forwarder on 100.72.199.93:25127. Readiness
-# is health_http-only (2026-10-23, thresher barn move reconciliation).
+# No `port` field: pre-check binds 0.0.0.0 and false-conflicts with tailscaled SNI forwarder on :25127. ready_http only.
 
-[daemons.mesh-hub]
-run = "exec bun run src/services/mesh-hub.ts"
-auto = ["start"]
-retry = true
-ready_http = "http://127.0.0.1:25115/health"
-port = 25115
-depends = ["thresher"]
-dir = "/home/toxic/pens/barn"
-mise = true
-
-
-[daemons.forge-web]
-run = "exec /home/toxic/.bun/bin/bun run --cwd /home/toxic/pens/barn/products/nativelink/web/apps/web start --port 25164"
-auto = ["start"]
-retry = true
-ready_http = "http://127.0.0.1:25164/"
-port = 25164
-boot_start = true
-dir = "/home/toxic/pens/barn/products/nativelink/web/apps/web"
-mise = true
-
-[daemons.forge-docs]
-run = "exec /home/toxic/.bun/bin/bun run --cwd /home/toxic/pens/barn/products/nativelink/web/apps/docs start --port 25165"
-auto = ["start"]
-retry = true
-ready_http = "http://127.0.0.1:25165/"
-port = 25165
-boot_start = true
-dir = "/home/toxic/pens/barn/products/nativelink/web/apps/docs"
-mise = true
-
-[daemons.tau-chute]
-run = "exec /usr/bin/node chute.mjs --port 25111 -- /home/toxic/.local/bin/tau acp"
-auto = ["start"]
-retry = true
-ready_port = 25111
-port = 25111
-dir = "/home/toxic/pens/barn/products/chute"
-mise = true
-
-# blackbird — the barn product consolidating github-search + ghas (2026-11-02).
-# GitHub search lane: blackbird engine (UI index) first, REST fallback.
-# api :25112 · mcp :25113 (thresher upstream) · web :25114 (sveltekit).
-# blackbird daemons source estate ports.env first — the servers require
-# BLACKBIRD_*_PORT from env (estate/config/ports.env is the port registry
-# SSOT; without sourcing, the daemons crash on requirePort at boot).
+# blackbird: barn product (github code search). api :25112, mcp :25113 (thresher upstream), web :25114.
+# Ports are passed as explicit env: no dependency on any ports.env path. ready_http only, no `port` field.
 [daemons.blackbird-api]
-run = "exec bash -c 'set -a && . /home/toxic/pens/estate/config/ports.env && set +a && exec /home/toxic/.bun/bin/bun /home/toxic/pens/barn/products/blackbird/apps/api/src/server.ts'"
-auto = ["start"]
-retry = true
-ready_http = "http://127.0.0.1:25112/api/health"
-port = 25112
+run = "exec /home/toxic/.bun/bin/bun /home/toxic/pens/barn/products/blackbird/apps/api/src/server.ts"
 dir = "/home/toxic/pens/barn/products/blackbird"
-mise = true
+retry = true
+mise = false
+ready_http = "http://127.0.0.1:25112/api/health"
+env = { BLACKBIRD_API_PORT = "25112", BLACKBIRD_MCP_PORT = "25113", BLACKBIRD_WEB_PORT = "25114" }
 
 [daemons.blackbird-mcp]
-run = "exec bash -c 'set -a && . /home/toxic/pens/estate/config/ports.env && set +a && exec /home/toxic/.bun/bin/bun /home/toxic/pens/barn/products/blackbird/apps/api/src/mcp/server.ts --mode http'"
-auto = ["start"]
-retry = true
-ready_http = "http://127.0.0.1:25113/health"
-port = 25113
+run = "exec /home/toxic/.bun/bin/bun /home/toxic/pens/barn/products/blackbird/apps/api/src/mcp/server.ts --mode http"
 dir = "/home/toxic/pens/barn/products/blackbird"
-mise = true
+retry = true
+mise = false
+ready_http = "http://127.0.0.1:25113/health"
+env = { BLACKBIRD_API_PORT = "25112", BLACKBIRD_MCP_PORT = "25113", BLACKBIRD_WEB_PORT = "25114" }
 
 [daemons.blackbird-web]
-run = "exec bash -c 'set -a && . /home/toxic/pens/estate/config/ports.env && set +a && exec /home/toxic/.bun/bin/bun /home/toxic/pens/barn/products/blackbird/apps/web/build/index.js'"
-auto = ["start"]
-retry = true
-ready_http = "http://127.0.0.1:25114/"
-port = 25114
+run = "exec /home/toxic/.bun/bin/bun /home/toxic/pens/barn/products/blackbird/apps/web/build/index.js"
 dir = "/home/toxic/pens/barn/products/blackbird/apps/web"
-mise = true
-
-[daemons.freeinference-coordinator]
-# freeinference-coordinator — System-wide concurrency gate for freeinference.org (2 concurrent limit).
-# All freeinference traffic must acquire permit from this daemon.
-# Product: pens/barn/products/freeinference-coordinator
-run = "exec /home/toxic/.bun/bin/bun /home/toxic/pens/barn/products/freeinference-coordinator/src/coordinator.ts"
-auto = ["start"]
 retry = true
-ready_http = "http://127.0.0.1:25250/health"
-port = 25250
-dir = "/home/toxic/pens/barn/products/freeinference-coordinator"
 mise = false
+ready_http = "http://127.0.0.1:25114/"
+env = { BLACKBIRD_API_PORT = "25112", BLACKBIRD_MCP_PORT = "25113", BLACKBIRD_WEB_PORT = "25114", PORT = "25114" }
 
-
-[daemons.gitleaks]
-# gitleaks — Estate-aware secret scanner (gitignore-aware, extends gitleaks defaults).
-# Runs daily scan of all pens products for hardcoded secrets.
-# Product: pens/barn/products/gitleaks; Config: pens/estate/.gitleaks.yaml
-run = "exec /home/toxic/.local/bin/gitleaks detect --source /home/toxic/pens --config /home/toxic/pens/estate/.gitleaks.yaml --verbose"
-auto = ["start"]
+# hindsight: tau memory backend (api :25117). Fresh launcher in barn; replaces the dead estate/hindsight entry.
+[daemons.hindsight]
+run = "exec /home/toxic/pens/barn/products/hindsight/serve.sh"
+dir = "/home/toxic/pens/barn/products/hindsight"
 retry = true
-interval = "24h"
-dir = "/home/toxic/pens/barn/products/gitleaks"
 mise = false
+ready_http = "http://127.0.0.1:25117/health"
