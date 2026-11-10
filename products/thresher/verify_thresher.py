@@ -36,7 +36,7 @@ import sys
 import time
 from pathlib import Path
 
-BASE = Path("/home/toxic/pens/estate/ranch/barn/thresher")
+BASE = Path("/home/toxic/estate/ranch/barn/thresher")
 LIVE_CFG = BASE / "mcp_config.json"
 DIST_CFG = BASE / "mcp_config.json.dist"
 CLIENT = Path("/home/toxic/.local/bin/thresher-client.py")

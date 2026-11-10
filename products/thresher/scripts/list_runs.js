@@ -1,8 +1,8 @@
 // Thresher Stored Script: list_runs
-// Lists recent runs in /home/toxic/pens/estate/runs/
+// Lists recent runs in /home/toxic/estate/runs/
 const limit = input?.limit ?? 10;
 const listRes = call_tool("desktop-commander", "start_process", {
-  command: `ls -1dt /home/toxic/pens/estate/runs/*/ 2>/dev/null | head -n ${limit}`,
+  command: `ls -1dt /home/toxic/estate/runs/*/ 2>/dev/null | head -n ${limit}`,
   timeout_ms: 5000
 });
 
