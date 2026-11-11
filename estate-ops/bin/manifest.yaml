@@ -352,7 +352,7 @@ links:
     target: /home/toxic/.bun/bin/jscpd
     pens_proximity: true
   - name: kairos
-    target: "/home/toxic/pens/estate/products/estate-ops/kairos"
+    target: "/home/toxic/pens/ranch/products/ops/bin/kairos"
     pens_proximity: true
   - name: kappa
     target: "/home/toxic/pens/olympus/products/kappa/kappa-code/packages/cli/dist/@kappacode/cli-linux-x64/bin/kappa"
@@ -567,8 +567,8 @@ links:
   - name: "saturation-watchdog"
     target: "/home/toxic/pens/estate/products/estate-ops/saturation-watchdog"
     pens_proximity: true
-  - name: secretsmith
-    target: /home/toxic/pens/olympus/products/kryptos/bin/secretsmith
+  - name: kryptos
+    target: /home/toxic/pens/olympus/products/kryptos/bin/kryptos
     pens_proximity: true
   - name: "session-audit"
     target: "/home/toxic/pens/estate/products/estate-ops/bin/session-audit"
@@ -1569,7 +1569,7 @@ bins:
     size: 27572352
     notes: binary; executable; 26MB
     pens_proximity: false
-  - name: "secretsmith-env"
+  - name: "kryptos-env"
     dir: .local/bin
     kind: script
     shebang: "#!/usr/bin/env bash"
@@ -3059,7 +3059,7 @@ bins:
     size: 4259
     notes: script (bash); executable
     pens_proximity: true
-  - name: "secretsmith-env"
+  - name: "kryptos-env"
     dir: "pens/estate/products/estate-ops/bin"
     kind: script
     shebang: "#!/usr/bin/env bash"
