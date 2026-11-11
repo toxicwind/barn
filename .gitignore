@@ -18,3 +18,16 @@ node_modules/
 # peer products: referenced not owned, auto-ignored (submoduleless doctrine)
 /products/
 /archive/
+
+# Keys & secrets — never commit
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.keyring
+*.secret
+.env
+.env.*
+!*.example
