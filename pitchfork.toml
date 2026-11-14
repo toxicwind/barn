@@ -22,7 +22,7 @@ run = "exec /home/toxic/.bun/bin/bun /home/toxic/pens/barn/products/blackbird/ap
 dir = "/home/toxic/pens/barn/products/blackbird"
 retry = true
 mise = false
-ready_http = "http://127.0.0.1:25113/health"
+ready_http = "http://127.0.0.1:25113/healthz"
 env = { BLACKBIRD_API_PORT = "25112", BLACKBIRD_MCP_PORT = "25113", BLACKBIRD_WEB_PORT = "25114" }
 
 [daemons.blackbird-web]
@@ -40,3 +40,32 @@ dir = "/home/toxic/pens/barn/products/hindsight"
 retry = true
 mise = false
 ready_http = "http://127.0.0.1:25117/health"
+
+# buildbuddy: flux product (REAPI cache + unified build frontend/UI). HTTP app +
+# gRPC-over-HTTP on 25217; native gRPC (REAPI) on 25218. no `port` field
+# (pre-check would 0.0.0.0-conflict); ready_http on the app port.
+[daemons.buildbuddy]
+run = "exec /home/toxic/pens/flux/products/buildbuddy/bin/serve.sh"
+dir = "/home/toxic/pens/flux/products/buildbuddy"
+retry = true
+mise = false
+ready_http = "http://127.0.0.1:25217/"
+
+# nativelink: barn product (REAPI executor). CAS/AC gRPC-backed by buildbuddy
+# (:25218). frontend(scheduler/client) 25155, worker_api 25157 (ports SSOT).
+# no `port` field (pre-check 0.0.0.0 conflicts); ready_http on worker_api.
+[daemons.nativelink]
+run = "exec /home/toxic/pens/ranch/forge/ops/nativelink/run.sh"
+dir = "/home/toxic/pens/barn/products/nativelink"
+retry = true
+mise = false
+ready_http = "http://127.0.0.1:25157/health"
+env = { BUILDBUDDY_GRPC_PORT = "25218", NATIVELINK_FRONTEND_PORT = "25155", NATIVELINK_WORKER_PORT = "25157" }
+
+# tau-acp: Monotau native ACP daemon on :25111 (supersedes chute stdio spawner)
+[daemons.tau-acp]
+run = "exec /home/toxic/.bun/bin/bun /home/toxic/pens/olympus/products/tau/packages/coding-agent/src/cli.ts acp --port 25111"
+dir = "/home/toxic/pens/olympus/products/tau/packages/coding-agent"
+retry = true
+mise = false
+ready_port = 25111
