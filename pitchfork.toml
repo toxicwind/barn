@@ -33,7 +33,7 @@ mise = false
 ready_http = "http://127.0.0.1:25114/"
 env = { BLACKBIRD_API_PORT = "25112", BLACKBIRD_MCP_PORT = "25113", BLACKBIRD_WEB_PORT = "25114", PORT = "25114" }
 
-# hindsight: tau memory backend (api :25117). Fresh launcher in barn; replaces the dead estate/hindsight entry.
+# hindsight: tau memory backend (api :25117). Fresh launcher in barn; replaces the dead pens/hindsight entry.
 [daemons.hindsight]
 run = "exec /home/toxic/pens/barn/products/hindsight/serve.sh"
 dir = "/home/toxic/pens/barn/products/hindsight"
@@ -69,3 +69,16 @@ dir = "/home/toxic/pens/olympus/products/tau/packages/coding-agent"
 retry = true
 mise = false
 ready_port = 25111
+
+# freeinference-coordinator: system-wide 2-permit semaphore on :25250. ALL
+# freeinference traffic (mimetite, tau, keypool, bornite) MUST serialize through
+# this one wall or concurrent calls collide → recurring 429/`QUEUED` storms.
+# Previously built (v2.0.0) but never registered here, so it died on interrupt
+# and the storm returned every freeinference-heavy turn. Now durable.
+[daemons.freeinference-coordinator]
+run = "exec /home/toxic/.bun/bin/bun /home/toxic/pens/barn/products/freeinference-coordinator/src/coordinator.ts"
+dir = "/home/toxic/pens/barn/products/freeinference-coordinator"
+retry = true
+mise = false
+ready_http = "http://127.0.0.1:25250/health"
+port = 25250
