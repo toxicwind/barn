@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * thresher-mcp-stdio — bridge the Estate Thresher (streamable-http MCP at
+ * thresher-mcp-stdio — bridge the pens Thresher (streamable-http MCP at
  * 127.0.0.1:25127/mcp) into a stdio MCP server, so stdio-only MCP clients
  * (e.g. the Rig kernel) can consume Thresher / kappa / skills tools.
  *
@@ -14,19 +14,19 @@
  *     name = "mesh-gateway"
  *     [mcp_servers.transport]
  *       type = "stdio"
- *       command = "/home/toxic/estate/bin/thresher-mcp-stdio"
+ *       command = "/home/toxic/pens/pens/bin/thresher-mcp-stdio"
  *       args = ["http://127.0.0.1:25127/mcp"]
  */
 
 import { createInterface } from "node:readline";
 
 const URL = process.argv[2] || process.env.MCP_PROXY_URL || "http://127.0.0.1:25127/mcp";
-// API key comes from the secretsmith keyring (SSOT, AGENTS.md rule 3) via
-// `secretsmith env` or the ~/.secrets fallback — never a literal in source.
+// API key comes from the kryptos keyring (SSOT, AGENTS.md rule 3) via
+// `kryptos env` or the ~/.secrets fallback — never a literal in source.
 const API_KEY =
   process.env.THRESHER_KEY ||
   process.env.MCPPROXY_API_KEY ||
-  process.env.ESTATE_MCP_API_KEY ||
+  process.env.pens_MCP_API_KEY ||
   "";
 let sessionId: string | undefined;
 

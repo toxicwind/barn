@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Coyote Loop v3.1 — Max Level Autonomous Agent
-First-class estate service. OpenFang agent with Yote integration.
+First-class pens service. OpenFang agent with Yote integration.
 HTTP server for task ingestion + health checks (pitchfork-compatible).
 """
 
@@ -34,11 +34,11 @@ class HalConfig:
     sigil_roadmap: str = "[[OPHEL::ROADMAP]]"
     sigil_short: str = "[[OPHEL::SHORT]]"
     slot_id: int = 0
-    slot_save_path: str = "/home/toxic/pens/estate/.cache/coyote/slots"
+    slot_save_path: str = "/home/toxic/pens/pens/.cache/coyote/slots"
     session_id: str = "default"
     tab_lock_ttl: int = 10
     tab_heartbeat_interval: float = 3.0
-    log_dir: str = "/home/toxic/pens/estate/logs/coyote"
+    log_dir: str = "/home/toxic/pens/pens/logs/coyote"
     verbose: bool = True
     metrics_enabled: bool = True
     metrics_interval: float = 10.0

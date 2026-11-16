@@ -26,7 +26,7 @@ import {
 } from "../lib/herd_ssot.ts";
 
 const HOME = homedir();
-const SOV = process.env.ESTATE_ROOT || join(HOME, "estate");
+const SOV = process.env.pens_ROOT || join(HOME, "pens");
 const outDir = join(SOV, ".state");
 mkdirSync(outDir, { recursive: true });
 
@@ -97,8 +97,8 @@ raw = p.read_text()
 data = json5.loads(raw)
 lm = data.setdefault("language_models", {})
 changed = False
-if "estate-herd" in lm:
-    del lm["estate-herd"]
+if "pens-herd" in lm:
+    del lm["pens-herd"]
     changed = True
 want_url = ${JSON.stringify(swapBaseUrl())}
 cur = lm.get("llama.cpp") or {}

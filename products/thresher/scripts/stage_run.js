@@ -1,11 +1,11 @@
 // Thresher Stored Script: stage_run
-// Stages run files and metadata into /home/toxic/estate/runs/<run_id>/
+// Stages run files and metadata into /home/toxic/Pens/runs/<run_id>/
 const now = new Date();
 const pad = (n) => String(n).padStart(2, "0");
 const defaultRunId = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
 
 const runId = input?.run_id ?? defaultRunId;
-const targetDir = `/home/toxic/estate/runs/${runId}`;
+const targetDir = `/home/toxic/Pens/runs/${runId}`;
 
 // 1. Ensure run directory exists
 const dirRes = call_tool("desktop-commander", "create_directory", { path: targetDir });
@@ -31,7 +31,7 @@ const manifest = {
   target_dir: targetDir,
   metadata: input?.metadata ?? {},
   staged_files: stagedFiles,
-  sync_target: "dropbox:estate-scripts/runs",
+  sync_target: "dropbox:Pens-scripts/runs",
   sync_policy: "autonomous_host_runner"
 };
 

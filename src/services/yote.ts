@@ -645,7 +645,7 @@ const app = serve({
       // Full path: OpenFang chat + bot message to real id
       const msg =
         u.searchParams.get("msg") ||
-        "Pup Trix probe: reply with ESTATE_YOTE_OK";
+        "Pup Trix probe: reply with pens_YOTE_OK";
       const agent = u.searchParams.get("agent") || DEFAULT_AGENT;
       const of = await ofClient.chat(msg, { agent, max_tokens: 128 });
       const text = of.ok

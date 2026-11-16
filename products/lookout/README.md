@@ -1,6 +1,6 @@
 # lookout
 
-> 🗺️ Part of [**the ranch**](https://github.com/toxicwind/ranch) — the whole inference estate, one map.
+> 🗺️ Part of [**the ranch**](https://github.com/toxicwind/ranch) — the whole inference Pens, one map.
 
 The ranch's watchtower. An isolated virtual display where the agent browser
 lives, plus an interactive web viewer so the Architect can climb up and see what
@@ -40,8 +40,8 @@ the agent's display. Both at once.
 ## Files
 
 - `pitchfork.fragment.toml` — daemon records for `agent-display` and
-  `agent-viewer`. Already merged into `/home/toxic/pens/estate/pitchfork.toml`;
-  this is the committed record. Owned restart from `/home/toxic/estate`:
+  `agent-viewer`. Already merged into `/home/toxic/pens/Pens/pitchfork.toml`;
+  this is the committed record. Owned restart from `/home/toxic/pens/Pens`:
   `./bin/pitchfork-restart <agent-display|agent-viewer> --reregister`
 - `README.md` — this file
 

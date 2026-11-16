@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """verify_thresher.py — Thresher MCP fleet verification harness.
 
-Catches two failure classes found on the estate (2026-10-13):
+Catches two failure classes found on the Pens (2026-10-13):
   1. Silent drift: live mcp_config.json (gitignored) diverges from the
      durable mcp_config.json.dist, so servers added live die on restart.
   2. DEAD-EMPTY servers: a server shows "running"/enabled while its config
@@ -36,7 +36,7 @@ import sys
 import time
 from pathlib import Path
 
-BASE = Path("/home/toxic/estate/ranch/barn/thresher")
+BASE = Path("/home/toxic/Pens/ranch/barn/thresher")
 LIVE_CFG = BASE / "mcp_config.json"
 DIST_CFG = BASE / "mcp_config.json.dist"
 CLIENT = Path("/home/toxic/.local/bin/thresher-client.py")

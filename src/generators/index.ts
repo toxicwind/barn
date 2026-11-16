@@ -11,7 +11,7 @@
 // (defined in generator, not in pitchfork, not observed running).
 // ============================================================================
 // ============================================================================
-// ESTATE — Generator Index
+// pens — Generator Index
 // ============================================================================
 
 import { join } from "node:path";
@@ -25,7 +25,7 @@ const GENERATORS: Generator[] = [pitchforkGenerator, miseGenerator];
 
 export async function generateAll(root: string = process.cwd()): Promise<void> {
   console.log(
-    "🔧 Generating estate configs from ports.env + service definitions...",
+    "🔧 Generating pens configs from ports.env + service definitions...",
   );
 
   // Deduplicate services by id (keep the first occurrence)

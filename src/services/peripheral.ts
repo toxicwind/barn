@@ -1,5 +1,5 @@
 // ============================================================================
-// ESTATE — Peripheral Services (Optional)
+// pens — Peripheral Services (Optional)
 // ============================================================================
 
 import type { ServiceDef } from "../types/index.ts";
@@ -25,8 +25,8 @@ export const PERIPHERAL_SERVICES: ServiceDef[] = [
     // ranch/squawk/fleet-feed.ts (2026-10-02). The Rust tree had no Cargo.toml
     // left in the repo, so stack/services/rust-web.sh could only ever fall into
     // `cargo build` and fail. Same three surfaces: roster, history, live ws.
-    run: "exec bun /home/toxic/pens/estate/ranch/squawk/fleet-feed.ts",
-    dir: "/home/toxic/pens/estate/ranch/squawk",
+    run: "exec bun /home/toxic/pens/pens/ranch/squawk/fleet-feed.ts",
+    dir: "/home/toxic/pens/pens/ranch/squawk",
     readyHttp: "/health",
     group: "core",
     autoStart: true,
@@ -64,7 +64,7 @@ export const PERIPHERAL_SERVICES: ServiceDef[] = [
     // Real daemon managed by pitchfork.d/hodos.toml on :25193.
     // This peripheral entry is doc-only (not auto-started; real hodos
     // is in [daemons.hodos] in pitchfork.toml via serve.sh).
-    run: "NOOP — managed by pitchfork.d/hodos.toml, see estate/pitchfork.toml [daemons.hodos]",
+    run: "NOOP — managed by pitchfork.d/hodos.toml, see pens/pitchfork.toml [daemons.hodos]",
     dir: "/home/toxic/pens/olympus/products/hodos/proxy",
     readyHttp: "/health",
     group: "aux",

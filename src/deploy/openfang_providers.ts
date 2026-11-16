@@ -14,14 +14,14 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { loadEstatePorts, requireEnv } from "../lib/ports.ts";
+import { loadpensPorts, requireEnv } from "../lib/ports.ts";
 
-loadEstatePorts();
+loadpensPorts();
 const HOME = homedir();
 const OF = join(HOME, ".openfang");
 const BACKUP = join(
   HOME,
-  "estate/backup/reorg_2026-07-11_bun/openfang_pre_llama_provider",
+  "pens/backup/reorg_2026-07-11_bun/openfang_pre_llama_provider",
 );
 const SWAP = `http://127.0.0.1:${requireEnv("HERD_PORT")}/v1`;
 

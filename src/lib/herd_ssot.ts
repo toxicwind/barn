@@ -9,9 +9,9 @@
  * Clients must NOT hardcode full GGUF inventories. Point base_url at :25100 and
  * list/discover via these endpoints (or SSE auto_discover for Zed).
  */
-import { loadEstatePorts, requirePort } from "./ports.ts";
+import { loadpensPorts, requirePort } from "./ports.ts";
 
-loadEstatePorts();
+loadpensPorts();
 
 export type SwapModel = {
   id: string;
@@ -223,6 +223,6 @@ export HERD_MODELS_SSE=${sse}
 export LLAMA_MODELS_SSE_URL=${sse}
 export LLAMA_CHAT_URL=${v1}/chat/completions
 export HERD_MODEL=${dm}
-export ESTATE_LLM=${v1}
+export pens_LLM=${v1}
 `;
 }

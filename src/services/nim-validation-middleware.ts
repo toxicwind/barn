@@ -5,9 +5,9 @@
  * Uses Zod schemas that match our NIM client library types
  */
 
-import { loadEstatePorts } from "../lib/ports.ts";
+import { loadpensPorts } from "../lib/ports.ts";
 
-loadEstatePorts();
+loadpensPorts();
 
 import { z } from "zod";
 

@@ -1,5 +1,5 @@
 // ============================================================================
-// ESTATE — Ports Parser (config/ports.env)
+// pens — Ports Parser (config/ports.env)
 // ============================================================================
 
 import { readFileSync } from "node:fs";

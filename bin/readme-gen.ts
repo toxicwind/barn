@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // readme-gen.ts — thin per-pen entrypoint that delegates to the MASTER generator.
-// The estate's one README generator is pens/toolkit/readme-gen.ts (driven by the
+// The pens's one README generator is pens/toolkit/readme-gen.ts (driven by the
 // product registry + git remotes + ports SSOT). This shim exists so
 // `bun run readme` / `bun bin/readme-gen.ts` work from any pen; it is NOT a
 // second generator.

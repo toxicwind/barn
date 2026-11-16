@@ -12,7 +12,7 @@
       "enabled": true,
       "aliases": []
     },
-    "estate-tailscale": {
+    "pens-tailscale": {
       "enabled": true,
       "aliases": []
     },
@@ -48,7 +48,7 @@
       "enabled": true,
       "aliases": []
     },
-    "secretsmith": {
+    "kryptos": {
       "enabled": true,
       "aliases": []
     },
@@ -76,11 +76,11 @@
       "enabled": true,
       "aliases": []
     },
-    "estate-mesh": {
+    "pens-mesh": {
       "enabled": true,
       "aliases": []
     },
-    "estate-ops": {
+    "pens-ops": {
       "enabled": true,
       "aliases": []
     },

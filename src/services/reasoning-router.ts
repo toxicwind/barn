@@ -4,9 +4,9 @@
  * Integrates with herd :25100 config matrix
  */
 
-import { loadEstatePorts } from "../lib/ports.ts";
+import { loadpensPorts } from "../lib/ports.ts";
 
-loadEstatePorts();
+loadpensPorts();
 
 const HERD_BASE = `http://127.0.0.1:${process.env.HERD_PORT || process.env.HERD_PORT || "25100"}`;
 const _HERD_BASE = HERD_BASE; // alias for project-wide herd naming (tau: any pi/omp -> tau)

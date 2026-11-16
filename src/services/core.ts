@@ -1,5 +1,5 @@
 // ============================================================================
-// ESTATE — Core Infrastructure Services
+// pens — Core Infrastructure Services
 // ============================================================================
 import type { ServiceDef } from "../types/index.ts";
 export const CORE_SERVICES: ServiceDef[] = [
@@ -8,7 +8,7 @@ export const CORE_SERVICES: ServiceDef[] = [
     name: "herd",
     portKey: "HERD_PORT",
     run: "exec ./stack/services/herd.sh --host 127.0.0.1 --port ${HERD_PORT}",
-    dir: "/home/toxic/pens/estate",
+    dir: "/home/toxic/pens/pens",
     readyHttp: "/health",
     group: "core",
     autoStart: true,
@@ -47,7 +47,7 @@ export const CORE_SERVICES: ServiceDef[] = [
     // /home/toxic/tau and its config root is .tau, not .pi -- an absolute
     // PI_CONFIG_DIR doubles to $HOME/$HOME/... (pi-utils/src/dirs.ts:112).
     run: "exec /home/toxic/.bun/bin/bun run /home/toxic/tau/packages/coding-agent/src/cli.ts --session-dir /home/toxic/.tau/agent/sessions",
-    dir: "/home/toxic/pens/estate",
+    dir: "/home/toxic/pens/pens",
     group: "core",
     autoStart: false,
     mise: false,

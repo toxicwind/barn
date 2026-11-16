@@ -2,7 +2,7 @@
 
 ## Current state
 - ~/.secrets: 264 KEY=value lines (flat file)
-- secretsmith: Secret Service CLI at barn/secretsmith/
+- kryptos: Secret Service CLI at barn/kryptos/
 - bw: Bitwarden CLI installed via mise
 
 ## Target
@@ -11,7 +11,7 @@
   - Read-only Bitwarden backend today
   - Apps using libsecret can read from Bitwarden
 - Migrate ~/.secrets entries into Bitwarden collections
-- Drop estate-scripts_ env prefix (already done in READMEs)
+- Drop pens-scripts_ env prefix (already done in READMEs)
 
 ## Next steps
 1. Install/configure rosec with Bitwarden provider

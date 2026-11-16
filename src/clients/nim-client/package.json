@@ -1,5 +1,5 @@
 {
-  "name": "@estate/nim-client",
+  "name": "@pens/nim-client",
   "version": "1.0.0",
   "description": "NVIDIA NIM API Client Library with full parameter support, retry logic, rate limiting, and streaming",
   "main": "dist/index.js",

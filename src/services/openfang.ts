@@ -21,13 +21,13 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { loadEstatePorts, requirePort } from "../lib/ports.ts";
+import { loadpensPorts, requirePort } from "../lib/ports.ts";
 
-loadEstatePorts();
+loadpensPorts();
 const HOME = process.env.HOME || "/home/toxic";
 const PUBLIC = requirePort("OPENFANG_PORT");
 const KERNEL = requirePort("OPENFANG_KERNEL_PORT");
-const SOV = process.env.ESTATE_ROOT || resolve(HOME, "estate");
+const SOV = process.env.pens_ROOT || resolve(HOME, "pens");
 
 function loadSecretsFile(path: string) {
   if (!existsSync(path)) return;
@@ -93,7 +93,7 @@ const front = Bun.spawn({
     "--service",
     "openfang",
     // 2026-10-15: bind loopback, not 0.0.0.0 — recon front is internal-only,
-    // the tailnet is reached via estate-chat; remove the nftables dependency.
+    // the tailnet is reached via pens-chat; remove the nftables dependency.
     "--listen",
     `127.0.0.1:${PUBLIC}`,
     "--backend",

@@ -1,4 +1,4 @@
-# bunfig.toml — maximal default for every estate project.
+# bunfig.toml — maximal default for every pens project.
 # Proven patterns borrowed from oh-my-pi + vendored/bun + DelendAI.
 # See https://bun.sh/docs/runtime/bunfig
 
@@ -8,7 +8,7 @@ telemetry = false
 exact = true
 linker = "hoisted"
 saveTextLockfile = true
-# Supply-chain / coordination window (estate convention). Tune per project.
+# Supply-chain / coordination window (pens convention). Tune per project.
 minimumReleaseAge = 259200 # 3 days in seconds
 minimumReleaseAgeExcludes = [
   "@types/bun",
@@ -53,5 +53,4 @@ reporter = "text"
 bun = true
 
 [env]
-BUN_BASE_URL = "https://staging.example.com"
 BUN_CONCURRENCY = "8"

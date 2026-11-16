@@ -1,6 +1,6 @@
 # Nexus (mcpproxy-go)
 
-> **The estate MCP tool federation, security firewall, and agent gateway. Connects 231+ tools across 18 servers with zero token bloat.**  
+> **The Pens MCP tool federation, security firewall, and agent gateway. Connects 231+ tools across 18 servers with zero token bloat.**  
 > Canonical Lineage: **[toxicwind/mcpproxy-go](https://github.com/toxicwind/mcpproxy-go)** & **[toxicwind/nexus](https://github.com/toxicwind/nexus)** (Upstream: [smart-mcp-proxy/mcpproxy-go](https://github.com/smart-mcp-proxy/mcpproxy-go))
 
 [![CI](https://github.com/toxicwind/mcpproxy-go/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/toxicwind/mcpproxy-go/actions)
@@ -38,5 +38,5 @@ graph TD
 ```bash
 # Build binary with Zen 4 optimization
 go build -v -ldflags="-s -w" -o mcpproxy .
-./mcpproxy --config /home/toxic/estate/config/mcpproxy.json
+./mcpproxy --config /home/toxic/Pens/config/mcpproxy.json
 ```

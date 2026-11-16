@@ -5,8 +5,8 @@ authoritative; this file refines it for thresher only.
 
 ## What this is
 
-A fork of `smart-mcp-proxy/mcpproxy-go` (upstream HEAD `c82d515d`) with estate
-patches. It is the estate's MCP federation + control surface on `:25127/mcp`.
+A fork of `smart-mcp-proxy/mcpproxy-go` (upstream HEAD `c82d515d`) with Pens
+patches. It is the Pens's MCP federation + control surface on `:25127/mcp`.
 
 ## Ownership
 
@@ -15,7 +15,7 @@ patches. It is the estate's MCP federation + control surface on `:25127/mcp`.
   snapshots, reference only.
 - **Never edit** `_archive/` — archived snapshots, do not touch.
 - **One writer per subtree**: upstream files belong to upstream (rebase, don't
-  hand-edit); estate commits belong to us.
+  hand-edit); Pens commits belong to us.
 - The binary is built from `./cmd/mcpproxy` — `bin/thresher` is a build artifact
   (rebuild via `build.sh`, never hand-patch the binary).
 
@@ -23,7 +23,7 @@ patches. It is the estate's MCP federation + control surface on `:25127/mcp`.
 
 ```bash
 bash build.sh                                   # rebuild bin/thresher
-cd /home/toxic/estate && pitchfork restart thresher   # deploy = restart
+cd /home/toxic/Pens && pitchfork restart thresher   # deploy = restart
 ```
 
 Deploy means a **running process uses the new binary**. After any change:
@@ -40,7 +40,7 @@ rebuild → restart → `curl -s http://127.0.0.1:25127/health`.
 
 ## Config
 
-- SSOT: `/home/toxic/pens/barn/products/thresher/mcp_config.json` (mode 0600) — the ONLY mcp_config on the box. All estate/config/* copies were deleted 2026-11-04 (archived at pens/estate/archive/20261104-kappa-mcp-config-consolidation/). Never recreate copies or symlinks.
+- SSOT: `/home/toxic/pens/barn/products/thresher/mcp_config.json` (mode 0600) — the ONLY mcp_config on the box. All Pens/config/* copies were deleted 2026-11-04 (archived at pens/Pens/archive/20261104-kappa-mcp-config-consolidation/). Never recreate copies or symlinks.
 - Seed from `mcp_config.json.dist` when missing (the serve script does it).
 - The API key comes from the **secretsmith keyring** (via `secretsmith env`,
   fallback `~/.secrets`) — never hardcoded, and **quotes must be stripped**
@@ -55,7 +55,7 @@ a decision, not an oversight.
 ## Verification before claiming done
 
 ```bash
-bash /home/toxic/estate/bin/bin-verify.sh          # link contract (30 ok)
+bash /home/toxic/Pens/bin/bin-verify.sh          # link contract (30 ok)
 /home/toxic/pens/audit-links.sh                     # product contract (26 ok)
 python3 /home/toxic/pens/barn/thresher/tests/timing_regression.py
 go test ./... -coverprofile=coverage.out            # see docs/COVERAGE.md

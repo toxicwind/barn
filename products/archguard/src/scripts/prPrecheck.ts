@@ -2,7 +2,7 @@
  * prPrecheck — deterministic pre-merge invariant check for the pr-review path.
  *
  * Reads a unified diff (file, stdin, or `git diff` in a repo), extracts
- * proposals that touch ESTATE-governed targets via EXPLICIT rules (no LLM,
+ * proposals that touch Pens-governed targets via EXPLICIT rules (no LLM,
  * no heuristics beyond the documented regexes), and runs them through the
  * deterministic graphAuditor (Cypher-only) against the `archguard_estate`
  * graph. Emits violations + blast radius + cited ADR codes with per-step
@@ -14,7 +14,7 @@
  * Usage:
  *   npx tsx src/scripts/prPrecheck.ts --diff /path/to/change.diff
  *   npx tsx src/scripts/prPrecheck.ts --stdin < change.diff
- *   npx tsx src/scripts/prPrecheck.ts --git /home/toxic/pens/estate/ranch origin/main HEAD
+ *   npx tsx src/scripts/prPrecheck.ts --git /home/toxic/pens/Pens/ranch origin/main HEAD
  *
  * Exit codes: 0 = clean (no governed targets touched, or touched-but-compliant),
  *             2 = one or more ADR violations (block the merge).
@@ -253,8 +253,8 @@ async function runPrecheck(diffText: string): Promise<PrecheckResult> {
 
     for (const v of violations) {
       result.clean = false;
-      // Estate tier semantics: the fork's engine maps tier-1 -> CRITICAL,
-      // everything else -> HIGH. On the estate, tier-0 outranks tier-1, so
+      // Pens tier semantics: the fork's engine maps tier-1 -> CRITICAL,
+      // everything else -> HIGH. On the Pens, tier-0 outranks tier-1, so
       // remap for display (engine output untouched).
       const blastOut = blast.map((b) => ({
         service: b.serviceName,

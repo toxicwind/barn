@@ -22,7 +22,7 @@ run = "exec /home/toxic/.bun/bin/bun /home/toxic/pens/barn/products/blackbird/ap
 dir = "/home/toxic/pens/barn/products/blackbird"
 retry = true
 mise = false
-ready_http = "http://127.0.0.1:25113/healthz"
+ready_http = "http://127.0.0.1:25113/health"
 env = { BLACKBIRD_API_PORT = "25112", BLACKBIRD_MCP_PORT = "25113", BLACKBIRD_WEB_PORT = "25114" }
 
 [daemons.blackbird-web]

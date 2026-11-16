@@ -1,5 +1,5 @@
 // ============================================================================
-// ESTATE — Unified Service Registry
+// pens — Unified Service Registry
 // ============================================================================
 
 import type { ServiceDef } from "../types/index.ts";
@@ -9,7 +9,7 @@ export const ALL_SERVICES: ServiceDef[] = [
     id: "herd",
     name: "herd",
     portKey: "HERD_PORT",
-    run: "exec /home/toxic/pens/estate/stack/services/herd.sh",
+    run: "exec /home/toxic/pens/pens/stack/services/herd.sh",
     dir: ".",
     readyHttp: "/health",
     group: "core",
@@ -85,7 +85,7 @@ export const ALL_SERVICES: ServiceDef[] = [
     name: "search-api",
     portKey: "GHAS_API_PORT",
     run: "exec bun --hot run apps/api/src/server.ts",
-    dir: "/home/toxic/projects/estate-projects/estate-github-search",
+    dir: "/home/toxic/projects/pens-projects/pens-github-search",
     readyHttp: "/health",
     group: "core",
     autoStart: true,
@@ -98,7 +98,7 @@ export const ALL_SERVICES: ServiceDef[] = [
     name: "search-ui",
     portKey: "GHAS_FRONTEND_PORT",
     run: "exec ./node_modules/.bin/next dev -p 25114",
-    dir: "/home/toxic/projects/estate-projects/estate-github-search/apps/frontend",
+    dir: "/home/toxic/projects/pens-projects/pens-github-search/apps/frontend",
     readyHttp: "/",
     group: "core",
     autoStart: true,
@@ -137,8 +137,8 @@ export const ALL_SERVICES: ServiceDef[] = [
     name: "fleet-feed",
     portKey: "RUST_WEB_BACKEND_PORT",
     // See src/services/peripheral.ts — same service, one definition.
-    run: "exec bun /home/toxic/pens/estate/ranch/squawk/fleet-feed.ts",
-    dir: "/home/toxic/pens/estate/ranch/squawk",
+    run: "exec bun /home/toxic/pens/pens/ranch/squawk/fleet-feed.ts",
+    dir: "/home/toxic/pens/pens/ranch/squawk",
     readyHttp: "/health",
     group: "core",
     autoStart: true,
@@ -163,7 +163,7 @@ export const ALL_SERVICES: ServiceDef[] = [
     name: "null-g-proxy",
     portKey: "NULL_G_PROXY_PORT",
     run: "exec bun run src/index.ts",
-    dir: "/home/toxic/pens/estate/tools/null-g-proxy",
+    dir: "/home/toxic/pens/pens/tools/null-g-proxy",
     readyHttp: "/health",
     group: "core",
     autoStart: true,
@@ -187,7 +187,7 @@ export const ALL_SERVICES: ServiceDef[] = [
     name: "mcp-gateway",
     portKey: "MCP_GATEWAY_PORT",
     run: "exec bun run gateway.ts",
-    dir: "/home/toxic/pens/estate/tools/estate-router/estate-mcp-gateway",
+    dir: "/home/toxic/pens/pens/tools/pens-router/pens-mcp-gateway",
     readyHttp: "/health",
     group: "core",
     autoStart: true,
@@ -250,7 +250,7 @@ export const ALL_SERVICES: ServiceDef[] = [
     name: "tau",
     portKey: "PI_AGENT_PORT",
     // The engine moved to /home/toxic/tau (4.7 GB checkout on main). The old
-    // projects/estate-projects/tau path no longer exists, so this daemon
+    // projects/pens-projects/tau path no longer exists, so this daemon
     // could never start and the generator skipped it on the missing portKey.
     run: "exec bun /home/toxic/tau/packages/coding-agent/src/cli.ts",
     dir: "/home/toxic",
@@ -269,7 +269,7 @@ export const ALL_SERVICES: ServiceDef[] = [
   },
   {
     id: "kimi-code",
-    name: "kimi-code-estate",
+    name: "kimi-code-pens",
     portKey: "KIMI_CODE_PORT",
     run: "exec /home/toxic/tau/vendors/kimi-code/apps/kimi-code/dist/main.mjs web --no-open --port 25126 --no-port-walk",
     dir: "/home/toxic/tau",
@@ -284,7 +284,7 @@ export const ALL_SERVICES: ServiceDef[] = [
     id: "mesh",
     name: "mesh",
     portKey: "MCPPROXY_GO_PORT",
-    run: "exec /home/toxic/pens/estate/projects/range/bin/thresher-serve.ts",
+    run: "exec /home/toxic/pens/pens/projects/range/bin/thresher-serve.ts",
     dir: "/home/toxic/pens/barn/thresher",
     readyHttp: "/health",
     group: "core",

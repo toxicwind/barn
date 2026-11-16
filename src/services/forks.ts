@@ -1,5 +1,5 @@
 // ============================================================================
-// ESTATE — Project Fork Services (/home/toxic/projects/)
+// pens — Project Fork Services (/home/toxic/projects/)
 // All services are first-class and auto-started (no on-demand rollback)
 // ============================================================================
 
@@ -69,7 +69,7 @@ export const FORK_SERVICES: ServiceDef[] = [
   // core.ts owns the agent-runtime stanza now. One definition per id.
   {
     id: "kimi-code",
-    name: "kimi-code-estate",
+    name: "kimi-code-pens",
     portKey: "KIMI_CODE_PORT",
     run: "exec /home/toxic/tau/vendors/kimi-code/apps/kimi-code/dist/main.mjs web --no-open --port 25126 --no-port-walk",
     // kimi-code's vendor checkout is gone from every tree; nothing at this path

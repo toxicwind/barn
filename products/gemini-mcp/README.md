@@ -1,6 +1,6 @@
 # gemini-mcp
 
-> 🗺️ Part of [**the ranch**](https://github.com/toxicwind/ranch) — the whole inference estate, one map.
+> 🗺️ Part of [**the ranch**](https://github.com/toxicwind/ranch) — the whole inference Pens, one map.
 
 First-class Gemini API MCP server for awrawr-pc. Multi-key pool with
 round-robin + automatic failover across 5 Gemini API keys.
@@ -31,7 +31,7 @@ Rotation: round-robin over healthy keys; a key is cooled down 90 s on
 
 ## Run
 
-Managed by pitchfork (`gemini-mcp` daemon in `/home/toxic/pens/estate/pitchfork.toml`).
+Managed by pitchfork (`gemini-mcp` daemon in `/home/toxic/pens/Pens/pitchfork.toml`).
 Manual: `/home/toxic/.awrawr-mcp-venv/bin/python server.py`
 
 ## SDK

@@ -1,7 +1,7 @@
 <div align="right">
 
-[![license: MIT](https://img.shields.io/badge/license-MIT%20%2B%20upstream-blue?style=for-the-badge)](https://github.com/toxicwind/estate-projects#license)
-[![estate-projects](https://img.shields.io/badge/estate--projects-1f6feb?style=for-the-badge)](https://github.com/toxicwind/estate-projects)
+[![license: MIT](https://img.shields.io/badge/license-MIT%20%2B%20upstream-blue?style=for-the-badge)](https://github.com/toxicwind/pens-projects#license)
+[![pens-projects](https://img.shields.io/badge/pens--projects-1f6feb?style=for-the-badge)](https://github.com/toxicwind/pens-projects)
 
 </div>
 
@@ -36,7 +36,7 @@ LLAMA_BASE_URL=http://localhost:8080 LLAMA_MODEL=qwen3.6-27b-q5 bun run worker.t
 
 ## License & security
 
-- **License:** [MIT](https://github.com/toxicwind/estate-projects#license)
+- **License:** [MIT](https://github.com/toxicwind/pens-projects#license)
 - **Security:** Mesh-internal endpoints — keep the coordinator and workers on localhost/Tailscale. The heartbeat/eviction loop assumes a trusted network; don't expose the mesh port publicly.
 
 ---

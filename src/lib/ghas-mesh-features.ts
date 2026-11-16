@@ -5,16 +5,16 @@
  *
  * Mount via handleMeshRequest() on /mesh/* of any service, or run mesh-hub.
  */
-import { loadEstatePorts, requirePort } from "./ports.ts";
+import { loadpensPorts, requirePort } from "./ports.ts";
 
-loadEstatePorts();
+loadpensPorts();
 
 export type MeshServiceId =
   | "herd"
   | "rust-web"
   | "yote"
   | "openfang"
-  | "estate-router"
+  | "pens-router"
   | "prometheus"
   | "hf-downloader"
   | "null-g-proxy"
@@ -82,7 +82,7 @@ export type ServiceMeta = {
   ghas_borrow: string;
 };
 
-/** Catalog of estate services participating in the mesh */
+/** Catalog of pens services participating in the mesh */
 export function serviceCatalog(): ServiceMeta[] {
   return [
     {
@@ -114,8 +114,8 @@ export function serviceCatalog(): ServiceMeta[] {
       ghas_borrow: "multi-provider hand swarm",
     },
     {
-      id: "estate-router",
-      portEnv: "ESTATE_ROUTER_PORT",
+      id: "pens-router",
+      portEnv: "pens_ROUTER_PORT",
       healthPath: "/health",
       role: "model-router",
       ghas_borrow: "circuit-breaker health DB + sticky sessions",
@@ -289,7 +289,7 @@ export async function runFeature(
         body: {
           feature,
           service: ctx.service,
-          version: ctx.version || process.env.ESTATE_VERSION || "mesh-1.0.0",
+          version: ctx.version || process.env.pens_VERSION || "mesh-1.0.0",
           node: process.version,
           bun: typeof Bun !== "undefined" ? Bun.version : null,
         },
@@ -341,10 +341,10 @@ export async function runFeature(
         "rust-web": ["herd", "hf-downloader", "prometheus"],
         yote: ["openfang", "herd"],
         openfang: ["herd"],
-        "estate-router": ["herd"],
+        "pens-router": ["herd"],
         prometheus: [],
         "hf-downloader": [],
-        "null-g-proxy": ["herd", "estate-router"],
+        "null-g-proxy": ["herd", "pens-router"],
         grafana: ["prometheus"],
         "ghas-api": ["ghas-mcp"],
         "ghas-mcp": [],
@@ -425,7 +425,7 @@ export async function runFeature(
             hot_reload: true,
             openai_compat: [
               "herd",
-              "estate-router",
+              "pens-router",
               "null-g-proxy",
               "yote",
               "openfang",
@@ -488,7 +488,7 @@ export async function runFeature(
     }
     case "ghas-proxy": {
       // Thin link to GHAS HTTP API (feature #18) — real GHAS, not reimplemented
-      const q = url?.searchParams.get("q") || "estate mesh";
+      const q = url?.searchParams.get("q") || "pens mesh";
       const ghasPort = process.env.GHAS_API_PORT || "25112";
       const ghasUrl = `http://127.0.0.1:${ghasPort}/health`;
       const health = await probe(ghasUrl);
@@ -607,7 +607,7 @@ export function json(status: number, body: unknown): Response {
     headers: {
       "content-type": "application/json",
       "access-control-allow-origin": "*",
-      "x-estate-mesh": "ghas-20",
+      "x-pens-mesh": "ghas-20",
     },
   });
 }

@@ -32,7 +32,7 @@ export interface HealthStatus {
 const TO = 2000;
 const RT = 2;
 const RD = 500;
-// Estate 25xxx map: herd :25100, openfang :25103
+// pens 25xxx map: herd :25100, openfang :25103
 const LP = Number(
   process.env.HERD_PORT ?? process.env.LLAMA_PORT ?? "25100",
 );

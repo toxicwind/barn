@@ -52,9 +52,9 @@ async function syncOnce(): Promise<{
   settings["oaicopilot.logLevel"] = settings["oaicopilot.logLevel"] || "info";
   settings["chat.utilitySmallModel"] = `oaicopilot/${defaultModel}`;
   // Discovery metadata for tools that can poll / subscribe
-  settings["estate.llamaSwap.baseUrl"] = base.replace(/\/v1$/, "");
-  settings["estate.llamaSwap.modelsUrl"] = `${base}/models`;
-  settings["estate.llamaSwap.modelsSse"] = base.replace(/\/v1$/, "/models/sse");
+  settings["pens.llamaSwap.baseUrl"] = base.replace(/\/v1$/, "");
+  settings["pens.llamaSwap.modelsUrl"] = `${base}/models`;
+  settings["pens.llamaSwap.modelsSse"] = base.replace(/\/v1$/, "/models/sse");
   delete settings["oai-compatible-copilot.providers"];
 
   await Bun.write(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);

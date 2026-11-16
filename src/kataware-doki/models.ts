@@ -110,7 +110,7 @@ export const llamaModels: LlamaModel[] = [
     contextWindow: 128000,
     quantization: "Q4_K_M",
     vramGB: 8,
-    description: "Custom merged model for estate inference. 7B active.",
+    description: "Custom merged model for pens inference. 7B active.",
     chatTemplate: "chatml",
     flashAttn: true,
   },

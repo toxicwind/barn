@@ -1,5 +1,5 @@
 // ============================================================================
-// ESTATE — Pre-Release Integration Engine
+// pens — Pre-Release Integration Engine
 // Pattern: Dynamic Configuration Resolution for Staging & Canary Overrides
 // Note: Production logic is integrated DIRECTLY into code.
 // This module manages temporary pre-release staging overrides without monkey patching.
@@ -38,7 +38,7 @@ export class PreReleaseIntegrationRegistry extends EventEmitter {
     super();
     this.integrationDir =
       integrationDir ||
-      path.resolve(process.env.ESTATE_ROOT || process.cwd(), "integrations");
+      path.resolve(process.env.pens_ROOT || process.cwd(), "integrations");
   }
 
   /**
@@ -74,12 +74,12 @@ export class PreReleaseIntegrationRegistry extends EventEmitter {
     const banner =
       `// ============================================================================\n` +
       `// Pre-Release Integration: ${targetPath}\n` +
-      `// Author: ${meta?.author ?? "estate"}\n` +
+      `// Author: ${meta?.author ?? "pens"}\n` +
       `// Reason: ${meta?.reason ?? "pre-release staging override"}\n` +
       `// Date: ${meta?.timestamp ?? new Date().toISOString()}\n\n` +
       `export const TARGET = "${targetPath}";\n` +
       `export const VERSION = "${meta?.version ?? "1.0.0"}";\n` +
-      `export const AUTHOR = "${meta?.author ?? "estate"}";\n` +
+      `export const AUTHOR = "${meta?.author ?? "pens"}";\n` +
       `export const REASON = "${meta?.reason ?? "pre-release staging"}";\n` +
       `export const ENABLED = ${meta?.enabled ?? true};\n\n`;
 
