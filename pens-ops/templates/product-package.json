@@ -1,0 +1,19 @@
+{
+  "name": "<product-name>",
+  "version": "0.1.0",
+  "description": "<one-line description>",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "bun src/index.ts",
+    "dev": "bun --watch src/index.ts",
+    "test": "bun test"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/bun": "latest",
+    "bun-types": "latest"
+  },
+  "private": true,
+  "packageManager": "bun@1.4.4"
+}

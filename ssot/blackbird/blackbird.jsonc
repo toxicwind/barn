@@ -1,0 +1,107 @@
+{
+  // blackbird SSOT — the one true config for the blackbird MCP/GitHub search product.
+  //
+  // Product root: ../../products/blackbird   (code lives in barn/products, per pen doctrine)
+  //
+  // Ports:        ../../ports.env             (never duplicated here — same rule as forge.jsonc)
+  //
+  // blackbird is registered as an *upstream* of thresher, not as its own gateway:
+  //   ../thresher/mcp_config.json → { name: "blackbird-mcp", url: "http://127.0.0.1:25113/mcp" }
+  // Thresher hot-reloads that file (fsnotify). Never restart thresher to change it.
+
+  "blackbird": {
+    "productRoot": "../../products/blackbird",
+
+    // ── Ports ────────────────────────────────────────────────────────────────
+    // Single allocation, no env-dependent drift. Overrides still honoured by the
+    // process (env > this file), but the fallback in code now matches these.
+    "ports": {
+      "api": 25112,
+      "mcp": 25113,
+      "frontend": 25114
+    },
+    "portEnv": {
+      "api": "BLACKBIRD_API_PORT",
+      "mcp": "BLACKBIRD_MCP_PORT",
+      "frontend": "BLACKBIRD_FRONTEND_PORT"
+    },
+
+    // ── Search engines ───────────────────────────────────────────────────────
+    // Two engines behind one tool surface. `compare` reports both rankings for
+    // one query so ranker regressions are visible instead of silent.
+    "engine": {
+      // "auto" | "rest" | "blackbird"
+      "code": "auto",
+      "rest": {
+        // Classic GitHub /search/code. Supports `filename:` and bare terms.
+        // NEVER rewrite a REST query to `path:`.
+        "supports": ["filename:", "classic /search/code"]
+      },
+      "blackbird": {
+        // Session-backed engine. Supports path/content/symbol operators.
+        "supports": ["path:**", "path:/…/", "content:", "symbol:"],
+        "requiresSession": true
+      },
+      "experimentalRank": {
+        "enabled": true,
+        "env": "BLACKBIRD_EXPERIMENTAL_RANK",
+        "note": "default-on; ranker = packages/github-client/src/ranking (W1 RELEVANCE- FIRST Bun)"
+      }
+    },
+
+    // ── GitHub auth ──────────────────────────────────────────────────────────
+    // Token source is gh-cli. This is an *identity*, NOT a search scope:
+    // blackbird searches all of GitHub. There is no owner/allowlist setting,
+    // and none should be added — a scoped search would silently hide results.
+    "github": {
+      "tokenSource": "gh-cli",
+      "maxInflight": 8,
+      "minIntervalMs": 250,
+      "scope": "all-github"
+    },
+
+    // ── Browser session (blackbird engine) ───────────────────────────────────
+    // The session-backed engine needs a logged-in GitHub profile. Headless SSH
+    // is not head-on: this box has a live X display at :0.
+    "session": {
+      "source": "firefox",
+      "profilePath": "~/.mozilla/firefox/beebe-session",
+      "env": "BLACKBIRD_FIREFOX_PROFILE",
+      "refreshMs": 60000,
+      "envRefresh": "BLACKBIRD_SESSION_REFRESH_MS"
+    },
+
+    // ── Result padding ───────────────────────────────────────────────────────
+    // When a literal has few real matches the ranker pads with fuzzy repository
+    // hits. Those rows carry no `highlights` and score low — treat them as
+    // "no match", not as evidence. Tunables:
+    "rescue": {
+      "minResults": 3,
+      "perPageFactor": 2,
+      "queries": 3
+    },
+    "supplemental": {
+      "limit": 3,
+      "queries": 2
+    },
+
+    // ── Tool aliases ─────────────────────────────────────────────────────────
+    // `github_*` and `estate-scripts_*` are compatibility aliases that point at
+    // the same handlers as their `blackbird_*` counterparts. They are NOT
+    // separate tools; 25 exposed names collapse to ~13 real handlers.
+    "aliases": {
+      "github_compare": "blackbird_compare_search",
+      "github_get_repository": "blackbird_get_repository",
+      "github_get_file_contents": "blackbird_get_file_contents",
+      "github_search_issues": "blackbird_query_issues",
+      "github_list_issues": "blackbird_list_repo_issues",
+      "estate-scripts_simple_search": "blackbird_simple_search"
+    },
+
+    // ── Provenance ───────────────────────────────────────────────────────────
+    "version": "0.6.2",
+    "transport": "http",
+    "healthCheckInterval": "15s",
+    "toolDiscoveryInterval": "2m0s"
+  }
+}
