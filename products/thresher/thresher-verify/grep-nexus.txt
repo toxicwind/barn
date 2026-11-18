@@ -1,0 +1,23 @@
+=== 4.4b: Grep for 'nexus' leftovers ===
+--- /home/toxic/pens/barn/thresher/README.md ---
+4:(the upstream project historically branded *MCPProxy* / *Nexus*). It is the
+--- /home/toxic/pens/barn/thresher/AGENTS.md ---
+(no matches)
+--- /home/toxic/pens/barn/thresher/build.sh ---
+(no matches)
+--- /home/toxic/pens/barn/thresher/docs ---
+(no matches)
+--- /home/toxic/pens/Pens/pitchfork.toml ---
+(no matches)
+--- /home/toxic/pens/Pens/ranch/range/bin/thresher-serve.ts ---
+73:  console.error('nexus (fork of mcpproxy-go) binary missing:')
+--- /home/toxic/pens/Pens/scripts/health-check.ts ---
+(no matches)
+--- /home/toxic/pens/Pens/bin/manifest.yaml ---
+(no matches)
+--- /home/toxic/pens/Pens/bin/bin-verify.sh ---
+(no matches)
+--- /home/toxic/AGENTS.md ---
+(no matches)
+--- /home/toxic/pens/Pens/AGENTS.md ---
+(no matches)

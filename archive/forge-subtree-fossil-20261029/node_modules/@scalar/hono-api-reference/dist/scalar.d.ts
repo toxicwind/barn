@@ -1,0 +1,53 @@
+import type { Context, Env, MiddlewareHandler } from 'hono';
+import { Hono } from 'hono';
+import type { ApiReferenceConfiguration } from './types.js';
+type Configuration<E extends Env> = Partial<ApiReferenceConfiguration> | ((c: Context<E>) => Partial<ApiReferenceConfiguration> | Promise<Partial<ApiReferenceConfiguration>>);
+/**
+ * An OpenAPI document.
+ *
+ * Typed loosely as an object on purpose, so it accepts both plain document objects and the typed
+ * return values of generators like Zod OpenAPI Hono's `getOpenAPI31Document()`, whose interfaces do
+ * not carry an index signature.
+ */
+type OpenApiDocument = object;
+/**
+ * The configuration for `Scalar.serve`.
+ *
+ * On top of the universal API Reference configuration, this takes the OpenAPI `document` to render
+ * and expose. Because `Scalar.serve` sources the document itself, `content` and `url` are managed for
+ * you and are not accepted here.
+ */
+export type ServeConfiguration<E extends Env> = Omit<Partial<ApiReferenceConfiguration>, 'content' | 'url'> & {
+    /**
+     * The OpenAPI document to render and serve.
+     *
+     * Pass the document directly, or a function that returns it. The function receives the Hono
+     * `Context`, so it can read `c.env` or `c.req` and build the document per request. This is also how
+     * you wire up an `OpenAPIHono` app:
+     *
+     * @example
+     * ```ts
+     * app.route('/scalar', Scalar.serve({
+     *   document: () => app.getOpenAPI31Document({ openapi: '3.1.0', info: { title: 'Example', version: 'v1' } }),
+     * }))
+     * ```
+     */
+    document: OpenApiDocument | ((c: Context<E>) => OpenApiDocument | Promise<OpenApiDocument>);
+    /**
+     * Path, relative to the mount point, where the OpenAPI document is served as JSON.
+     *
+     * @default '/openapi.json'
+     */
+    documentPath?: string;
+};
+/**
+ * Render the Scalar API Reference in a Hono app.
+ *
+ * Use `Scalar(...)` as a middleware to render the reference on a route, or `Scalar.serve(...)` to
+ * serve the reference and its OpenAPI document together from a single mount.
+ */
+export declare const Scalar: (<E extends Env>(configOrResolver: Configuration<E>) => MiddlewareHandler<E>) & {
+    serve: <E extends Env>(options: ServeConfiguration<E>) => Hono<E>;
+};
+export {};
+//# sourceMappingURL=scalar.d.ts.map

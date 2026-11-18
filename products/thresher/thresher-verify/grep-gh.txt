@@ -1,0 +1,24 @@
+=== 4.4: Grep for 'gatehouse' leftovers ===
+--- /home/toxic/pens/barn/thresher/README.md ---
+(no matches)
+--- /home/toxic/pens/barn/thresher/AGENTS.md ---
+(no matches)
+--- /home/toxic/pens/barn/thresher/build.sh ---
+2:# build.sh — vendored gatehouse (mcpproxy-go) build.
+--- /home/toxic/pens/barn/thresher/docs ---
+/home/toxic/pens/barn/thresher/docs/delendai/proposals/ready/f00001-adopt-delendai-gatehouse.md:8:title: Adopt delendai workflow (gatehouse)
+/home/toxic/pens/barn/thresher/docs/delendai/proposals/ready/f00001-adopt-delendai-gatehouse.md:24:# f00001 — Adopt delendai (gatehouse)
+--- /home/toxic/pens/Pens/pitchfork.toml ---
+(no matches)
+--- /home/toxic/pens/Pens/ranch/range/bin/thresher-serve.ts ---
+(no matches)
+--- /home/toxic/pens/Pens/scripts/health-check.ts ---
+(no matches)
+--- /home/toxic/pens/Pens/bin/manifest.yaml ---
+(no matches)
+--- /home/toxic/pens/Pens/bin/bin-verify.sh ---
+(no matches)
+--- /home/toxic/AGENTS.md ---
+(no matches)
+--- /home/toxic/pens/Pens/AGENTS.md ---
+(no matches)

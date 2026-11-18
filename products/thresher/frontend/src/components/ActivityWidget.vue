@@ -1,0 +1,169 @@
+<template>
+  <div class="card bg-base-100 shadow-md">
+    <div class="card-body">
+      <div class="flex items-center justify-between mb-4">
+        <div>
+          <h2 class="card-title text-lg">Recent Activity</h2>
+          <p class="text-sm opacity-60">Activity across all servers</p>
+        </div>
+        <router-link to="/activity" class="btn btn-sm btn-ghost">
+          View All
+        </router-link>
+      </div>
+
+      <!-- Summary Stats Row -->
+      <div v-if="summary" class="stats stats-horizontal bg-base-200 mb-4">
+        <!-- Rows in the window; only some of them are calls (F1, #1046). -->
+        <div class="stat py-2 px-4">
+          <div class="stat-title text-xs">Events (24h)</div>
+          <div class="stat-value text-lg">{{ summary.total_count }}</div>
+        </div>
+        <div class="stat py-2 px-4">
+          <div class="stat-title text-xs">Calls</div>
+          <div class="stat-value text-lg">{{ summary.call_count }}</div>
+        </div>
+        <div class="stat py-2 px-4">
+          <div class="stat-title text-xs">Success</div>
+          <!-- Success is the norm — it gets no colour, so Errors can have it. -->
+          <div class="stat-value text-lg text-base-content/70">{{ summary.success_count }}</div>
+        </div>
+        <div class="stat py-2 px-4">
+          <div class="stat-title text-xs">Errors</div>
+          <div class="stat-value text-lg text-error">{{ summary.error_count }}</div>
+        </div>
+      </div>
+
+      <!-- Loading State -->
+      <div v-if="loading" class="flex justify-center py-4">
+        <span class="loading loading-spinner loading-sm"></span>
+      </div>
+
+      <!-- Error State -->
+      <div v-else-if="error" class="alert alert-error alert-sm">
+        <span class="text-sm">{{ error }}</span>
+      </div>
+
+      <!-- Empty State -->
+      <div v-else-if="activities.length === 0" class="text-center py-4 text-base-content/60">
+        <p class="text-sm">No activity yet</p>
+      </div>
+
+      <!-- Recent Activities List -->
+      <div v-else class="space-y-2">
+        <div
+          v-for="activity in activities.slice(0, 5)"
+          :key="activity.id"
+          class="flex items-center justify-between p-2 bg-base-200 rounded-lg hover:bg-base-300 transition-colors cursor-pointer"
+          @click="navigateToActivity(activity.id)"
+        >
+          <div class="flex items-center gap-3">
+            <span class="text-lg">{{ getTypeIcon(activity.type) }}</span>
+            <div>
+              <div class="text-sm font-medium">
+                <span v-if="activity.server_name">{{ activity.server_name }}</span>
+                <span v-if="activity.tool_name" class="text-base-content/70">:{{ activity.tool_name }}</span>
+                <!-- Spec 098: a preflight has no server/tool — show its verdict instead of a blank row. -->
+                <span
+                  v-if="!activity.server_name && !activity.tool_name && isPreflightActivity(activity)"
+                  class="text-base-content/70"
+                >
+                  {{ formatPreflightSummary(activity.metadata) || 'Preflight' }}
+                </span>
+              </div>
+              <div class="flex items-center gap-2">
+                <div class="text-xs text-base-content/60">{{ formatRelativeTime(activity.timestamp) }}</div>
+                <!-- Sub-call of a code_execution run (see utils/activity). -->
+                <!-- Context, not an alert: ghost chip, muted text. -->
+                <span
+                  v-if="isChildCall(activity)"
+                  data-test="widget-child-badge"
+                  class="badge badge-xs badge-ghost font-normal text-base-content/60"
+                  title="Sub-call dispatched by a code_execution run"
+                >
+                  ↳ via code_execution
+                </span>
+              </div>
+            </div>
+          </div>
+          <!-- Same quiet-success treatment as the Activity Log table. -->
+          <span
+            data-test="widget-activity-status"
+            :class="statusPresentation(activity.status).className"
+          >
+            {{ statusPresentation(activity.status).label }}
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
+import api from '@/services/api'
+import type { ActivityRecord, ActivitySummaryResponse } from '@/types/api'
+import {
+  formatPreflightSummary,
+  getTypeIcon,
+  isChildCall,
+  isPreflightActivity,
+  statusPresentation,
+} from '@/utils/activity'
+
+const router = useRouter()
+
+// State
+const activities = ref<ActivityRecord[]>([])
+const summary = ref<ActivitySummaryResponse | null>(null)
+const loading = ref(false)
+const error = ref<string | null>(null)
+
+// Load data
+const loadData = async () => {
+  loading.value = true
+  error.value = null
+
+  try {
+    const [activitiesResponse, summaryResponse] = await Promise.all([
+      api.getActivities({ limit: 5 }),
+      api.getActivitySummary('24h')
+    ])
+
+    if (activitiesResponse.success && activitiesResponse.data) {
+      activities.value = activitiesResponse.data.activities || []
+    }
+
+    if (summaryResponse.success && summaryResponse.data) {
+      summary.value = summaryResponse.data
+    }
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : 'Failed to load activity'
+  } finally {
+    loading.value = false
+  }
+}
+
+// Navigation
+const navigateToActivity = (id: string) => {
+  router.push('/activity')
+}
+
+// Format helpers
+const formatRelativeTime = (timestamp: string): string => {
+  const now = Date.now()
+  const time = new Date(timestamp).getTime()
+  const diff = now - time
+
+  if (diff < 1000) return 'Just now'
+  if (diff < 60000) return `${Math.floor(diff / 1000)}s ago`
+  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`
+  return `${Math.floor(diff / 86400000)}d ago`
+}
+
+// Lifecycle
+onMounted(() => {
+  loadData()
+})
+</script>

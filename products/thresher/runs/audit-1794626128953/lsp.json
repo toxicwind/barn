@@ -1,0 +1,29 @@
+{
+  "count": 2,
+  "hits": [
+    {
+      "file": "/home/toxic/pens/olympus/products/tau/packages/coding-agent/src/session/agent-session.ts",
+      "line": 13272,
+      "snippet": "if (isChanging && this.#providerBoundary.readsOtherCompaction(currentModel, model)) {",
+      "source": "lsp",
+      "score": 0.9,
+      "context": [
+        "// rebuild the context whenever the two models stand on different boundaries.",
+        "if (isChanging && this.#providerBoundary.readsOtherCompaction(currentModel, model)) {",
+        "this.agent.replaceMessages(this.buildDisplaySessionContext(model).messages);"
+      ]
+    },
+    {
+      "file": "/home/toxic/pens/olympus/products/tau/packages/coding-agent/src/session/agent-session.ts",
+      "line": 14217,
+      "snippet": "this.#providerBoundary.readsOtherCompaction(targetModel, this.model))",
+      "source": "lsp",
+      "score": 0.9,
+      "context": [
+        "(frameDataBytesBudget(targetModel) !== frameDataBytesBudget(this.model) ||",
+        "this.#providerBoundary.readsOtherCompaction(targetModel, this.model))",
+        ") {"
+      ]
+    }
+  ]
+}

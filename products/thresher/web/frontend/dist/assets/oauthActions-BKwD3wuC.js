@@ -1,0 +1,1 @@
+function e(e){let t=String(e.protocol),n=[`http`,`sse`,`streamable-http`].includes(t)||t===`auto`&&!!e.url&&!e.command;return!!(e.enabled&&n&&(e.oauth||e.authenticated||e.health?.action===`login`||e.health?.actions?.includes(`login`)||e.diagnostic?.code?.startsWith(`MCPX_OAUTH_`)||/oauth/i.test(e.last_error||``)))}export{e as t};

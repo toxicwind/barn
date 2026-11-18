@@ -1,0 +1,96 @@
+// Reactive composable that exposes whether any security scanner is currently
+// enabled. Used by Servers.vue, ServerDetail.vue, and other places that show
+// scan-trigger buttons — buttons should be hidden entirely when no scanner is
+// active.
+//
+// The result is cached at module scope so multiple components share a single
+// network call. Call refreshSecurityScannerStatus() after the user
+// installs/removes a scanner to update the state.
+
+import { ref } from 'vue'
+import api from '@/services/api'
+import { useAuthStore } from '@/stores/auth'
+import type { SignatureBundle } from '@/utils/signatureBundle'
+
+const enabledCount = ref<number | null>(null)
+const dockerAvailable = ref<boolean>(true)
+const loaded = ref(false)
+const totalFindings = ref<number>(0)
+const totalScans = ref<number>(0)
+// Spec 101 FR-020: the signature_bundle descriptor from the same overview
+// response, shared so Review and Home show the bundle state without a second
+// fetch. Null until loaded, on an older daemon, or for a scoped session.
+const signatureBundle = ref<SignatureBundle | null>(null)
+let inflight: Promise<void> | null = null
+
+// Spec 077 US4 (MCP-2207): the backend now collapses the per-scanner
+// scan_started/progress/completed/failed storm into a single debounced
+// `security.scan_settled` event per server per scan (forwarded by the system
+// store as `mcpproxy:scan-settled`). We consume that one settled signal to
+// refresh the cached scan totals, instead of tracking per-scanner lifecycle
+// events. Registered once at module scope so all consumers share it.
+if (typeof window !== 'undefined') {
+  window.addEventListener('mcpproxy:scan-settled', () => {
+    void refreshSecurityScannerStatus()
+  })
+}
+
+export async function refreshSecurityScannerStatus(): Promise<void> {
+  if (inflight) {
+    return inflight
+  }
+  inflight = (async () => {
+    try {
+      const res = await api.getSecurityOverview()
+      const data: any = res?.data ?? {}
+      // Prefer the new scanners_enabled field; fall back to scanners_installed
+      // for backwards compatibility with older mcpproxy builds.
+      const enabled = data.scanners_enabled ?? data.scanners_installed ?? 0
+      enabledCount.value = typeof enabled === 'number' ? enabled : 0
+      dockerAvailable.value = data.docker_available !== false
+      // Aggregated finding count from the /security/overview endpoint used by
+      // the Dashboard security chip (F-12). The backend returns this under
+      // `findings_by_severity.total`.
+      const fbs = data.findings_by_severity ?? {}
+      totalFindings.value = typeof fbs.total === 'number' ? fbs.total : 0
+      totalScans.value = typeof data.total_scans === 'number' ? data.total_scans : 0
+      const bundle = data.signature_bundle
+      signatureBundle.value = bundle && typeof bundle === 'object' ? bundle : null
+      loaded.value = true
+    } catch {
+      // On error, keep current values; the UI will fall back to dockerAvailable
+      // checks. We don't want a transient API blip to make all scan buttons
+      // disappear.
+    } finally {
+      inflight = null
+    }
+  })()
+  return inflight
+}
+
+export function useSecurityScannerStatus() {
+  // Spec 107 FR-041 / T088: /security/overview is an admin-only core door
+  // (fleet-wide scanner/finding totals). Servers.vue and ServerCard.vue call
+  // this composable to decide whether to show scan-trigger buttons; a tenant
+  // principal has no entitlement to that door, so skip the auto-fetch for
+  // them rather than eat a 403 on every servers-page mount. `useAuthStore()`
+  // is safe here — every caller of this composable runs inside a component
+  // `setup()` with an active Pinia instance.
+  const authStore = useAuthStore()
+  if (!loaded.value && !inflight && authStore.principalKind !== 'tenant') {
+    void refreshSecurityScannerStatus()
+  }
+  return {
+    enabledCount,
+    dockerAvailable,
+    loaded,
+    totalFindings,
+    totalScans,
+    signatureBundle,
+    /** True when at least one scanner is enabled and docker is available. */
+    hasEnabledScanners: () => (enabledCount.value ?? 0) > 0,
+    /** True when at least one scan has completed (ever). */
+    hasAnyScans: () => totalScans.value > 0,
+    refresh: refreshSecurityScannerStatus,
+  }
+}

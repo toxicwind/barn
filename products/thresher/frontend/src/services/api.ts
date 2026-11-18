@@ -1,0 +1,1728 @@
+import type { APIResponse, Server, Tool, ToolApproval, SearchResult, StatusUpdate, StatusResponse, SecretRef, MigrationAnalysis, ConfigSecretsResponse, GetToolCallsResponse, GetToolCallDetailResponse, GetServerToolCallsResponse, GetConfigResponse, ValidateConfigResponse, ConfigApplyResult, ServerTokenMetrics, GetRegistriesResponse, SearchRegistryServersResponse, RegistrySummary, CatalogSearchResponse, GetSessionsResponse, GetSessionDetailResponse, InfoResponse, ActivityListResponse, ActivityDetailResponse, ActivityRecord, ActivitySummaryResponse, ImportResponse, AgentTokenInfo, CreateAgentTokenRequest, CreateAgentTokenResponse, RoutingInfo, ConnectStatusResponse, ClientStatus, ConnectResult, ConnectPreview, OnboardingStateResponse, OnboardingMarkRequest, DiagnosticFixResponse, GlobalToolsResponse, UsageAggregateResponse, UsageWindow, UsageSort, UsageStatus, AttentionResponse, ReviewQueueResponse, ServerReviewResponse } from '@/types'
+import type { ProfileConfig, ProfileList, ProfileView, ProfileWriteResult, ProfileRenameResult, ProfileDeleteResult, EffectiveToolsResult, TryProfileResponse, AccessExplanation, ExplainSubjectQuery, ClientView, ClientsResponse, BulkAssignResponse, CustomClientResponse, RotateResponse, UpgradePreview, UpgradeApplyResult, ForgetClientResponse, ConnectOptions } from '@/types/api'
+
+import { joinHoldEvidence, type HoldEvidenceSource } from '@/utils/holdEvidence'
+
+// Event types for API service
+export interface APIAuthEvent {
+  type: 'auth-error'
+  error: string
+  status: number
+}
+
+type APIEventListener = (event: APIAuthEvent) => void
+
+// Spec 070: result of the reference-based add-from-registry flow. Unlike the
+// generic request() helper (which collapses errors to a single message), this
+// carries the stable cross-surface error `code` and the missing-input names so
+// the Web UI can drive the required-input prompt without re-parsing strings.
+export interface AddedServerSummary {
+  name: string
+  protocol?: string
+  command?: string
+  args?: string[]
+  url?: string
+  quarantined?: boolean
+}
+
+export interface AddFromRegistryResult {
+  success: boolean
+  server?: AddedServerSummary
+  error?: string
+  // Stable cross-surface code: missing_required_input | no_install_info |
+  // duplicate_name | registry_not_found | server_not_found
+  code?: string
+  // Names of unmet required inputs; present when code === 'missing_required_input'.
+  missingInputs?: string[]
+}
+
+// MCP-866 / MCP-867: result of adding a *registry source* (POST /registries).
+// Carries the stable error `code` (invalid_registry_url | registries_locked |
+// registry_shadows_builtin | duplicate_registry) so the UI can render an
+// actionable message instead of a generic string.
+export interface AddRegistrySourceResult {
+  success: boolean
+  registry?: RegistrySummary
+  error?: string
+  code?: string
+}
+
+// Spec 108-i: a REST refusal that keeps the whole body. The generic request()
+// collapses a failure to its `error` text; a guard refusal needs `bindings` and
+// `fixes`, a delete-in-use needs `used_by`, a validator 400 needs `field`.
+type BindingRefBody = { client_id: string; token_name: string; profile: string; mode: string }
+type GuardFixBody = { kind: string; target?: string }
+
+export class ApiError extends Error {
+  status: number
+  code?: string
+  field?: string
+  used_by?: { clients: Array<{ id: string; mode: string }>; tokens: string[]; anonymous_profile: boolean }
+  bindings?: BindingRefBody[]
+  fixes?: GuardFixBody[]
+  skipped?: Array<{ client_id: string; code: string; error?: string }>
+  conflicting_token?: string
+  remediation?: string
+  action?: string
+  constructor(status: number, body: Record<string, any>, fallback: string) {
+    super(typeof body?.error === 'string' && body.error ? body.error : fallback)
+    this.name = 'ApiError'
+    this.status = status
+    this.code = body?.code
+    this.field = body?.field
+    this.used_by = body?.used_by
+    this.bindings = body?.bindings
+    this.fixes = body?.fixes
+    this.skipped = body?.skipped
+    this.conflicting_token = body?.conflicting_token
+    this.remediation = body?.remediation
+    this.action = body?.action
+  }
+}
+
+function queryString(params: Record<string, string | number | boolean | undefined | null>): string {
+  const q = new URLSearchParams()
+  for (const [k, v] of Object.entries(params)) {
+    if (v === undefined || v === null || v === '') continue
+    q.set(k, String(v))
+  }
+  const text = q.toString()
+  return text ? `?${text}` : ''
+}
+
+
+/**
+ * withExpectedIncarnation adds `expected_incarnation` to an approval body when
+ * the caller knows the incarnation of the server it reviewed (Spec 116
+ * FR-017). Unknown (undefined or 0) leaves the body unchanged: the backend then
+ * binds to the incarnation current when the request arrives.
+ */
+export function withExpectedIncarnation<T extends object>(body: T, expectedIncarnation?: number): T & { expected_incarnation?: number } {
+  if (expectedIncarnation && expectedIncarnation > 0) {
+    return { ...body, expected_incarnation: expectedIncarnation }
+  }
+  return body
+}
+
+class APIService {
+  private baseUrl = ''
+  private apiKey = ''
+  private initialized = false
+  private eventListeners: APIEventListener[] = []
+
+  constructor() {
+    // In development, Vite proxy handles API calls
+    // In production, the frontend is served from the same origin as the API
+    this.baseUrl = import.meta.env.DEV ? '' : ''
+
+    // Extract API key from URL parameters on initialization
+    this.initializeAPIKey()
+  }
+
+  private initializeAPIKey() {
+    // Set initialized flag first to prevent race conditions
+    this.initialized = true
+
+    const urlParams = new URLSearchParams(window.location.search)
+    const apiKeyFromURL = urlParams.get('apikey')
+
+    if (apiKeyFromURL) {
+      // URL param always takes priority (for backend restarts with new keys)
+      this.apiKey = apiKeyFromURL
+      // Store the new API key for future navigation/refreshes
+      localStorage.setItem('mcpproxy-api-key', apiKeyFromURL)
+      // SEC-07: never log key material (not even a prefix) to the devtools console.
+      // Clean the URL by removing the API key parameter for security
+      urlParams.delete('apikey')
+      const newURL = window.location.pathname + (urlParams.toString() ? '?' + urlParams.toString() : '')
+      window.history.replaceState({}, '', newURL)
+    } else {
+      // No URL param - check localStorage as fallback
+      const storedApiKey = localStorage.getItem('mcpproxy-api-key')
+      if (storedApiKey) {
+        this.apiKey = storedApiKey
+      }
+    }
+  }
+
+  // Public method to reinitialize API key if needed
+  public reinitializeAPIKey() {
+    this.initialized = false
+    this.initializeAPIKey()
+  }
+
+  // Check if API key is available
+  public hasAPIKey(): boolean {
+    return !!this.apiKey
+  }
+
+  // Get API key (for debugging purposes)
+  public getAPIKeyPreview(): string {
+    return this.apiKey ? this.apiKey.substring(0, 8) + '...' : 'none'
+  }
+
+  // Clear API key from both memory and localStorage
+  public clearAPIKey(): void {
+    this.apiKey = ''
+    localStorage.removeItem('mcpproxy-api-key')
+    console.log('API key cleared from memory and localStorage')
+  }
+
+  // Set API key programmatically and store it
+  public setAPIKey(key: string): void {
+    this.apiKey = key
+    if (key) {
+      localStorage.setItem('mcpproxy-api-key', key)
+      // SEC-07: no key material in the console, not even a prefix.
+    } else {
+      localStorage.removeItem('mcpproxy-api-key')
+      console.log('API key cleared')
+    }
+  }
+
+  // Event system for global error handling
+  public addEventListener(listener: APIEventListener): () => void {
+    this.eventListeners.push(listener)
+    return () => {
+      const index = this.eventListeners.indexOf(listener)
+      if (index > -1) {
+        this.eventListeners.splice(index, 1)
+      }
+    }
+  }
+
+  private emitAuthError(error: string, status: number): void {
+    const event: APIAuthEvent = {
+      type: 'auth-error',
+      error,
+      status
+    }
+    this.eventListeners.forEach(listener => {
+      try {
+        listener(event)
+      } catch (err) {
+        console.error('Error in API event listener:', err)
+      }
+    })
+  }
+
+  // Validate the current API key by making a test request
+  public async validateAPIKey(): Promise<boolean> {
+    if (!this.apiKey) {
+      return false
+    }
+
+    try {
+      const response = await this.getServers()
+      return response.success
+    } catch (error) {
+      console.warn('API key validation failed:', error)
+      return false
+    }
+  }
+
+  private async request<T>(endpoint: string, options: RequestInit = {}): Promise<APIResponse<T>> {
+    // Ensure API key initialization is complete
+    if (!this.initialized) {
+      console.log('API service not initialized, initializing now...')
+      this.initializeAPIKey()
+    }
+
+    try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        // Spec 042: telemetry surface header so the daemon can attribute
+        // requests to the web UI for the surface_requests counter. Version
+        // is intentionally a constant string — the daemon already reports
+        // its own build version separately and we don't want to leak the
+        // browser/UA fingerprint into telemetry.
+        'X-MCPProxy-Client': 'webui/web',
+      }
+
+      // Merge headers from options if they exist
+      if (options.headers) {
+        if (options.headers instanceof Headers) {
+          options.headers.forEach((value, key) => {
+            headers[key] = value
+          })
+        } else if (Array.isArray(options.headers)) {
+          options.headers.forEach(([key, value]) => {
+            headers[key] = value
+          })
+        } else {
+          Object.assign(headers, options.headers)
+        }
+      }
+
+      // Add API key header if available
+      if (this.apiKey) {
+        headers['X-API-Key'] = this.apiKey
+      } else {
+        // SEC-07: log only that the request is unauthenticated. The previous
+        // lines echoed the key prefix, window.location.search (which can still
+        // carry ?apikey=) and the localStorage value on every single call.
+        console.log(`API request to ${endpoint} without API key - initialized: ${this.initialized}`)
+      }
+
+      const response = await fetch(`${this.baseUrl}${endpoint}`, {
+        ...options,
+        headers,
+      })
+
+      if (!response.ok) {
+        // Try to extract error message from response body
+        const errorData = await response.json().catch(() => ({}))
+        const errorMsg = errorData.error || `HTTP ${response.status}: ${response.statusText}`
+        console.error(`API request failed: ${errorMsg}`)
+
+        // Special handling for authentication errors
+        if (response.status === 401 || response.status === 403) {
+          console.error('Authentication failed - API key may be invalid or missing')
+          this.emitAuthError(errorMsg, response.status)
+        }
+
+        throw new Error(errorMsg)
+      }
+
+      // Handle 204 No Content (e.g., DELETE responses)
+      if (response.status === 204) {
+        console.log(`API request to ${endpoint} succeeded (204 No Content)`)
+        return { success: true } as APIResponse<T>
+      }
+
+      const data = await response.json()
+      console.log(`API request to ${endpoint} succeeded`)
+      return data as APIResponse<T>
+    } catch (error) {
+      console.error('API request failed:', error)
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      }
+    }
+  }
+
+  // Spec 108-i I1: like request() but a failure throws an ApiError that carries
+  // the whole error body. It reports an auth error for a 401 only: a 403 from
+  // requireServerOp means "not an administrator" and is shown inline, never as
+  // a lost API key.
+  private async requestRaw<T>(endpoint: string, options: RequestInit = {}): Promise<APIResponse<T>> {
+    if (!this.initialized) this.initializeAPIKey()
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'X-MCPProxy-Client': 'webui/web',
+    }
+    if (options.headers) {
+      if (options.headers instanceof Headers) {
+        options.headers.forEach((value, key) => { headers[key] = value })
+      } else if (Array.isArray(options.headers)) {
+        options.headers.forEach(([key, value]) => { headers[key] = value })
+      } else {
+        Object.assign(headers, options.headers)
+      }
+    }
+    if (this.apiKey) headers['X-API-Key'] = this.apiKey
+
+    let response: Response
+    try {
+      response = await fetch(`${this.baseUrl}${endpoint}`, { ...options, headers })
+    } catch (err) {
+      throw new ApiError(0, {}, err instanceof Error ? err.message : 'Network error')
+    }
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}))
+      const error = new ApiError(response.status, body ?? {}, `HTTP ${response.status}: ${response.statusText}`)
+      if (response.status === 401) this.emitAuthError(error.message, response.status)
+      throw error
+    }
+    if (response.status === 204) return { success: true } as APIResponse<T>
+    return (await response.json()) as APIResponse<T>
+  }
+
+  // The unwrapped form the new Profiles v3 methods return: the envelope's data.
+  private async data<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+    const response = await this.requestRaw<T>(endpoint, options)
+    return response.data as T
+  }
+
+  // Status endpoint
+  // `default_instructions` is the resolved built-in MCP instructions default
+  // (MCP-2175) — present once the backend exposes it; optional so the Web UI
+  // degrades gracefully against older cores.
+  //
+  // `activation` is the Spec 044 activation funnel snapshot the endpoint
+  // already serves to an admin caller (omitted for scoped agent tokens, and
+  // absent when telemetry is not yet wired) — hence optional all the way down.
+  async getStatus(): Promise<APIResponse<StatusResponse>> {
+    return this.request<StatusResponse>('/api/v1/status')
+  }
+
+  // Routing mode endpoint
+  async getRouting(): Promise<APIResponse<RoutingInfo>> {
+    return this.request<RoutingInfo>('/api/v1/routing')
+  }
+
+  // Profiles v3 (Spec 108-f routes, Spec 108-i names verbatim). Every method
+  // throws an ApiError on a non-2xx answer. The v2 getActiveProfile /
+  // setActiveProfile pair is gone: nothing first-party reads or writes the
+  // server-level default any more (FR-039).
+  getProfiles(): Promise<ProfileList> {
+    return this.data<ProfileList>('/api/v1/profiles')
+  }
+
+  getProfile(name: string): Promise<ProfileView> {
+    return this.data<ProfileView>(`/api/v1/profiles/${encodeURIComponent(name)}`)
+  }
+
+  createProfile(cfg: ProfileConfig): Promise<ProfileWriteResult> {
+    return this.data<ProfileWriteResult>('/api/v1/profiles', { method: 'POST', body: JSON.stringify(cfg) })
+  }
+
+  updateProfile(name: string, cfg: ProfileConfig): Promise<ProfileWriteResult> {
+    return this.data<ProfileWriteResult>(`/api/v1/profiles/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify(cfg) })
+  }
+
+  renameProfile(name: string, new_name: string): Promise<ProfileRenameResult> {
+    return this.data<ProfileRenameResult>(`/api/v1/profiles/${encodeURIComponent(name)}/rename`, { method: 'POST', body: JSON.stringify({ new_name }) })
+  }
+
+  deleteProfile(name: string, opts: { reassign_to?: string; force?: boolean } = {}): Promise<ProfileDeleteResult> {
+    const q = queryString({ reassign_to: opts.reassign_to, force: opts.force ? 'true' : undefined })
+    return this.data<ProfileDeleteResult>(`/api/v1/profiles/${encodeURIComponent(name)}${q}`, { method: 'DELETE' })
+  }
+
+  getProfileEffectiveTools(name: string, opts: { client?: string; server?: string; reason?: string } = {}): Promise<EffectiveToolsResult> {
+    return this.data<EffectiveToolsResult>(`/api/v1/profiles/${encodeURIComponent(name)}/effective-tools${queryString(opts)}`)
+  }
+
+  tryProfile(body: { profile: ProfileConfig; query: string; limit?: number }): Promise<TryProfileResponse> {
+    return this.data<TryProfileResponse>('/api/v1/profiles/try', { method: 'POST', body: JSON.stringify(body) })
+  }
+
+  explainAccess(subject: ExplainSubjectQuery): Promise<AccessExplanation> {
+    const q = queryString({ tool: subject.tool, client: subject.client, token: subject.token, profile: subject.profile, anonymous: subject.anonymous ? 'true' : undefined })
+    return this.data<AccessExplanation>(`/api/v1/access/explain${q}`)
+  }
+
+  // Needs-attention list (Spec 109 FR-001): the one list every surface reads.
+  async getAttention(): Promise<APIResponse<AttentionResponse>> {
+    return this.request<AttentionResponse>('/api/v1/attention')
+  }
+
+  // Server endpoints
+  // Spec 109-l: `scope.profile` asks for the servers (and tool counts) a profile
+  // admits (GET /servers?profile=, Spec 108-e). An unscoped call is the plain
+  // request; a scoped one throws an ApiError that carries the status, so the
+  // page can say "Profile not found" instead of a generic failure.
+  async getServers(scope?: { profile?: string }): Promise<APIResponse<{ servers: Server[] }>> {
+    const query = queryString({ profile: scope?.profile })
+    if (!query) return this.request<{ servers: Server[] }>('/api/v1/servers')
+    return this.requestRaw<{ servers: Server[] }>(`/api/v1/servers${query}`)
+  }
+
+  async enableServer(serverName: string): Promise<APIResponse> {
+    return this.request(`/api/v1/servers/${encodeURIComponent(serverName)}/enable`, {
+      method: 'POST',
+    })
+  }
+
+  async disableServer(serverName: string): Promise<APIResponse> {
+    return this.request(`/api/v1/servers/${encodeURIComponent(serverName)}/disable`, {
+      method: 'POST',
+    })
+  }
+
+  async restartServer(serverName: string): Promise<APIResponse> {
+    return this.request(`/api/v1/servers/${encodeURIComponent(serverName)}/restart`, {
+      method: 'POST',
+    })
+  }
+
+  async triggerOAuthLogin(serverName: string): Promise<APIResponse> {
+    return this.request(`/api/v1/servers/${encodeURIComponent(serverName)}/login`, {
+      method: 'POST',
+    })
+  }
+
+  async triggerOAuthLogout(serverName: string): Promise<APIResponse> {
+    return this.request(`/api/v1/servers/${encodeURIComponent(serverName)}/logout`, {
+      method: 'POST',
+    })
+  }
+
+  async quarantineServer(serverName: string): Promise<APIResponse> {
+    return this.request(`/api/v1/servers/${encodeURIComponent(serverName)}/quarantine`, {
+      method: 'POST',
+    })
+  }
+
+  async discoverServerTools(serverName: string): Promise<APIResponse> {
+    return this.request(`/api/v1/servers/${encodeURIComponent(serverName)}/discover-tools`, {
+      method: 'POST',
+    })
+  }
+
+  async deleteServer(serverName: string): Promise<APIResponse> {
+    return this.callTool('upstream_servers', {
+      operation: 'remove',
+      name: serverName
+    })
+  }
+
+  // patchServer issues a partial update to an existing upstream server. The
+  // backend (handlePatchServer in internal/httpapi/server.go) treats every
+  // request field as optional and preserves anything not supplied, so callers
+  // can send only what they want to change. Passing `headers: {}` clears
+  // headers; omitting the field keeps the existing value.
+  async patchServer(serverName: string, patch: Record<string, unknown>): Promise<APIResponse> {
+    return this.request(`/api/v1/servers/${encodeURIComponent(serverName)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    })
+  }
+
+  // storeSecret stashes a value in the OS keyring under the given name and
+  // returns the ${keyring:<name>} reference string callers can substitute
+  // back into the server config. Kept for legacy callers; the
+  // Headers/Environment Variables "Convert to secret" flow now uses the
+  // atomic convertConfigToSecret() instead.
+  async storeSecret(name: string, value: string): Promise<APIResponse<{ reference?: string }>> {
+    return this.request<{ reference?: string }>('/api/v1/secrets', {
+      method: 'POST',
+      body: JSON.stringify({ name, value, type: 'keyring' }),
+    })
+  }
+
+  // convertConfigToSecret asks the backend to atomically (a) read the real
+  // value of a header / env key from the server config, (b) store it in
+  // the OS keyring under `secretName`, and (c) rewrite the config field
+  // with the `${keyring:<name>}` reference. The client never has to
+  // possess the real value — which matters when the API redacts
+  // sensitive header values on the read path.
+  async convertConfigToSecret(
+    serverName: string,
+    scope: 'header' | 'env',
+    key: string,
+    secretName: string
+  ): Promise<APIResponse<{ reference?: string }>> {
+    return this.request<{ reference?: string }>(
+      `/api/v1/servers/${encodeURIComponent(serverName)}/config-to-secret`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ scope, key, secret_name: secretName }),
+      }
+    )
+  }
+
+  // `incarnation` (Spec 116 FR-017) is the server identity the rows were read
+  // for; per-tool decisions echo it as expected_incarnation.
+  async getServerTools(serverName: string): Promise<APIResponse<{ tools: Tool[]; incarnation?: number }>> {
+    return this.request<{ tools: Tool[]; incarnation?: number }>(`/api/v1/servers/${encodeURIComponent(serverName)}/tools`)
+  }
+
+  // Global tools listing (Spec 050) — all tools across all servers from a single consolidated endpoint.
+  //
+  // Spec 108-j (FR-032): with a `client` or `profile` the listing is a view-as
+  // (rows gain `access`/`profile_tier`). That goes through requestRaw so a
+  // 400/403/404 keeps its status and body: the page shows "Client not found"
+  // inline instead of a blank table. Without a scope the call is unchanged.
+  async getGlobalTools(scope?: { client?: string; profile?: string }): Promise<APIResponse<GlobalToolsResponse>> {
+    const query = queryString({ client: scope?.client, profile: scope?.profile })
+    if (!query) return this.request<GlobalToolsResponse>('/api/v1/tools')
+    return this.requestRaw<GlobalToolsResponse>(`/api/v1/tools${query}`)
+  }
+
+  // Tool-level quarantine (Spec 032) + scan-gate hold evidence (Spec 088).
+  //
+  // The record source stays `/tools/export`: those approval records are durable,
+  // so pending/blocked tools remain visible when a server is disconnected or the
+  // index is empty. That payload carries no held_* evidence, so the inventory
+  // endpoint `/tools` is fetched in parallel purely as ENRICHMENT and joined by
+  // tool name. The enrichment call is caught individually and degrades to null —
+  // a failed evidence fetch must never drop a durable approval record. The
+  // enrichment is joined only when both reads name the same server incarnation
+  // (Spec 116 FR-017).
+  async getToolApprovals(serverName: string): Promise<APIResponse<{ tools: ToolApproval[], count: number, incarnation?: number }>> {
+    const encoded = encodeURIComponent(serverName)
+    const [response, enrichment] = await Promise.all([
+      this.request<{ tools: ToolApproval[], count: number, incarnation?: number }>(`/api/v1/servers/${encoded}/tools/export`),
+      this.request<{ tools: HoldEvidenceSource[]; incarnation?: number }>(`/api/v1/servers/${encoded}/tools`)
+        .catch(() => null),
+    ])
+
+    if (response.success && response.data?.tools) {
+      const normalized = response.data.tools.map((tool) => {
+        const disabled = typeof tool.disabled === 'boolean'
+          ? tool.disabled
+          : (typeof tool.enabled === 'boolean' ? !tool.enabled : false)
+        return {
+          ...tool,
+          disabled,
+          enabled: !disabled,
+        }
+      })
+      // Spec 116 PR2 review round 8 (FR-017): the two reads are independent,
+      // so a remove + same-name re-add between them pairs the replacement's
+      // records with the removed server's hold verdict and signals. Enrich
+      // only when both envelopes name the same incarnation; otherwise the
+      // records are returned without evidence (the degraded path above).
+      const sameServer = (enrichment?.data?.incarnation ?? null) === (response.data.incarnation ?? null)
+      const evidence = enrichment?.success && sameServer ? enrichment.data?.tools ?? null : null
+      response.data.tools = joinHoldEvidence(normalized, evidence)
+    }
+    return response
+  }
+
+  async getToolDiff(serverName: string, toolName: string): Promise<APIResponse<ToolApproval>> {
+    return this.request<ToolApproval>(`/api/v1/servers/${encodeURIComponent(serverName)}/tools/${encodeURIComponent(toolName)}/diff`)
+  }
+
+  // Spec 116 FR-017: every approval write accepts the incarnation of the server
+  // the operator reviewed (the `incarnation` of GET /servers or of the review
+  // payload). The backend answers 409 server_replaced, and writes nothing, when
+  // the server was removed and re-added since. Omitted when unknown.
+  // Spec 117 PR-2 (#1566): expectedHashes (tool name -> the review's current_hash) binds the
+  // approval to the reviewed definitions; the core answers 409 review_out_of_date ("out of date")
+  // and approves nothing when one changed. The two bindings are independent and may be sent
+  // together. Undefined sends an unbound (legacy) request.
+  async approveTools(serverName: string, tools?: string[], expectedIncarnation?: number, expectedHashes?: Record<string, string>): Promise<APIResponse<{ approved: number }>> {
+    const body: Record<string, unknown> = tools && tools.length > 0
+      ? { tools }
+      : { approve_all: true }
+    if (expectedHashes) body.expected_hashes = expectedHashes
+    return this.request<{ approved: number }>(`/api/v1/servers/${encodeURIComponent(serverName)}/tools/approve`, {
+      method: 'POST',
+      body: JSON.stringify(withExpectedIncarnation(body, expectedIncarnation)),
+    })
+  }
+
+  // MCP-2199: reject pending/changed quarantined tools. Mirrors approveTools
+  // against POST .../tools/block — {tools:[...]} for an explicit set,
+  // {block_all:true} otherwise. Blocking is reversible (the tool can be
+  // re-enabled later), so no destructive-confirm gate is needed.
+  async blockTools(serverName: string, tools?: string[], expectedIncarnation?: number): Promise<APIResponse<{ blocked: number }>> {
+    const body = tools && tools.length > 0
+      ? { tools }
+      : { block_all: true }
+    return this.request<{ blocked: number }>(`/api/v1/servers/${encodeURIComponent(serverName)}/tools/block`, {
+      method: 'POST',
+      body: JSON.stringify(withExpectedIncarnation(body, expectedIncarnation)),
+    })
+  }
+
+  async setToolEnabled(serverName: string, toolName: string, enabled: boolean, expectedIncarnation?: number): Promise<APIResponse<{
+    server_name: string
+    tool_name: string
+    enabled: boolean
+  }>> {
+    return this.request<{ server_name: string; tool_name: string; enabled: boolean }>(`/api/v1/servers/${encodeURIComponent(serverName)}/tools/${encodeURIComponent(toolName)}/enabled`, {
+      method: 'POST',
+      body: JSON.stringify(withExpectedIncarnation({ enabled }, expectedIncarnation)),
+    })
+  }
+
+  // Bulk-toggle every known tool of a server. The response's `changed`
+  // field reflects only tools whose state actually changed — already-correct
+  // tools are skipped on the server side.
+  async setAllToolsEnabled(serverName: string, enabled: boolean, expectedIncarnation?: number): Promise<APIResponse<{
+    server_name: string
+    enabled: boolean
+    changed: number
+  }>> {
+    const action = enabled ? 'enable_all' : 'disable_all'
+    const bound = expectedIncarnation && expectedIncarnation > 0
+    return this.request<{ server_name: string; enabled: boolean; changed: number }>(`/api/v1/servers/${encodeURIComponent(serverName)}/tools/${action}`, {
+      method: 'POST',
+      ...(bound ? { body: JSON.stringify({ expected_incarnation: expectedIncarnation }) } : {}),
+    })
+  }
+
+  async getServerLogs(serverName: string, tail?: number): Promise<APIResponse<{ logs: string[] }>> {
+    const params = tail ? `?tail=${tail}` : ''
+    return this.request<{ logs: string[] }>(`/api/v1/servers/${encodeURIComponent(serverName)}/logs${params}`)
+  }
+
+  // Tool search
+  async searchTools(query: string, limit = 10): Promise<APIResponse<{ results: SearchResult[] }>> {
+    const params = new URLSearchParams({ q: query, limit: limit.toString() })
+    return this.request<{ results: SearchResult[] }>(`/api/v1/index/search?${params}`)
+  }
+
+  // Server-Sent Events
+  createEventSource(): EventSource {
+    const url = this.apiKey
+      ? `${this.baseUrl}/events?apikey=${encodeURIComponent(this.apiKey)}`
+      : `${this.baseUrl}/events`
+
+    // SEC-07: the "redacted" URL used to be redacted WITH the key preview, so it
+    // leaked the first 8 characters anyway. Redact fully and drop the preview.
+    console.log('Creating EventSource:', {
+      hasApiKey: !!this.apiKey,
+      url: this.apiKey ? url.replace(encodeURIComponent(this.apiKey), '[redacted]') : url
+    })
+
+    return new EventSource(url)
+  }
+
+  // Secret endpoints
+  async getSecretRefs(): Promise<APIResponse<{ refs: SecretRef[] }>> {
+    return this.request<{ refs: SecretRef[] }>('/api/v1/secrets/refs')
+  }
+
+  async getConfigSecrets(): Promise<APIResponse<ConfigSecretsResponse>> {
+    return this.request<ConfigSecretsResponse>('/api/v1/secrets/config')
+  }
+
+  async runMigrationAnalysis(): Promise<APIResponse<{ analysis: MigrationAnalysis }>> {
+    return this.request<{ analysis: MigrationAnalysis }>('/api/v1/secrets/migrate', {
+      method: 'POST',
+    })
+  }
+
+  async setSecret(name: string, value: string, type: string = 'keyring'): Promise<APIResponse<{
+    message: string
+    name: string
+    type: string
+    reference: string
+  }>> {
+    return this.request('/api/v1/secrets', {
+      method: 'POST',
+      body: JSON.stringify({ name, value, type })
+    })
+  }
+
+  async deleteSecret(name: string, type: string = 'keyring'): Promise<APIResponse<{
+    message: string
+    name: string
+    type: string
+  }>> {
+    const url = `/api/v1/secrets/${encodeURIComponent(name)}?type=${encodeURIComponent(type)}`
+    return this.request(url, {
+      method: 'DELETE'
+    })
+  }
+
+  // Docker status
+  async getDockerStatus(): Promise<APIResponse<{
+    docker_available: boolean
+    isolation_enabled: boolean
+    recovery_mode: boolean
+    failure_count: number
+    attempts_since_up: number
+    last_attempt: string
+    last_error: string
+    last_successful_at: string
+  }>> {
+    return this.request('/api/v1/docker/status')
+  }
+
+  // Diagnostics
+  async getDiagnostics(): Promise<APIResponse<{
+    upstream_errors: Array<{
+      type: string
+      category: string
+      server?: string
+      title: string
+      message: string
+      timestamp: string
+      severity: string
+      metadata?: Record<string, any>
+    }>
+    oauth_required: string[]
+    missing_secrets: Array<{
+      name: string
+      reference: string
+      server: string
+      type: string
+    }>
+    runtime_warnings: Array<{
+      type: string
+      category: string
+      server?: string
+      title: string
+      message: string
+      timestamp: string
+      severity: string
+      metadata?: Record<string, any>
+    }>
+    total_issues: number
+    last_updated: string
+  }>> {
+    return this.request('/api/v1/diagnostics')
+  }
+
+  // Spec 044 — per-server diagnostics.
+  async getServerDiagnostic(serverName: string): Promise<APIResponse<{
+    server: string
+    connected: boolean
+    status: string
+    health: any
+    diagnostic: any | null
+    error_code: string | null
+    catalog_size: number
+  }>> {
+    return this.request(`/api/v1/servers/${encodeURIComponent(serverName)}/diagnostics`)
+  }
+
+  // Spec 044 — invoke a registered fixer. Destructive fixers default to
+  // dry_run unless mode='execute' is supplied by the caller.
+  async invokeDiagnosticFix(params: {
+    server: string
+    code: string
+    fixer_key: string
+    mode?: 'dry_run' | 'execute'
+  }): Promise<APIResponse<DiagnosticFixResponse>> {
+    return this.request<DiagnosticFixResponse>('/api/v1/diagnostics/fix', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    })
+  }
+
+  // Tool Call History endpoints
+  async getToolCalls(params?: { limit?: number; offset?: number }): Promise<APIResponse<GetToolCallsResponse>> {
+    const searchParams = new URLSearchParams()
+    if (params?.limit) searchParams.set('limit', params.limit.toString())
+    if (params?.offset) searchParams.set('offset', params.offset.toString())
+
+    const url = `/api/v1/tool-calls${searchParams.toString() ? '?' + searchParams.toString() : ''}`
+    return this.request<GetToolCallsResponse>(url)
+  }
+
+  async getToolCallDetail(id: string): Promise<APIResponse<GetToolCallDetailResponse>> {
+    return this.request<GetToolCallDetailResponse>(`/api/v1/tool-calls/${encodeURIComponent(id)}`)
+  }
+
+  async getServerToolCalls(serverName: string, limit?: number): Promise<APIResponse<GetServerToolCallsResponse>> {
+    const url = `/api/v1/servers/${encodeURIComponent(serverName)}/tool-calls${limit ? `?limit=${limit}` : ''}`
+    return this.request<GetServerToolCallsResponse>(url)
+  }
+
+  async replayToolCall(id: string, args: Record<string, any>): Promise<APIResponse<any>> {
+    return this.request(`/api/v1/tool-calls/${encodeURIComponent(id)}/replay`, {
+      method: 'POST',
+      body: JSON.stringify({ arguments: args })
+    })
+  }
+
+  // Session management endpoints
+  // status narrows the listing server-side ('active' | 'closed'). Without it the
+  // backend returns the most recent sessions of ANY status, so a small limit can
+  // be filled entirely by closed ones and hide a live client (audit F10).
+  // `scope` is Spec 108 FR-031 / url-filter-contract.md's Sessions row:
+  // profile/client/token, sent only once `features.scope_filters` lists them
+  // (macOS's ScopeFilter.restRequest does the identical thing for the same
+  // endpoint — zcode review round 1, F8).
+  async getSessions(
+    limit?: number,
+    status?: 'active' | 'closed',
+    scope?: { profile?: string; client?: string; token?: string }
+  ): Promise<APIResponse<GetSessionsResponse>> {
+    const params = new URLSearchParams()
+    if (limit) params.set('limit', String(limit))
+    if (status) params.set('status', status)
+    if (scope?.profile) params.set('profile', scope.profile)
+    if (scope?.client) params.set('client', scope.client)
+    if (scope?.token) params.set('token', scope.token)
+    const query = params.toString()
+    return this.request<GetSessionsResponse>(`/api/v1/sessions${query ? `?${query}` : ''}`)
+  }
+
+  async getSessionDetail(sessionId: string): Promise<APIResponse<GetSessionDetailResponse>> {
+    return this.request<GetSessionDetailResponse>(`/api/v1/sessions/${encodeURIComponent(sessionId)}`)
+  }
+
+  // Configuration management endpoints
+  async getConfig(): Promise<APIResponse<GetConfigResponse>> {
+    return this.request<GetConfigResponse>('/api/v1/config')
+  }
+
+  async validateConfig(config: any): Promise<APIResponse<ValidateConfigResponse>> {
+    return this.request<ValidateConfigResponse>('/api/v1/config/validate', {
+      method: 'POST',
+      body: JSON.stringify(config)
+    })
+  }
+
+  async applyConfig(config: any): Promise<APIResponse<ConfigApplyResult>> {
+    return this.request<ConfigApplyResult>('/api/v1/config/apply', {
+      method: 'POST',
+      body: JSON.stringify(config)
+    })
+  }
+
+  // setDockerIsolationEnabled flips the global docker_isolation.enabled
+  // flag without resending the full config. Mirrors the PATCH endpoint
+  // added on the backend.
+  async setDockerIsolationEnabled(enabled: boolean): Promise<APIResponse<ConfigApplyResult>> {
+    return this.request<ConfigApplyResult>('/api/v1/config/docker-isolation', {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled })
+    })
+  }
+
+  // patchConfig applies a partial (deep-merged) config update — only the
+  // fields present in `partial` are changed; everything else (including masked
+  // secrets like api_key) is preserved server-side. Spec 060.
+  async patchConfig(partial: Record<string, any>): Promise<APIResponse<ConfigApplyResult>> {
+    return this.request<ConfigApplyResult>('/api/v1/config', {
+      method: 'PATCH',
+      body: JSON.stringify(partial)
+    })
+  }
+
+  // Spec 108-i I21: the anonymous_profile setting is written through PATCH
+  // /config like every setting, but a refusal (409 binding_bypassable_without_auth)
+  // must keep its `bindings` and `fixes`, which patchConfig's generic error path
+  // drops. `profile: ''` is "Unconfined".
+  async setAnonymousProfile(profile: string): Promise<APIResponse<ConfigApplyResult>> {
+    return this.requestRaw<ConfigApplyResult>('/api/v1/config', {
+      method: 'PATCH',
+      body: JSON.stringify({ anonymous_profile: profile }),
+    })
+  }
+
+  // Token statistics endpoints
+  async getTokenStats(): Promise<APIResponse<ServerTokenMetrics>> {
+    return this.request<ServerTokenMetrics>('/api/v1/stats/tokens')
+  }
+
+  // Tool Call via REST API
+  async callTool(toolName: string, args: Record<string, any>): Promise<APIResponse<any>> {
+    return this.request<any>('/api/v1/tools/call', {
+      method: 'POST',
+      body: JSON.stringify({
+        tool_name: toolName,
+        arguments: args
+      })
+    })
+  }
+
+  // Registry browsing (Phase 7)
+  async listRegistries(): Promise<APIResponse<GetRegistriesResponse>> {
+    return this.request<GetRegistriesResponse>('/api/v1/registries')
+  }
+
+  async searchRegistryServers(
+    registryId: string,
+    options?: {
+      query?: string
+      tag?: string
+      limit?: number
+    }
+  ): Promise<APIResponse<SearchRegistryServersResponse>> {
+    const params = new URLSearchParams()
+    if (options?.query) params.append('q', options.query)
+    if (options?.tag) params.append('tag', options.tag)
+    if (options?.limit) params.append('limit', options.limit.toString())
+
+    const url = `/api/v1/registries/${encodeURIComponent(registryId)}/servers${params.toString() ? '?' + params.toString() : ''}`
+    return this.request<SearchRegistryServersResponse>(url)
+  }
+
+  // Catalog (Spec 109 FR-060): source-agnostic search across every enabled
+  // catalog source. `source` narrows to one (never selects a UI tab — that's
+  // the caller's job, FR-062).
+  async catalogSearch(options?: {
+    q?: string
+    source?: string
+    tag?: string
+    limit?: number
+  }): Promise<APIResponse<CatalogSearchResponse>> {
+    const params = new URLSearchParams()
+    if (options?.q) params.append('q', options.q)
+    if (options?.source) params.append('source', options.source)
+    if (options?.tag) params.append('tag', options.tag)
+    if (options?.limit) params.append('limit', options.limit.toString())
+
+    const url = `/api/v1/catalog/search${params.toString() ? '?' + params.toString() : ''}`
+    return this.request<CatalogSearchResponse>(url)
+  }
+
+  // MCP-866 / MCP-867: add a user-supplied registry source. The server tags an
+  // added source as custom provenance (provenance is NOT part of the request) —
+  // informational only (MCP-1072); servers added from it follow the global
+  // quarantine default like any other. We mirror the structured-error pattern of
+  // addServerFromRegistry so the UI can branch on the stable `code`
+  // (invalid_registry_url | registries_locked | registry_shadows_builtin |
+  // duplicate_registry).
+  async addRegistrySource(
+    url: string,
+    opts?: { protocol?: string; id?: string; name?: string }
+  ): Promise<AddRegistrySourceResult> {
+    const body: Record<string, unknown> = { url }
+    if (opts?.protocol) body.protocol = opts.protocol
+    if (opts?.id) body.id = opts.id
+    if (opts?.name) body.name = opts.name
+
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (this.apiKey) headers['X-API-Key'] = this.apiKey
+
+    try {
+      const response = await fetch(`${this.baseUrl}/api/v1/registries`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body)
+      })
+
+      const payload: any = await response.json().catch(() => ({}))
+
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          // registries_locked is a 403 but is a policy decision, not an auth
+          // failure — only emit the auth-error path for a missing/invalid key.
+          if (payload?.code !== 'registries_locked') {
+            this.emitAuthError(payload?.error || `HTTP ${response.status}`, response.status)
+          }
+        }
+        return {
+          success: false,
+          error: payload?.error || `HTTP ${response.status}: ${response.statusText}`,
+          code: payload?.code
+        }
+      }
+
+      return { success: true, registry: payload?.data?.registry }
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      }
+    }
+  }
+
+  // MCP-1073: edit a user-added custom registry source via
+  // PUT /api/v1/registries/{id}. Only the fields supplied are sent; empty fields
+  // are left unchanged server-side. Built-in registries are read-only and the
+  // backend refuses them with registry_shadows_builtin. Mirrors
+  // addRegistrySource's structured-error contract (registry_not_found |
+  // registry_shadows_builtin | invalid_registry_url | registries_locked).
+  async editRegistrySource(
+    id: string,
+    opts: { name?: string; url?: string; serversUrl?: string }
+  ): Promise<AddRegistrySourceResult> {
+    const body: Record<string, unknown> = {}
+    if (opts.name) body.name = opts.name
+    if (opts.url) body.url = opts.url
+    if (opts.serversUrl) body.servers_url = opts.serversUrl
+
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (this.apiKey) headers['X-API-Key'] = this.apiKey
+
+    try {
+      const response = await fetch(`${this.baseUrl}/api/v1/registries/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify(body)
+      })
+
+      const payload: any = await response.json().catch(() => ({}))
+
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          if (payload?.code !== 'registries_locked') {
+            this.emitAuthError(payload?.error || `HTTP ${response.status}`, response.status)
+          }
+        }
+        return {
+          success: false,
+          error: payload?.error || `HTTP ${response.status}: ${response.statusText}`,
+          code: payload?.code
+        }
+      }
+
+      return { success: true, registry: payload?.data?.registry }
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      }
+    }
+  }
+
+  // MCP-1073: remove a user-added custom registry source via
+  // DELETE /api/v1/registries/{id}. Servers already added from it stay; only the
+  // source is removed. Built-in registries are read-only (registry_shadows_builtin).
+  async removeRegistrySource(id: string): Promise<AddRegistrySourceResult> {
+    const headers: Record<string, string> = {}
+    if (this.apiKey) headers['X-API-Key'] = this.apiKey
+
+    try {
+      const response = await fetch(`${this.baseUrl}/api/v1/registries/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers
+      })
+
+      const payload: any = await response.json().catch(() => ({}))
+
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          if (payload?.code !== 'registries_locked') {
+            this.emitAuthError(payload?.error || `HTTP ${response.status}`, response.status)
+          }
+        }
+        return {
+          success: false,
+          error: payload?.error || `HTTP ${response.status}: ${response.statusText}`,
+          code: payload?.code
+        }
+      }
+
+      return { success: true, registry: payload?.data?.registry }
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      }
+    }
+  }
+
+  // Spec 070 (CN-001): add a server to upstream by *reference* — the server
+  // re-derives and validates the config from the registry entry. The client no
+  // longer splits install_cmd / chooses protocol (that client-side parsing was
+  // the source of issue #483 and let a buggy client smuggle in arbitrary
+  // command/args). All add surfaces (REST/MCP/CLI) funnel through the same
+  // backend keystone (AddServerFromRegistry), so identical input → identical
+  // persisted, quarantined config (CN-004).
+  async addServerFromRegistry(
+    registryId: string,
+    serverId: string,
+    opts?: { name?: string; enabled?: boolean; env?: Record<string, string> }
+  ): Promise<AddFromRegistryResult> {
+    const url = `/api/v1/registries/${encodeURIComponent(registryId)}/servers/${encodeURIComponent(serverId)}/add`
+
+    const body: Record<string, unknown> = {}
+    if (opts?.name) body.name = opts.name
+    if (opts?.enabled !== undefined) body.enabled = opts.enabled
+    if (opts?.env && Object.keys(opts.env).length > 0) body.env = opts.env
+
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (this.apiKey) headers['X-API-Key'] = this.apiKey
+
+    try {
+      const response = await fetch(`${this.baseUrl}${url}`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body)
+      })
+
+      const payload: any = await response.json().catch(() => ({}))
+
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          this.emitAuthError(payload?.error || `HTTP ${response.status}`, response.status)
+        }
+        return {
+          success: false,
+          error: payload?.error || `HTTP ${response.status}: ${response.statusText}`,
+          code: payload?.code,
+          missingInputs: payload?.missing_inputs
+        }
+      }
+
+      return { success: true, server: payload?.data?.server }
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      }
+    }
+  }
+
+  // Info endpoint (version and update information)
+  async getInfo(opts?: { refresh?: boolean }): Promise<APIResponse<InfoResponse>> {
+    const url = opts?.refresh ? '/api/v1/info?refresh=true' : '/api/v1/info'
+    return this.request<InfoResponse>(url)
+  }
+
+  // Activity Log endpoints (RFC-003)
+  async getActivities(params?: {
+    type?: string
+    server?: string
+    tool?: string
+    session_id?: string
+    work_session_id?: string
+    status?: string
+    intent_type?: string
+    /** Sub-calls of one code_execution run: the parent record's request_id. */
+    parent_id?: string
+    /** Exact correlation id — used to jump from a sub-call back to its parent. */
+    request_id?: string
+    start_time?: string
+    end_time?: string
+    limit?: number
+    offset?: number
+    /** Spec 108 FR-031: `-` means unattributed. Sent only once available. */
+    profile?: string
+    client?: string
+    token?: string
+  }): Promise<APIResponse<ActivityListResponse>> {
+    const searchParams = new URLSearchParams()
+    if (params) {
+      Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined && value !== '') {
+          searchParams.append(key, String(value))
+        }
+      })
+    }
+    const url = `/api/v1/activity${searchParams.toString() ? '?' + searchParams.toString() : ''}`
+    return this.request<ActivityListResponse>(url)
+  }
+
+  // Spec 107 FR-041/FR-043(k), T086/T088: the tenant-scoped twin of
+  // getActivities() above — the core `/activity*` doors 403 a session
+  // principal (contracts/rest-endpoints.md); a tenant reads their own
+  // records, entitled-server-filtered, from this door instead. Response
+  // shape is `{items,total}` with only `limit`/`offset` (no type/server/etc.
+  // query params — those apply client-side in Activity.vue, same as today).
+  async getUserActivity(params?: { limit?: number; offset?: number }): Promise<APIResponse<{ items: ActivityRecord[]; total: number }>> {
+    const searchParams = new URLSearchParams()
+    if (params) {
+      Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined) searchParams.append(key, String(value))
+      })
+    }
+    const url = `/api/v1/user/activity${searchParams.toString() ? '?' + searchParams.toString() : ''}`
+    return this.request<{ items: ActivityRecord[]; total: number }>(url)
+  }
+
+  async getActivityDetail(id: string): Promise<APIResponse<ActivityDetailResponse>> {
+    return this.request<ActivityDetailResponse>(`/api/v1/activity/${encodeURIComponent(id)}`)
+  }
+
+  async getActivitySummary(
+    period: string = '24h',
+    scope?: { profile?: string; client?: string; token?: string },
+  ): Promise<APIResponse<ActivitySummaryResponse>> {
+    return this.request<ActivitySummaryResponse>(`/api/v1/activity/summary${queryString({ period, ...scope })}`)
+  }
+
+  // Usage statistics aggregate for the Web UI usage graphs (Spec 069).
+  async getActivityUsage(params?: {
+    window?: UsageWindow
+    server?: string
+    tool?: string
+    status?: UsageStatus
+    top?: number
+    sort?: UsageSort
+    /** Spec 108 FR-031: `-` means unattributed. Sent only once available. */
+    profile?: string
+    client?: string
+    token?: string
+  }): Promise<APIResponse<UsageAggregateResponse>> {
+    const searchParams = new URLSearchParams()
+    if (params) {
+      Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined && value !== '') {
+          searchParams.append(key, String(value))
+        }
+      })
+    }
+    const qs = searchParams.toString()
+    return this.request<UsageAggregateResponse>(`/api/v1/activity/usage${qs ? '?' + qs : ''}`)
+  }
+
+  getActivityExportUrl(params: {
+    format: 'json' | 'csv'
+    type?: string
+    server?: string
+    tool?: string
+    status?: string
+    /** Raw MCP transport session id (see useScopeQuery's sessionRestParam). */
+    session_id?: string
+    /** Work session id (`ws-` prefix; see useScopeQuery's sessionRestParam). */
+    work_session_id?: string
+    /** Export only the sub-calls of one code_execution run. */
+    parent_id?: string
+    start_time?: string
+    end_time?: string
+    include_bodies?: boolean
+    /** Spec 108 FR-031: the export matches the filtered table. */
+    profile?: string
+    client?: string
+    token?: string
+  }): string {
+    const searchParams = new URLSearchParams()
+    searchParams.append('format', params.format)
+    if (this.apiKey) {
+      searchParams.append('apikey', this.apiKey)
+    }
+    Object.entries(params).forEach(([key, value]) => {
+      if (key !== 'format' && value !== undefined && value !== '') {
+        searchParams.append(key, String(value))
+      }
+    })
+    return `${this.baseUrl}/api/v1/activity/export?${searchParams.toString()}`
+  }
+
+  // Import server configurations
+  async importServersFromJSON(params: {
+    content: string
+    format?: string
+    server_names?: string[]
+    preview?: boolean
+    // Paste tab env/header edits (Value or Secret-ref), applied server-side
+    // to the server this same request's `content` parses to — only takes
+    // effect when preview is false. See PasteServer.vue's handleAdd.
+    env_override?: Record<string, string>
+    header_override?: Record<string, string>
+    // Opt into detecting a bare URL or single command line (FR-064) when
+    // JSON/TOML detection fails. Only the Paste tab sets this — every other
+    // caller (the general "Import config" panel, canonical-path import)
+    // must keep getting a clear detection error for a plain one-liner
+    // instead of it being silently guessed at (review round 4 F-E).
+    allow_paste_fallback?: boolean
+  }): Promise<APIResponse<ImportResponse>> {
+    const url = `/api/v1/servers/import/json${params.preview ? '?preview=true' : ''}`
+    return this.request<ImportResponse>(url, {
+      method: 'POST',
+      body: JSON.stringify({
+        content: params.content,
+        format: params.format,
+        server_names: params.server_names,
+        env_override: params.env_override,
+        header_override: params.header_override,
+        allow_paste_fallback: params.allow_paste_fallback
+      })
+    })
+  }
+
+  async importServersFromFile(file: File, params?: {
+    format?: string
+    server_names?: string[]
+    preview?: boolean
+  }): Promise<APIResponse<ImportResponse>> {
+    const formData = new FormData()
+    formData.append('file', file)
+
+    const searchParams = new URLSearchParams()
+    if (params?.preview) searchParams.append('preview', 'true')
+    if (params?.format) searchParams.append('format', params.format)
+    if (params?.server_names?.length) searchParams.append('server_names', params.server_names.join(','))
+
+    const url = `/api/v1/servers/import${searchParams.toString() ? '?' + searchParams.toString() : ''}`
+
+    // Use custom fetch without Content-Type header (let browser set it for FormData)
+    try {
+      const headers: Record<string, string> = {}
+      if (this.apiKey) {
+        headers['X-API-Key'] = this.apiKey
+      }
+
+      const response = await fetch(`${this.baseUrl}${url}`, {
+        method: 'POST',
+        headers,
+        body: formData
+      })
+
+      if (!response.ok) {
+        // Extract error message from response body if available
+        const errorData = await response.json().catch(() => ({}))
+        const errorMsg = errorData.error || `HTTP ${response.status}: ${response.statusText}`
+        throw new Error(errorMsg)
+      }
+
+      const data = await response.json()
+      return data as APIResponse<ImportResponse>
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      }
+    }
+  }
+
+  // Get canonical config paths for import hints
+  async getCanonicalConfigPaths(): Promise<APIResponse<CanonicalConfigPathsResponse>> {
+    return this.request<CanonicalConfigPathsResponse>('/api/v1/servers/import/paths')
+  }
+
+  // Import servers from a file path on the server's filesystem.
+  // Spec 046 v2: skip_quarantine=true imports as already-trusted (skips
+  // the quarantine holding state). Default false preserves the safe-by-
+  // default posture for any caller that doesn't pass the flag.
+  async importServersFromPath(params: {
+    path: string
+    format?: string
+    server_names?: string[]
+    preview?: boolean
+    skip_quarantine?: boolean
+    rename?: Record<string, string>
+  }): Promise<APIResponse<ImportResponse>> {
+    const qs: string[] = []
+    if (params.preview) qs.push('preview=true')
+    if (params.skip_quarantine) qs.push('skip_quarantine=true')
+    const url = `/api/v1/servers/import/path${qs.length ? '?' + qs.join('&') : ''}`
+    return this.request<ImportResponse>(url, {
+      method: 'POST',
+      body: JSON.stringify({
+        path: params.path,
+        format: params.format,
+        server_names: params.server_names,
+        rename: params.rename,
+      })
+    })
+  }
+
+  // Agent Token Management (Spec 028)
+  // Spec 108-i: `profile` / `token` are the Spec 108-f server-side filters
+  // (current pin; `token` is an exact name). A 400 body reaches the caller as an
+  // ApiError so a `field: "name"` refusal can be shown under the name input.
+  async listAgentTokens(scope: { profile?: string; token?: string } = {}): Promise<APIResponse<{ tokens: AgentTokenInfo[] }>> {
+    return this.requestRaw<{ tokens: AgentTokenInfo[] }>(`/api/v1/tokens${queryString(scope)}`)
+  }
+
+  async createAgentToken(req: CreateAgentTokenRequest): Promise<APIResponse<CreateAgentTokenResponse>> {
+    return this.requestRaw<CreateAgentTokenResponse>('/api/v1/tokens', {
+      method: 'POST',
+      body: JSON.stringify(req),
+    })
+  }
+
+  async revokeAgentToken(name: string): Promise<APIResponse<void>> {
+    return this.request<void>(`/api/v1/tokens/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+    })
+  }
+
+  // Permanently delete a token, freeing its name for reuse (unlike revoke, a soft delete).
+  async deleteAgentToken(name: string): Promise<APIResponse<void>> {
+    return this.request<void>(`/api/v1/tokens/${encodeURIComponent(name)}/permanent`, {
+      method: 'DELETE',
+    })
+  }
+
+  async regenerateAgentToken(name: string): Promise<APIResponse<{ name: string; token: string }>> {
+    return this.request<{ name: string; token: string }>(`/api/v1/tokens/${encodeURIComponent(name)}/regenerate`, {
+      method: 'POST',
+    })
+  }
+
+  // Admin server management (Server edition)
+  async adminEnableServer(name: string): Promise<APIResponse<any>> {
+    return this.request(`/api/v1/admin/servers/${encodeURIComponent(name)}/enable`, { method: 'POST', credentials: 'include' } as RequestInit)
+  }
+
+  async adminDisableServer(name: string): Promise<APIResponse<any>> {
+    return this.request(`/api/v1/admin/servers/${encodeURIComponent(name)}/disable`, { method: 'POST', credentials: 'include' } as RequestInit)
+  }
+
+  async adminRestartServer(name: string): Promise<APIResponse<any>> {
+    return this.request(`/api/v1/admin/servers/${encodeURIComponent(name)}/restart`, { method: 'POST', credentials: 'include' } as RequestInit)
+  }
+
+  // User tokens (Server edition)
+  async listUserTokens(): Promise<APIResponse<{ tokens: AgentTokenInfo[] }>> {
+    return this.request<{ tokens: AgentTokenInfo[] }>('/api/v1/user/tokens', { credentials: 'include' } as RequestInit)
+  }
+
+  async createUserToken(data: CreateAgentTokenRequest): Promise<APIResponse<CreateAgentTokenResponse>> {
+    return this.request<CreateAgentTokenResponse>('/api/v1/user/tokens', {
+      method: 'POST',
+      body: JSON.stringify(data),
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+    } as RequestInit)
+  }
+
+  async revokeUserToken(name: string): Promise<APIResponse<void>> {
+    return this.request<void>(`/api/v1/user/tokens/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+      credentials: 'include',
+    } as RequestInit)
+  }
+
+  async regenerateUserToken(name: string): Promise<APIResponse<{ name: string; token: string }>> {
+    return this.request<{ name: string; token: string }>(`/api/v1/user/tokens/${encodeURIComponent(name)}/regenerate`, {
+      method: 'POST',
+      credentials: 'include',
+    } as RequestInit)
+  }
+
+  // Feedback submission
+  async submitFeedback(data: { category: string; message: string; email?: string }): Promise<APIResponse<{ issue_url?: string }>> {
+    return this.request<{ issue_url?: string }>('/api/v1/feedback', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  // Connect feature (client registration)
+  async getConnectStatus(): Promise<APIResponse<ConnectStatusResponse>> {
+    return this.request<ConnectStatusResponse>('/api/v1/connect')
+  }
+
+  async getClients(scope: { profile?: string; client?: string } = {}): Promise<APIResponse<ClientsResponse>> { return this.request(`/api/v1/clients${queryString(scope)}`) }
+  async getClient(id: string): Promise<APIResponse<import('@/types/api').ClientPresence>> { return this.request(`/api/v1/clients/${encodeURIComponent(id)}`) }
+
+  // Spec 108-f client credential routes. They answer {client, ...}; every one
+  // throws an ApiError (guard refusals carry bindings and fixes).
+  setClientBinding(id: string, body: { profile: string; mode?: 'locked' | 'switchable' }): Promise<{ client: ClientView; warnings: ClientsResponse['warnings'] }> {
+    return this.data(`/api/v1/clients/${encodeURIComponent(id)}/binding`, { method: 'PUT', body: JSON.stringify(body) })
+  }
+
+  bulkAssignClients(body: { from_profile: string; to_profile: string; mode?: 'locked' | 'switchable' }): Promise<BulkAssignResponse> {
+    return this.data<BulkAssignResponse>('/api/v1/clients/bulk-assign', { method: 'POST', body: JSON.stringify(body) })
+  }
+
+  createCustomClient(body: { id: string; display_name?: string; profile?: string; mode?: 'locked' | 'switchable'; expires_in?: string }): Promise<CustomClientResponse> {
+    return this.data<CustomClientResponse>('/api/v1/clients', { method: 'POST', body: JSON.stringify(body) })
+  }
+
+  rotateClient(id: string, body: { precondition_token?: string } = {}): Promise<RotateResponse> {
+    return this.data<RotateResponse>(`/api/v1/clients/${encodeURIComponent(id)}/rotate`, { method: 'POST', body: JSON.stringify(body) })
+  }
+
+  finalizeClientRotation(id: string): Promise<{ client: ClientView; rotation: { state: string } }> {
+    return this.data(`/api/v1/clients/${encodeURIComponent(id)}/rotate/finalize`, { method: 'POST', body: '{}' })
+  }
+
+  forgetClient(id: string, opts: { disconnect?: boolean } = {}): Promise<ForgetClientResponse> {
+    return this.data<ForgetClientResponse>(`/api/v1/clients/${encodeURIComponent(id)}${queryString({ disconnect: opts.disconnect ? 'true' : undefined })}`, { method: 'DELETE' })
+  }
+
+  upgradeAdminKeyHolders(body: { profile?: string; mode?: 'locked' | 'switchable'; apply?: boolean; precondition_token?: string } = {}): Promise<UpgradePreview & UpgradeApplyResult> {
+    return this.data('/api/v1/clients/upgrade-admin-key-holders', { method: 'POST', body: JSON.stringify(body) })
+  }
+
+  // Spec 075: resolve a single client's status on demand. This is the only
+  // Connect call that reads a client config file's contents (to classify
+  // access_state), so on macOS it is the sole place an App-Data privacy prompt
+  // may legitimately appear — and it is always scoped to an explicit user
+  // action ("Check access"), never the passive listing. Returns 200 with the
+  // resolved access_state (accessible|absent|denied|malformed) and, when
+  // denied, the remediation text.
+  async getConnectClientStatus(clientId: string): Promise<APIResponse<ClientStatus>> {
+    return this.request<ClientStatus>(`/api/v1/connect/${encodeURIComponent(clientId)}`)
+  }
+
+  // Spec 078 US1: preview the exact entry a connect would write, WITHOUT
+  // modifying the file or creating a backup. The apikey in the returned entry is
+  // masked. Like getConnectClientStatus this reads the config on demand (to
+  // classify create-vs-overwrite), so on macOS it may raise an App-Data prompt;
+  // a denial returns 403 with remediation (surfaced as success:false + error).
+  async getConnectPreview(clientId: string, opts: Pick<ConnectOptions, 'profile' | 'mode' | 'keyless'> = {}): Promise<APIResponse<ConnectPreview>> {
+    // `profile: ''` is an explicit All servers, so the empty string is sent.
+    const q = new URLSearchParams()
+    if (opts.profile !== undefined) q.set('profile', opts.profile)
+    if (opts.mode) q.set('mode', opts.mode)
+    if (opts.keyless) q.set('keyless', 'true')
+    const text = q.toString()
+    return this.requestRaw<ConnectPreview>(`/api/v1/connect/${encodeURIComponent(clientId)}/preview${text ? `?${text}` : ''}`)
+  }
+
+  // Spec 108-c2/108-i: the body carries the binding and the preview's
+  // precondition token only when the caller chose them, so a reconnect without
+  // them keeps the existing binding. A refusal throws an ApiError.
+  async connectClient(clientId: string, serverName = 'mcpproxy', force = false, opts: ConnectOptions = {}): Promise<APIResponse<ConnectResult>> {
+    const body: Record<string, unknown> = { server_name: serverName, force }
+    if (opts.profile !== undefined) body.profile = opts.profile
+    if (opts.mode) body.mode = opts.mode
+    if (opts.keyless) body.keyless = true
+    if (opts.precondition_token) body.precondition_token = opts.precondition_token
+    return this.requestRaw<ConnectResult>(`/api/v1/connect/${encodeURIComponent(clientId)}`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    })
+  }
+
+  // Spec 078 US3: one-click undo of the immediately-preceding connect.
+  // backupPath is the backup_path that connect returned (null = no prior file
+  // existed, so undo removes the file connect created). The backend refuses
+  // with 409 when the config changed since the connect (never clobbers edits).
+  //
+  // The wire payload carries only the backup's bare FILENAME (backup_name), not
+  // a path: the server resolves the full path inside the client's own config
+  // directory and never trusts a client-supplied path (defense against path
+  // injection). We strip any directory component here on both / and \ so a
+  // Windows path resolves the same way.
+  async undoConnectClient(
+    clientId: string,
+    serverName = 'mcpproxy',
+    backupPath: string | null = null
+  ): Promise<APIResponse<ConnectResult>> {
+    const backupName = backupPath ? (backupPath.split(/[/\\]/).pop() ?? '') : ''
+    return this.request<ConnectResult>(`/api/v1/connect/${encodeURIComponent(clientId)}/undo`, {
+      method: 'POST',
+      body: JSON.stringify({ server_name: serverName, backup_name: backupName }),
+    })
+  }
+
+  async disconnectClient(clientId: string, serverName = 'mcpproxy'): Promise<APIResponse<ConnectResult>> {
+    return this.request<ConnectResult>(`/api/v1/connect/${encodeURIComponent(clientId)}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ server_name: serverName }),
+    })
+  }
+
+  // Onboarding wizard (Spec 046)
+  async getOnboardingState(): Promise<APIResponse<OnboardingStateResponse>> {
+    return this.request<OnboardingStateResponse>('/api/v1/onboarding/state')
+  }
+
+  async markOnboardingState(payload: OnboardingMarkRequest): Promise<APIResponse<OnboardingStateResponse>> {
+    return this.request<OnboardingStateResponse>('/api/v1/onboarding/mark', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+  }
+
+  // Security Scanner Management (Spec 039)
+  async listScanners(): Promise<APIResponse<any[]>> {
+    return this.request<any[]>('/api/v1/security/scanners')
+  }
+
+  async installScanner(id: string): Promise<APIResponse<void>> {
+    return this.request<void>(`/api/v1/security/scanners/${encodeURIComponent(id)}/enable`, {
+      method: 'POST',
+    })
+  }
+
+  async removeScanner(id: string): Promise<APIResponse<void>> {
+    return this.request<void>(`/api/v1/security/scanners/${encodeURIComponent(id)}/disable`, {
+      method: 'POST',
+    })
+  }
+
+  async configureScanner(id: string, env: Record<string, string>, dockerImage?: string): Promise<APIResponse<void>> {
+    const payload: any = { env }
+    if (dockerImage) payload.docker_image = dockerImage
+    return this.request<void>(`/api/v1/security/scanners/${encodeURIComponent(id)}/config`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    })
+  }
+
+  async getScannerStatus(id: string): Promise<APIResponse<any>> {
+    return this.request<any>(`/api/v1/security/scanners/${encodeURIComponent(id)}/status`)
+  }
+
+  async startScan(serverName: string, dryRun = false, scannerIds: string[] = []): Promise<APIResponse<any>> {
+    return this.request<any>(`/api/v1/servers/${encodeURIComponent(serverName)}/scan`, {
+      method: 'POST',
+      body: JSON.stringify({ dry_run: dryRun, scanner_ids: scannerIds }),
+    })
+  }
+
+  async getScanStatus(serverName: string): Promise<APIResponse<any>> {
+    return this.request<any>(`/api/v1/servers/${encodeURIComponent(serverName)}/scan/status`)
+  }
+
+  async getScanReport(serverName: string): Promise<APIResponse<any>> {
+    return this.request<any>(`/api/v1/servers/${encodeURIComponent(serverName)}/scan/report`)
+  }
+
+  async getScanFiles(
+    serverName: string,
+    limit = 100,
+    offset = 0,
+    pass = 1,
+    suspiciousOnly = false,
+  ): Promise<APIResponse<any>> {
+    const params = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset),
+      pass: String(pass),
+    })
+    if (suspiciousOnly) params.set('suspicious_only', 'true')
+    return this.request<any>(
+      `/api/v1/servers/${encodeURIComponent(serverName)}/scan/files?${params.toString()}`,
+    )
+  }
+
+  async cancelScan(serverName: string): Promise<APIResponse<void>> {
+    return this.request<void>(`/api/v1/servers/${encodeURIComponent(serverName)}/scan/cancel`, {
+      method: 'POST',
+    })
+  }
+
+  // Spec 117 PR-2 (#1566): expectedHashes binds the approval to the reviewed definitions ({} for
+  // an empty review); undefined sends an unbound request (a review without fingerprints). It is
+  // independent of expectedIncarnation (Spec 116 FR-017) and the two travel together.
+  async securityApprove(serverName: string, force = false, block: string[] = [], expectedIncarnation?: number, expectedHashes?: Record<string, string>): Promise<APIResponse<void>> {
+    const body: Record<string, unknown> = { force, block }
+    if (expectedHashes) body.expected_hashes = expectedHashes
+    return this.request<void>(`/api/v1/servers/${encodeURIComponent(serverName)}/security/approve`, {
+      method: 'POST',
+      body: JSON.stringify(withExpectedIncarnation(body, expectedIncarnation)),
+    })
+  }
+
+  async securityReject(serverName: string): Promise<APIResponse<void>> {
+    return this.request<void>(`/api/v1/servers/${encodeURIComponent(serverName)}/security/reject`, {
+      method: 'POST',
+    })
+  }
+
+  async getReviewQueue(): Promise<APIResponse<ReviewQueueResponse>> {
+    return this.request<ReviewQueueResponse>('/api/v1/review')
+  }
+
+  async getServerReview(serverName: string): Promise<APIResponse<ServerReviewResponse>> {
+    return this.request<ServerReviewResponse>(`/api/v1/servers/${encodeURIComponent(serverName)}/review`)
+  }
+
+  async checkIntegrity(serverName: string): Promise<APIResponse<any>> {
+    return this.request<any>(`/api/v1/servers/${encodeURIComponent(serverName)}/integrity`)
+  }
+
+  async getSecurityOverview(): Promise<APIResponse<any>> {
+    return this.request<any>('/api/v1/security/overview')
+  }
+
+  async scanAll(scannerIds: string[] = []): Promise<APIResponse<any>> {
+    return this.request<any>('/api/v1/security/scan-all', {
+      method: 'POST',
+      body: JSON.stringify({ scanner_ids: scannerIds }),
+    })
+  }
+
+  async getQueueProgress(): Promise<APIResponse<any>> {
+    return this.request<any>('/api/v1/security/queue')
+  }
+
+  async cancelAllScans(): Promise<APIResponse<void>> {
+    return this.request<void>('/api/v1/security/cancel-all', { method: 'POST' })
+  }
+
+  async listScanHistory(params?: { sort?: string; order?: string; limit?: number; offset?: number; status?: string }): Promise<APIResponse<{ scans: any[]; total: number }>> {
+    const q = new URLSearchParams()
+    if (params?.sort) q.set('sort', params.sort)
+    if (params?.order) q.set('order', params.order)
+    if (params?.limit) q.set('limit', String(params.limit))
+    if (params?.offset) q.set('offset', String(params.offset))
+    if (params?.status) q.set('status', params.status)
+    const qs = q.toString()
+    return this.request<{ scans: any[]; total: number }>(`/api/v1/security/scans${qs ? '?' + qs : ''}`)
+  }
+
+  async getScanReportByJobId(jobId: string): Promise<APIResponse<any>> {
+    return this.request<any>(`/api/v1/security/scans/${encodeURIComponent(jobId)}/report`)
+  }
+
+  // Utility methods
+  async testConnection(): Promise<boolean> {
+    try {
+      const response = await this.getServers()
+      return response.success
+    } catch {
+      return false
+    }
+  }
+}
+
+// Canonical config path types
+export interface CanonicalConfigPath {
+  name: string
+  format: string
+  path: string
+  exists: boolean
+  os: string
+  description: string
+}
+
+export interface CanonicalConfigPathsResponse {
+  os: string
+  paths: CanonicalConfigPath[]
+}
+
+export default new APIService()

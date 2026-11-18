@@ -1,0 +1,287 @@
+import { defineStore } from 'pinia'
+import { ref, computed } from 'vue'
+import type { OnboardingStateResponse, OnboardingMarkRequest, TelemetryState } from '@/types'
+import api from '@/services/api'
+import { useAuthStore } from '@/stores/auth'
+
+/**
+ * Adaptive onboarding wizard store (Spec 046).
+ *
+ * Holds the live wizard state (predicates + persisted engagement record)
+ * fetched from `/api/v1/onboarding/state`, plus UI flags driving the
+ * wizard's visibility.
+ *
+ * Usage from Dashboard.vue:
+ *   const onboarding = useOnboardingStore()
+ *   await onboarding.fetchState()
+ *   if (onboarding.shouldShowWizard) {
+ *     onboarding.openWizard()
+ *   }
+ */
+/** Tabs the wizard renders, in order. */
+export type WizardTab = 'clients' | 'servers' | 'verify'
+
+/**
+ * Shared localStorage key for the telemetry notice's dismissal (Spec 109-b
+ * FR-044): TelemetryBanner.vue (post-wizard) and OnboardingWizard.vue's
+ * Verify-step one-liner both read/write it, so dismissing either silences
+ * both for good.
+ */
+export const TELEMETRY_BANNER_STORAGE_KEY = 'telemetry-banner-dismissed'
+
+export const useOnboardingStore = defineStore('onboarding', () => {
+  // State fetched from backend
+  const state = ref<OnboardingStateResponse | null>(null)
+  const loading = ref(false)
+  const error = ref<string | null>(null)
+
+  // UI: whether the wizard modal is currently open. Independent of the
+  // server-side ShouldShowWizard predicate so the user can manually re-open
+  // the wizard via the "Run setup wizard" link even when both predicates
+  // are satisfied.
+  const wizardOpen = ref(false)
+
+  // Which tab the wizard should land on when it next opens. Callers that mean
+  // a *specific* step ("Import from your AI client configs" on the Servers
+  // page) set it; everything else leaves it null and gets the default first
+  // tab. It is a one-shot request: the wizard consumes it on open and clears
+  // it, so a later plain `openWizard()` is never silently redirected to a tab
+  // some earlier caller asked for.
+  const wizardInitialTab = ref<WizardTab | null>(null)
+
+  // Shared, reactive dismissal state for the telemetry notice (Spec 109-b
+  // FR-044). TelemetryBanner.vue (post-wizard) and OnboardingWizard.vue's
+  // Verify-step one-liner both read this — a single store-level ref, not an
+  // independent local ref per component reading localStorage on its own
+  // mount — so dismissing on either surface hides the other immediately,
+  // even though both stay mounted at the same time on Dashboard.vue and
+  // never remount.
+  const telemetryNoticeDismissed = ref(!!localStorage.getItem(TELEMETRY_BANNER_STORAGE_KEY))
+
+  /** Dismiss the telemetry notice on both surfaces at once, permanently. */
+  function dismissTelemetryNotice(): void {
+    telemetryNoticeDismissed.value = true
+    localStorage.setItem(TELEMETRY_BANNER_STORAGE_KEY, 'true')
+  }
+
+  // Effective telemetry state (Spec 109 FR-044a), read off GET /api/v1/status.
+  // null = unknown (an older core, a scoped caller, a failed fetch): every
+  // consumer treats that as "show the standard notice".
+  const telemetryState = ref<TelemetryState | null>(null)
+  let telemetryStateFetchedAt = 0
+  let telemetryStateInFlight: Promise<void> | null = null
+
+  function setTelemetryState(s?: TelemetryState | null): void {
+    telemetryState.value = s ?? null
+    telemetryStateFetchedAt = Date.now()
+  }
+
+  /**
+   * Load the effective telemetry state. One in-flight request is shared by every
+   * caller (the banner and the wizard mount together), and a value fetched in
+   * the last 30 s is reused. Errors leave the state null.
+   */
+  function loadTelemetryState(force = false): Promise<void> {
+    if (telemetryStateInFlight) return telemetryStateInFlight
+    if (!force && telemetryStateFetchedAt && Date.now() - telemetryStateFetchedAt < 30_000) {
+      return Promise.resolve()
+    }
+    telemetryStateInFlight = (async () => {
+      try {
+        const res = await api.getStatus()
+        // A failed fetch (401 before the API key is stored, a dropped
+        // connection) must not start the 30 s reuse window, or the notice
+        // would stay on "unknown" until it expires.
+        if (res?.success) setTelemetryState(res.data?.telemetry ?? null)
+        else telemetryState.value = null
+      } catch {
+        telemetryState.value = null
+      } finally {
+        telemetryStateInFlight = null
+      }
+    })()
+    return telemetryStateInFlight
+  }
+
+  // Computed
+  const shouldShowWizard = computed(() => state.value?.should_show_wizard ?? false)
+  const hasConnectedClient = computed(() => state.value?.has_connected_client ?? false)
+  const hasConfiguredServer = computed(() => state.value?.has_configured_server ?? false)
+  // Spec 109-b FR-041: the real "something to try" signal. Prefer this over
+  // hasConfiguredServer for the Servers step and the Setup badge — a server
+  // entry that is still quarantined or has no approved tool is not usable
+  // yet, even though it counts toward hasConfiguredServer.
+  const hasUsableServer = computed(() => state.value?.has_usable_server ?? false)
+  const usableServers = computed<string[]>(() => state.value?.usable_servers ?? [])
+  const isEngaged = computed(() => state.value?.state.engaged ?? false)
+
+  // Spec 046 v2 — passive Verify tab + sidebar badge sources.
+  const firstMCPClientEver = computed(() => state.value?.first_mcp_client_ever ?? false)
+  const mcpClientsSeenEver = computed<string[]>(() => state.value?.mcp_clients_seen_ever ?? [])
+  const incompleteTabCount = computed(() => state.value?.incomplete_tab_count ?? 0)
+
+  // MCP-2952 — content-resolved IDs of clients currently wired to MCPProxy.
+  // GetAllStatus()/`GET /api/v1/connect` is stat-only (#706/MCP-2829) and
+  // reports connected=false for every client, so the Connect wizard merges
+  // these IDs (already fetched with the onboarding state) to mark connected
+  // clients without triggering new content reads.
+  const connectedClientIds = computed<string[]>(() => state.value?.connected_client_ids ?? [])
+
+  // v1 visibleSteps kept for back-compat with any remaining caller. The v2
+  // wizard renders a fixed three-tab surface and ignores this value.
+  const visibleSteps = computed<Array<'connect' | 'server'>>(() => {
+    const steps: Array<'connect' | 'server'> = []
+    if (!hasConnectedClient.value) steps.push('connect')
+    if (!hasUsableServer.value) steps.push('server')
+    return steps
+  })
+
+  /**
+   * Fetch the current state from the backend. Safe to call repeatedly;
+   * reuses the existing API key handling and credentials.
+   */
+  async function fetchState(): Promise<OnboardingStateResponse | null> {
+    // Spec 107 FR-041 / T088: /onboarding/state describes the operator's
+    // fleet-wide setup wizard (connected clients, configured servers across
+    // the whole instance) — a tenant principal has no wizard to drive.
+    const auth = useAuthStore()
+    if (auth.isTeamsEdition && !auth.canLoadCore) return null
+
+    loading.value = true
+    error.value = null
+    try {
+      const res = await api.getOnboardingState()
+      if (res.success && res.data) {
+        state.value = res.data
+        return res.data
+      }
+      error.value = res.error ?? 'Failed to fetch onboarding state'
+      return null
+    } catch (err) {
+      error.value = (err as Error).message
+      return null
+    } finally {
+      loading.value = false
+    }
+  }
+
+  /**
+   * Persist a mark (step status, engagement, first-shown timestamp).
+   * Server returns the updated state so we refresh in place.
+   */
+  async function mark(payload: OnboardingMarkRequest): Promise<OnboardingStateResponse | null> {
+    error.value = null
+    try {
+      const res = await api.markOnboardingState(payload)
+      if (res.success && res.data) {
+        state.value = res.data
+        return res.data
+      }
+      error.value = res.error ?? 'Failed to update onboarding state'
+      return null
+    } catch (err) {
+      error.value = (err as Error).message
+      return null
+    }
+  }
+
+  /**
+   * Record that the wizard has been shown (sets first_shown_at on first
+   * call, no-op on subsequent calls). Best-effort; failures are logged
+   * but do not block the UI.
+   */
+  async function markShown(): Promise<void> {
+    if (state.value?.state.first_shown_at) return
+    await mark({ mark_shown: true })
+  }
+
+  /**
+   * Mark the connect step as completed.
+   */
+  async function markConnectCompleted(): Promise<void> {
+    await mark({ connect_step_status: 'completed' })
+  }
+
+  /**
+   * Mark the connect step as skipped.
+   */
+  async function markConnectSkipped(): Promise<void> {
+    await mark({ connect_step_status: 'skipped' })
+  }
+
+  /**
+   * Mark the add-server step as completed.
+   */
+  async function markServerCompleted(): Promise<void> {
+    await mark({ server_step_status: 'completed' })
+  }
+
+  /**
+   * Mark the add-server step as skipped.
+   */
+  async function markServerSkipped(): Promise<void> {
+    await mark({ server_step_status: 'skipped' })
+  }
+
+  /**
+   * Mark the wizard as engaged (completed or fully skipped). Once true,
+   * the wizard will not auto-show on subsequent loads, even if state
+   * regresses.
+   */
+  async function markEngaged(): Promise<void> {
+    await mark({ engaged: true })
+  }
+
+  function openWizard(tab: WizardTab | null = null): void {
+    wizardInitialTab.value = tab
+    wizardOpen.value = true
+    // Best-effort first-shown stamp.
+    void markShown()
+  }
+
+  /** Read and clear the one-shot initial-tab request. */
+  function consumeWizardInitialTab(): WizardTab | null {
+    const tab = wizardInitialTab.value
+    wizardInitialTab.value = null
+    return tab
+  }
+
+  function closeWizard(): void {
+    wizardOpen.value = false
+  }
+
+  return {
+    state,
+    loading,
+    error,
+    wizardOpen,
+    wizardInitialTab,
+    telemetryNoticeDismissed,
+    dismissTelemetryNotice,
+    telemetryState,
+    setTelemetryState,
+    loadTelemetryState,
+    shouldShowWizard,
+    hasConnectedClient,
+    hasConfiguredServer,
+    hasUsableServer,
+    usableServers,
+    isEngaged,
+    firstMCPClientEver,
+    mcpClientsSeenEver,
+    incompleteTabCount,
+    connectedClientIds,
+    visibleSteps,
+    fetchState,
+    mark,
+    markShown,
+    markConnectCompleted,
+    markConnectSkipped,
+    markServerCompleted,
+    markServerSkipped,
+    markEngaged,
+    openWizard,
+    consumeWizardInitialTab,
+    closeWizard,
+  }
+})

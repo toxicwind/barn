@@ -1,0 +1,1 @@
+function e(e){return e&&e>0?[e]:[]}export{e as t};

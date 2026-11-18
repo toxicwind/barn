@@ -1,0 +1,481 @@
+import { defineStore } from 'pinia'
+import { ref, computed } from 'vue'
+import type { Server, LoadingState } from '@/types'
+import api from '@/services/api'
+import { isServerConnected } from '@/utils/health'
+import { openOAuthLogin } from '@/utils/oauthLogin'
+
+export const useServersStore = defineStore('servers', () => {
+  // State
+  const servers = ref<Server[]>([])
+  const loading = ref<LoadingState>({ loading: false, error: null })
+
+  // True once a server list has been fetched successfully at least once — the
+  // only reliable way to tell "no servers configured" from "we don't know yet".
+  // `servers` starts empty, and `loading.error` cannot stand in for this: it is
+  // shared state that any caller (including silent background refreshes and
+  // other components fetching concurrently) can write, and a success never
+  // clears it.
+  const loaded = ref(false)
+
+  // Computed
+  // Audit finding F27 (#1046): these counts are printed side by side, so they
+  // have to be answerable as one picture. `disabled` is the count of servers
+  // switched off AND not already counted as quarantined — the Dashboard rail
+  // shows both, and a server that was both read as two separate problems. It is
+  // also asked directly rather than derived as (total − connected − quarantined),
+  // which mislabelled an enabled-but-unreachable server as "disabled".
+  const serverCount = computed(() => ({
+    total: servers.value.length,
+    connected: servers.value.filter(isServerConnected).length,
+    enabled: servers.value.filter(s => s.enabled).length,
+    quarantined: servers.value.filter(s => s.quarantined).length,
+    disabled: servers.value.filter(s => !s.enabled && !s.quarantined).length,
+  }))
+
+  const connectedServers = computed(() =>
+    servers.value.filter(isServerConnected)
+  )
+
+  const enabledServers = computed(() =>
+    servers.value.filter(s => s.enabled)
+  )
+
+  const quarantinedServers = computed(() =>
+    servers.value.filter(s => s.quarantined)
+  )
+
+  // Only count tools that are actually available: enabled servers (Issue #285)
+  // that are not quarantined (Issue #1064 -- a quarantined server's tools are
+  // refused at dispatch and purged from the search index, so counting them
+  // tells the operator N tools are available when none of them are callable).
+  const totalTools = computed(() =>
+    servers.value
+      .filter(s => s.enabled && !s.quarantined)
+      .reduce((sum, server) => sum + server.tool_count, 0)
+  )
+
+  // Helper: Smart merge servers to preserve object references and avoid full re-renders
+  function mergeServers(existing: Server[], incoming: Server[]): Server[] {
+    const existingMap = new Map(existing.map(s => [s.name, s]))
+    const incomingMap = new Map(incoming.map(s => [s.name, s]))
+    const result: Server[] = []
+
+    // Update existing servers in-place or add new ones
+    incoming.forEach(incomingServer => {
+      const existingServer = existingMap.get(incomingServer.name)
+
+      if (existingServer) {
+        // Update existing server in-place (preserves object reference so
+        // ServerCard's v-memo / consumers' computeds keep their identity).
+        //
+        // CRITICAL: the API response is authoritative — any field absent on
+        // the incoming server has been cleared on the backend and must be
+        // dropped from the existing reactive object. Object.assign alone
+        // would leak a stale `quarantine: { pending_count: 5 }` (and other
+        // conditionally-emitted fields) after the user approves all tools,
+        // because the backend stops emitting the field when its count hits
+        // zero (see internal/httpapi/server.go enrichServersWithQuarantineStats).
+        // This was the root cause of issue #438.
+        const existingKeys = Object.keys(existingServer) as (keyof Server)[]
+        const incomingKeys = new Set(Object.keys(incomingServer))
+        for (const key of existingKeys) {
+          if (!incomingKeys.has(key)) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            delete (existingServer as any)[key]
+          }
+        }
+        Object.assign(existingServer, incomingServer)
+
+        result.push(existingServer)
+      } else {
+        // Add new server
+        console.log(`New server added: ${incomingServer.name}`)
+        result.push(incomingServer)
+      }
+    })
+
+    // Log removed servers
+    existing.forEach(existingServer => {
+      if (!incomingMap.has(existingServer.name)) {
+        console.log(`Server removed: ${existingServer.name}`)
+      }
+    })
+
+    // Sort alphabetically by name to match tray menu order
+    return result.sort((a, b) => a.name.localeCompare(b.name))
+  }
+
+  // The server list has three independent writers: a fetch from any component
+  // (App.vue and Dashboard.vue both issue one on mount), a silent background
+  // refresh, and the Spec 047 SSE full-list payload. None of them cancel the
+  // others, so every write takes a ticket in issue order and a response that
+  // was already in flight when a newer list was applied is dropped — otherwise
+  // a stale list can resurrect servers the user just deleted, or blank out ones
+  // they just added.
+  let issueSeq = 0
+  let appliedSeq = 0
+
+  // A request settles when it produces an outcome — a list OR a failure. Both
+  // advance the mark, because both are news about the same list: if only
+  // successes advanced it, a newer request failing would leave the mark behind
+  // and an older list arriving afterwards would still be accepted, overwriting
+  // the newer outcome with stale data.
+  function claimTicket(ticket: number): boolean {
+    if (ticket < appliedSeq) return false
+    appliedSeq = ticket
+    return true
+  }
+
+  function applyServerList(list: Server[], ticket: number) {
+    if (!claimTicket(ticket)) return
+    // Smart merge preserves object references and avoids unnecessary re-renders
+    servers.value = mergeServers(servers.value, list)
+    loaded.value = true
+    // A list that arrived is proof the previous failure is over. Without this
+    // an error is write-only: silent background refreshes set it and nothing
+    // ever clears it, so one transient blip pins an error banner on the
+    // Servers page for the rest of the session.
+    loading.value.error = null
+  }
+
+  // Actions
+  async function fetchServers(silent = false) {
+    if (!silent) {
+      loading.value = { loading: true, error: null }
+    }
+    const ticket = ++issueSeq
+
+    // Failures are sequenced exactly like successes: an older request failing
+    // after a newer one already delivered a list must not raise a stale error
+    // over fresh data — the mirror image of the stale-list problem the
+    // sequencing exists to prevent.
+    const recordError = (message: string) => {
+      if (!claimTicket(ticket)) return
+      loading.value.error = message
+    }
+
+    try {
+      const response = await api.getServers()
+      if (response.success && response.data) {
+        applyServerList(response.data.servers, ticket)
+      } else {
+        recordError(response.error || 'Failed to fetch servers')
+      }
+    } catch (error) {
+      recordError(error instanceof Error ? error.message : 'Unknown error')
+    } finally {
+      if (!silent) {
+        loading.value.loading = false
+      }
+    }
+  }
+
+  async function enableServer(serverName: string) {
+    try {
+      const server = servers.value.find(s => s.name === serverName)
+
+      // Optimistic update: show "connecting" status immediately
+      if (server) {
+        server.enabled = true
+        server.connecting = true
+        server.connected = false
+      }
+
+      const response = await api.enableServer(serverName)
+      if (response.success) {
+        // The SSE event will trigger a full refresh with actual state
+        return true
+      } else {
+        // Revert optimistic update on error
+        if (server) {
+          server.enabled = false
+          server.connecting = false
+        }
+        throw new Error(response.error || 'Failed to enable server')
+      }
+    } catch (error) {
+      console.error('Failed to enable server:', error)
+      // Revert optimistic update
+      const server = servers.value.find(s => s.name === serverName)
+      if (server) {
+        server.enabled = false
+        server.connecting = false
+      }
+      throw error
+    }
+  }
+
+  // Optimistic admin-state flip. The Health tile and badges read health.admin_state
+  // and health.status ahead of enabled/connected, so updating only the booleans
+  // left a stale "Online"/"Healthy" until the SSE refresh landed (#1466).
+  function applyOptimisticAdminState(server: Server, adminState: 'disabled' | 'quarantined') {
+    if (!server.health) return
+    server.health = {
+      ...server.health,
+      admin_state: adminState,
+      status: adminState === 'disabled' ? 'disabled' : 'needs_review',
+      usable: false,
+    }
+  }
+
+  async function disableServer(serverName: string) {
+    const prevHealth = servers.value.find(s => s.name === serverName)?.health
+    try {
+      const server = servers.value.find(s => s.name === serverName)
+
+      // Optimistic update: show "disconnected" status immediately
+      if (server) {
+        server.enabled = false
+        server.connecting = false
+        server.connected = false
+        applyOptimisticAdminState(server, 'disabled')
+      }
+
+      const response = await api.disableServer(serverName)
+      if (response.success) {
+        // The SSE event will trigger a full refresh with actual state
+        return true
+      } else {
+        // Revert optimistic update on error
+        if (server) {
+          server.enabled = true
+          server.health = prevHealth
+        }
+        throw new Error(response.error || 'Failed to disable server')
+      }
+    } catch (error) {
+      console.error('Failed to disable server:', error)
+      // Revert optimistic update
+      const server = servers.value.find(s => s.name === serverName)
+      if (server) {
+        server.enabled = true
+        server.health = prevHealth
+      }
+      throw error
+    }
+  }
+
+  async function restartServer(serverName: string) {
+    try {
+      const response = await api.restartServer(serverName)
+      if (response.success) {
+        // Optionally update server state
+        const server = servers.value.find(s => s.name === serverName)
+        if (server) {
+          server.connecting = true
+          server.connected = false
+        }
+        return true
+      } else {
+        throw new Error(response.error || 'Failed to restart server')
+      }
+    } catch (error) {
+      console.error('Failed to restart server:', error)
+      throw error
+    }
+  }
+
+  async function triggerOAuthLogin(serverName: string) {
+    return openOAuthLogin(() => api.triggerOAuthLogin(serverName))
+  }
+
+  async function triggerOAuthLogout(serverName: string) {
+    try {
+      const server = servers.value.find(s => s.name === serverName)
+
+      // Optimistic update: clear authentication status immediately
+      // This ensures Login button appears right away instead of waiting for SSE
+      if (server) {
+        server.authenticated = false
+      }
+
+      const response = await api.triggerOAuthLogout(serverName)
+      if (response.success) {
+        // The SSE event will trigger a full refresh with actual state
+        return true
+      } else {
+        // Revert optimistic update on error
+        if (server) {
+          server.authenticated = true
+        }
+        throw new Error(response.error || 'Failed to trigger OAuth logout')
+      }
+    } catch (error) {
+      console.error('Failed to trigger OAuth logout:', error)
+      // Revert optimistic update on error
+      const server = servers.value.find(s => s.name === serverName)
+      if (server) {
+        server.authenticated = true
+      }
+      throw error
+    }
+  }
+
+  async function quarantineServer(serverName: string) {
+    try {
+      const response = await api.quarantineServer(serverName)
+      if (response.success) {
+        const server = servers.value.find(s => s.name === serverName)
+        if (server) {
+          server.quarantined = true
+          applyOptimisticAdminState(server, 'quarantined')
+        }
+        return true
+      } else {
+        throw new Error(response.error || 'Failed to quarantine server')
+      }
+    } catch (error) {
+      console.error('Failed to quarantine server:', error)
+      throw error
+    }
+  }
+
+  // Security-aware approval path (Spec 039 / F-04). Goes through
+  // POST /api/v1/servers/{name}/security/approve which enforces the
+    // scanner gate before unquarantining the server. Use this for all
+    // user-facing "Approve" buttons.
+  async function securityApproveServer(serverName: string, force = false) {
+    try {
+      const incarnation = servers.value.find(s => s.name === serverName)?.incarnation
+      const response = incarnation
+        ? await api.securityApprove(serverName, force, [], incarnation)
+        : await api.securityApprove(serverName, force)
+      if (response.success) {
+        // Optimistic update: the backend will also unquarantine the server
+        // on a successful approve, so reflect that in local state. SSE
+        // refresh will reconcile any remaining fields shortly after.
+        const server = servers.value.find(s => s.name === serverName)
+        if (server) {
+          server.quarantined = false
+        }
+        return true
+      } else {
+        throw new Error(response.error || 'Failed to approve server')
+      }
+    } catch (error) {
+      console.error('Failed to approve server via security scanner:', error)
+      throw error
+    }
+  }
+
+  async function deleteServer(serverName: string) {
+    try {
+      const response = await api.deleteServer(serverName)
+      if (response.success) {
+        // Removing the server locally is itself an authoritative list state, so
+        // it claims the newest ticket: a GET that was already in flight when the
+        // delete landed would otherwise pass the sequencing check and restore
+        // the server the user just deleted.
+        applyServerList(
+          servers.value.filter(s => s.name !== serverName),
+          ++issueSeq
+        )
+        return true
+      } else {
+        throw new Error(response.error || 'Failed to delete server')
+      }
+    } catch (error) {
+      console.error('Failed to delete server:', error)
+      throw error
+    }
+  }
+
+  function updateServerStatus(statusUpdate: any) {
+    // Update servers based on real-time status updates
+    if (statusUpdate.upstream_stats) {
+      // We could update individual server statuses here
+      // For now, just trigger a refresh
+      fetchServers()
+    }
+  }
+
+  async function addServer(serverData: any) {
+    try {
+      const response = await api.callTool('upstream_servers', serverData)
+      if (response.success) {
+        // Refresh servers list
+        await fetchServers()
+        return true
+      } else {
+        throw new Error(response.error || 'Failed to add server')
+      }
+    } catch (error) {
+      console.error('Failed to add server:', error)
+      throw error
+    }
+  }
+
+  function getServerByName(name: string): Server | undefined {
+    return servers.value.find(s => s.name === name)
+  }
+
+  // Set up event listeners for real-time updates
+  function setupEventListeners() {
+    window.addEventListener('mcpproxy:servers-changed', handleServersChanged)
+    window.addEventListener('mcpproxy:config-reloaded', handleConfigReloaded)
+  }
+
+  function cleanupEventListeners() {
+    window.removeEventListener('mcpproxy:servers-changed', handleServersChanged)
+    window.removeEventListener('mcpproxy:config-reloaded', handleConfigReloaded)
+  }
+
+  function handleServersChanged(event: Event) {
+    const customEvent = event as CustomEvent
+    console.log('Servers changed event received, updating in background...', customEvent.detail)
+
+    // Spec 047: when the SSE payload includes the full server list, consume it
+    // directly and skip the GET /api/v1/servers refetch. Fall back to refetch
+    // when running against an older core that publishes notify-only events.
+    const payload = customEvent.detail?.payload
+    if (payload && Array.isArray(payload.servers)) {
+      // Authoritative and newer than anything currently in flight, so it takes
+      // the newest ticket — and it counts as a successful load in its own right.
+      applyServerList(payload.servers as Server[], ++issueSeq)
+      return
+    }
+
+    // Silent background refresh to avoid scroll jumps and loading states
+    fetchServers(true)
+  }
+
+  function handleConfigReloaded(event: Event) {
+    const customEvent = event as CustomEvent
+    console.log('Config reloaded event received, updating in background...', customEvent.detail)
+    // Silent background refresh to avoid scroll jumps and loading states
+    fetchServers(true)
+  }
+
+  // Initialize event listeners
+  setupEventListeners()
+
+  return {
+    // State
+    servers,
+    loading,
+    loaded,
+
+    // Computed
+    serverCount,
+    connectedServers,
+    enabledServers,
+    quarantinedServers,
+    totalTools,
+
+    // Actions
+    fetchServers,
+    enableServer,
+    disableServer,
+    restartServer,
+    triggerOAuthLogin,
+    triggerOAuthLogout,
+    quarantineServer,
+    securityApproveServer,
+    deleteServer,
+    updateServerStatus,
+    getServerByName,
+    addServer,
+    cleanupEventListeners,
+  }
+})

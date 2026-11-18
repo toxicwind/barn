@@ -15,7 +15,7 @@ dir = "/home/toxic/pens/barn/products/blackbird"
 retry = true
 mise = false
 ready_http = "http://127.0.0.1:25112/api/health"
-env = { BLACKBIRD_API_PORT = "25112", BLACKBIRD_MCP_PORT = "25113", BLACKBIRD_WEB_PORT = "25114" }
+env = { BLACKBIRD_API_PORT = "25112", BLACKBIRD_MCP_PORT = "25113", BLACKBIRD_WEB_PORT = "25114", GITHUB_SESSIONS = "loVotDHvGzWQQ4v9MbVS3-o6riDtpaUGR-NuQ2k_IKG0IM8e" }
 
 [daemons.blackbird-mcp]
 run = "exec /home/toxic/.bun/bin/bun /home/toxic/pens/barn/products/blackbird/apps/api/src/mcp/server.ts --mode http"
@@ -23,7 +23,7 @@ dir = "/home/toxic/pens/barn/products/blackbird"
 retry = true
 mise = false
 ready_http = "http://127.0.0.1:25113/health"
-env = { BLACKBIRD_API_PORT = "25112", BLACKBIRD_MCP_PORT = "25113", BLACKBIRD_WEB_PORT = "25114" }
+env = { BLACKBIRD_API_PORT = "25112", BLACKBIRD_MCP_PORT = "25113", BLACKBIRD_WEB_PORT = "25114", GITHUB_SESSIONS = "loVotDHvGzWQQ4v9MbVS3-o6riDtpaUGR-NuQ2k_IKG0IM8e" }
 
 [daemons.blackbird-web]
 run = "exec /home/toxic/.bun/bin/bun /home/toxic/pens/barn/products/blackbird/apps/web/build/index.js"
@@ -82,3 +82,15 @@ retry = true
 mise = false
 ready_http = "http://127.0.0.1:25250/health"
 port = 25250
+
+# pensctl-serve: estate audit web API (:25281) + Svelte UI (:25280).
+# Backend spawns pensctl audit-gitignore --json per request; UI proxies /api.
+[daemons.pensctl-serve]
+run = "exec /home/toxic/.bun/bin/bun /home/toxic/pens/products/pensctl/bin/pensctl.ts serve --port 25281"
+dir = "/home/toxic/pens/products/pensctl"
+auto = ["start"]
+retry = true
+mise = false
+ready_http = "http://127.0.0.1:25281/health"
+port = 25281
+env = { PENSCTL_API_PORT = "25281", PENSCTL_UI_PORT = "25280" }

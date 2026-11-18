@@ -1,0 +1,14 @@
+?? corral/
+?? forge/
+?? gem-dredge/
+=== 4.1.2: Barn log --oneline -3 ===
+37b4735c thresher: fork of mcpproxy-go c82d515d with Pens deltas, coverage 95.85%, rename from gatehouse
+969b6cdd feat(secretsmith): add per-app env loader — secretsmith env --app <service> drop-in
+9246546b barn: register archguard standalone peer, .gitmodules, .envrc, chute bunfig
+=== 4.1.3: thresher files tracked, gatehouse gone ===
+thresher files: 3186
+gatehouse files: 0
+=== 4.1.4: Code-race plugin ===
+corral status: ?? corral/
+=== 4.1.5: Barn ls-remote origin main ===
+37b4735cf66df51a8dab049c07b72aa56709b6a4	refs/heads/main

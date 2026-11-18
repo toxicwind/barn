@@ -1,0 +1,123 @@
+{
+  "product": "archguard",
+  "path": "/home/toxic/pens/barn/products/archguard",
+  "files": 39,
+  "detected_at": "2026-10-30T06:10:46.458994Z",
+  "env_vars": {
+    "API_BASE": [
+      "client/src/api.ts"
+    ],
+    "FALKORDB_GRAPH_NAME": [
+      "src/db/falkor.ts",
+      "src/scripts/prPrecheck.ts",
+      "src/scripts/seedEstate.ts"
+    ],
+    "FALKORDB_HOST": [
+      "src/db/falkor.ts"
+    ],
+    "FALKORDB_PASSWORD": [
+      "src/db/falkor.ts"
+    ],
+    "FALKORDB_PORT": [
+      "src/db/falkor.ts"
+    ],
+    "GEMINI_API_KEY": [
+      "src/llm/client.ts",
+      "src/server.ts"
+    ],
+    "GRAPH": [
+      "src/scripts/prPrecheck.ts"
+    ],
+    "OPENROUTER_API_KEY": [
+      "src/llm/client.ts",
+      "src/server.ts"
+    ],
+    "PORT": [
+      "src/server.ts"
+    ],
+    "activeClass": [
+      "client/src/components/ProposalInputPane.tsx"
+    ],
+    "adrCode": [
+      "client/src/components/RecordMemoryModal.tsx"
+    ],
+    "adrCount": [
+      "client/src/components/AgentVoiceBar.tsx"
+    ],
+    "apiKey": [
+      "src/llm/client.ts"
+    ],
+    "blastRadiusCount": [
+      "client/src/components/AgentVoiceBar.tsx"
+    ],
+    "code": [
+      "client/src/components/RecordMemoryModal.tsx"
+    ],
+    "episodesCount": [
+      "client/src/components/AgentVoiceBar.tsx"
+    ],
+    "errText": [
+      "client/src/api.ts",
+      "src/llm/client.ts"
+    ],
+    "filename": [
+      "src/engine/graphManager.ts"
+    ],
+    "finalStatus": [
+      "src/agents/advisorAgent.ts"
+    ],
+    "host": [
+      "src/db/falkor.ts"
+    ],
+    "idx": [
+      "client/src/components/GraphCanvas.tsx",
+      "client/src/components/LandingGraphHero.tsx"
+    ],
+    "model": [
+      "src/llm/client.ts"
+    ],
+    "password": [
+      "src/db/falkor.ts"
+    ],
+    "port": [
+      "src/db/falkor.ts",
+      "src/server.ts"
+    ],
+    "prompt": [
+      "src/llm/client.ts"
+    ],
+    "proposalId": [
+      "src/agents/advisorAgent.ts",
+      "src/agents/auditorAgent.ts",
+      "src/agents/extractorAgent.ts"
+    ],
+    "proposedVal": [
+      "src/llm/client.ts"
+    ],
+    "provider": [
+      "src/llm/client.ts"
+    ],
+    "rawText": [
+      "src/llm/client.ts"
+    ],
+    "systemPrompt": [
+      "src/llm/client.ts"
+    ],
+    "tenantGraphName": [
+      "src/scripts/seedEstate.ts"
+    ],
+    "totalEdges": [
+      "src/db/seed.ts",
+      "src/scripts/seedEstate.ts",
+      "src/scripts/verifyBackbone.ts"
+    ],
+    "totalNodes": [
+      "src/db/seed.ts",
+      "src/scripts/seedEstate.ts",
+      "src/scripts/verifyBackbone.ts"
+    ],
+    "violationsCount": [
+      "client/src/components/AgentVoiceBar.tsx"
+    ]
+  }
+}

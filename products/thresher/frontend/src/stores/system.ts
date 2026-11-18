@@ -1,0 +1,830 @@
+import { defineStore } from 'pinia'
+import { ref, computed, onScopeDispose, toRaw } from 'vue'
+import type { StatusUpdate, Theme, Toast, InfoResponse, RoutingInfo } from '@/types'
+import api from '@/services/api'
+import { isScopeParamAvailable, setAvailableFeatures } from '@/composables/useScopeQuery'
+
+/** Pseudo-theme: follow the operating system's light/dark preference. */
+export const SYSTEM_THEME = 'system'
+/** The daisyUI themes `system` resolves to. */
+export const SYSTEM_LIGHT_THEME = 'corporate'
+export const SYSTEM_DARK_THEME = 'dark'
+export const THEME_STORAGE_KEY = 'mcpproxy-theme'
+
+/** `true` when the OS asks for a dark UI (false in environments without matchMedia). */
+export function prefersDarkColorScheme(): boolean {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
+  try {
+    return window.matchMedia('(prefers-color-scheme: dark)').matches
+  } catch {
+    return false
+  }
+}
+
+/** Map a stored selection to the daisyUI theme that should be applied. */
+export function resolveThemeName(selection: string): string {
+  if (selection !== SYSTEM_THEME) return selection
+  return prefersDarkColorScheme() ? SYSTEM_DARK_THEME : SYSTEM_LIGHT_THEME
+}
+
+export const useSystemStore = defineStore('system', () => {
+  // State
+  const status = ref<StatusUpdate | null>(null)
+  const eventSource = ref<EventSource | null>(null)
+  const connected = ref(false)
+  // The user's *selection*. `system` is not a daisyUI theme — it is a
+  // pseudo-theme that follows the OS `prefers-color-scheme` (UX audit F29).
+  const currentTheme = ref<string>(SYSTEM_THEME)
+  // The daisyUI theme actually applied to <html data-theme>.
+  const resolvedTheme = ref<string>(SYSTEM_LIGHT_THEME)
+  const sidebarCollapsed = ref<boolean>(
+    (() => {
+      try {
+        return localStorage.getItem('mcpproxy-sidebar-collapsed') === '1'
+      } catch {
+        return false
+      }
+    })()
+  )
+  const toasts = ref<Toast[]>([])
+  const info = ref<InfoResponse | null>(null)
+  const routing = ref<RoutingInfo | null>(null)
+  const checkingForUpdates = ref(false)
+  const updateCheckedAt = ref<string | null>(null)
+
+  // Audit F28: with no API key the user saw three messages for one cause — the
+  // "Authentication Required" modal, a red inline load error behind it, and a
+  // "Connection Lost — Reconnecting" toast. While the modal owns the screen it
+  // owns the message too; the downstream surfaces read this flag and stay quiet.
+  const authRequired = ref(false)
+
+  // Bumped when a failed auth is repaired with a VALIDATED key (#1065). Views
+  // keep their load errors in component-local refs that nothing outside the
+  // component can reach, so signing in left the header re-authenticated while
+  // the view body kept a red "Invalid or missing API key" panel and zero rows
+  // until the user clicked Retry by hand. App.vue keys <router-view> on this,
+  // so a repaired auth remounts the current view: its error, loading state and
+  // data reset to their declared initial values and onMounted re-runs.
+  const authEpoch = ref(0)
+
+  function setAuthRequired(value: boolean) {
+    authRequired.value = value
+  }
+
+  // Clear the auth-required flag AND invalidate the views that failed while it
+  // was set. Only for paths that actually verified the new key -- a path that
+  // merely re-reads the key from disk must use setAuthRequired(false), or every
+  // view remounts onto a possibly-still-401 epoch.
+  function markAuthRecovered() {
+    if (authRequired.value) {
+      authEpoch.value++
+    }
+    authRequired.value = false
+  }
+
+  // Available themes. `system` leads the list and is the default: a user on a
+  // dark OS should not get a light UI on first run (UX audit F29).
+  const themes: Theme[] = [
+    { name: SYSTEM_THEME, displayName: 'System', dark: false },
+    { name: 'light', displayName: 'Light', dark: false },
+    { name: 'dark', displayName: 'Dark', dark: true },
+    { name: 'corporate', displayName: 'Corporate', dark: false },
+    { name: 'business', displayName: 'Business', dark: true },
+    { name: 'emerald', displayName: 'Emerald', dark: false },
+    { name: 'forest', displayName: 'Forest', dark: true },
+    { name: 'aqua', displayName: 'Aqua', dark: false },
+    { name: 'lofi', displayName: 'Lo-Fi', dark: false },
+    { name: 'pastel', displayName: 'Pastel', dark: false },
+    { name: 'fantasy', displayName: 'Fantasy', dark: false },
+    { name: 'wireframe', displayName: 'Wireframe', dark: false },
+    { name: 'luxury', displayName: 'Luxury', dark: true },
+    { name: 'dracula', displayName: 'Dracula', dark: true },
+    { name: 'synthwave', displayName: 'Synthwave', dark: true },
+    { name: 'cyberpunk', displayName: 'Cyberpunk', dark: true },
+  ]
+
+  // Computed
+  const isRunning = computed(() => {
+    // Priority: Top-level running field, then nested status.running, default false
+    if (status.value?.running !== undefined) {
+      return status.value.running
+    }
+    // Fallback to nested status.running if top-level is undefined
+    if (status.value?.status?.running !== undefined) {
+      return status.value.status.running
+    }
+    return false
+  })
+  const listenAddr = computed(() => status.value?.listen_addr ?? '')
+  const upstreamStats = computed(() => status.value?.upstream_stats ?? {
+    connected_servers: 0,
+    total_servers: 0,
+    total_tools: 0,
+  })
+
+  const currentThemeConfig = computed(() =>
+    themes.find(t => t.name === currentTheme.value) || themes[0]
+  )
+
+  // Version information
+  const version = computed(() => info.value?.version ?? '')
+  const updateAvailable = computed(() => info.value?.update?.available ?? false)
+  // Spec 079 US3 (FR-019): the core stamps nudges_suppressed in CI /
+  // non-interactive contexts — every UI nudge surface (banner, sidebar
+  // badge) must check this; machine-readable facts stay available.
+  const updateNudgesSuppressed = computed(
+    () => info.value?.update?.nudges_suppressed ?? false
+  )
+  const latestVersion = computed(() => info.value?.update?.latest_version ?? '')
+  // Spec 079 US2: detected install channel + channel-aware one-line update
+  // command (empty when the channel has no safe command, FR-009).
+  const installChannel = computed(() => info.value?.update?.install_channel ?? '')
+  const updateCommand = computed(() => info.value?.update?.update_command ?? '')
+  // Spec 079 FR-002: the daemon-rendered "N releases / M weeks behind" clause.
+  // Empty against a daemon that predates it, or when the delta could not be
+  // resolved — surfaces then render their pre-delta wording.
+  const updateBehindSummary = computed(() => info.value?.update?.behind_summary ?? '')
+
+  // Routing mode. This is the mode /mcp is ACTUALLY serving: a routing_mode
+  // change is written to disk but not adopted in memory until the core
+  // restarts, so the badge keeps naming reality and `pendingRoutingMode`
+  // carries the intent (see the ModeSwitcher).
+  const routingMode = computed(() => routing.value?.routing_mode ?? status.value?.routing_mode ?? 'retrieve_tools')
+  const pendingRoutingMode = computed(() => routing.value?.pending_routing_mode ?? '')
+  const routingRestartRequired = computed(() => Boolean(routing.value?.restart_required))
+  // The two serialization axes (Spec 085 / Spec 102). The backend resolves them,
+  // so an unset value still arrives as "full" — the ?? here only covers a daemon
+  // that predates the fields.
+  const toolResponseMode = computed(() => routing.value?.tool_response_mode ?? 'full')
+  const directToolResponseMode = computed(() => routing.value?.direct_tool_response_mode ?? 'full')
+  // Spec 097/code-exec gate. The code-execution SURFACE has no tool-calling
+  // path other than the code_execution tool, which refuses while this is off,
+  // so the mode switcher warns before an operator restarts into it. Defaults to
+  // true against a daemon that predates the field: a missing field must not
+  // render a warning we cannot substantiate.
+  const codeExecutionEnabled = computed(() => routing.value?.code_execution_enabled ?? true)
+
+  // A disconnect is a capability boundary, not merely a socket close. Keep
+  // the retry handle and source generation here so an old errored source
+  // cannot reopen an admin stream after App drops core eligibility.
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  let eventSourceGeneration = 0
+
+  function clearReconnectTimer() {
+    if (reconnectTimer !== null) {
+      clearTimeout(reconnectTimer)
+      reconnectTimer = null
+    }
+  }
+
+  // Actions
+  function connectEventSource() {
+    clearReconnectTimer()
+    const generation = ++eventSourceGeneration
+    if (eventSource.value) {
+      eventSource.value.close()
+    }
+
+    console.log('Attempting to connect EventSource...')
+    // SEC-07: log only whether a key is present. This used to include
+    // api.getAPIKeyPreview(), i.e. the first 8 characters of the admin key.
+    console.log('API key status:', { hasApiKey: api.hasAPIKey() })
+
+    const es = api.createEventSource()
+    eventSource.value = es
+    const isCurrentSource = () => generation === eventSourceGeneration && toRaw(eventSource.value) === es
+
+    es.onopen = () => {
+      if (!isCurrentSource()) return
+      connected.value = true
+      console.log('EventSource connected successfully')
+
+      // Review finding: FR-002's threshold-crossing attention events
+      // (server_error, client_never_seen, …) fire only once, at the moment
+      // the threshold is crossed. A drop that spans that moment loses the
+      // frame forever, and the header pill / sidebar badge / Home list stay
+      // wrong until an unrelated change happens to fire a fresh event. Every
+      // (re)connect — the initial one and every retry after `onerror` — is
+      // exactly the point a missed event could have been lost, so resync by
+      // re-dispatching the same window event the live `attention.changed`
+      // handler below dispatches; the attention store's own handler ignores
+      // the detail and just refetches (silent), so an extra one on first
+      // connect is harmless.
+      window.dispatchEvent(new CustomEvent('mcpproxy:attention-changed'))
+    }
+
+    es.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data) as StatusUpdate
+        status.value = data
+
+        // Debug logging to help diagnose status issues
+        console.log('SSE Status Update:', {
+          topLevelRunning: data.running,
+          nestedStatusRunning: data.status?.running,
+          listen_addr: data.listen_addr,
+          timestamp: data.timestamp,
+          finalRunningValue: data.running !== undefined ? data.running : (data.status?.running ?? false)
+        })
+
+        // You could emit events here for other stores to listen to
+        // For example, update server statuses
+      } catch (error) {
+        console.error('Failed to parse SSE message:', error)
+      }
+    }
+
+    // Listen specifically for status events
+    es.addEventListener('status', (event) => {
+      try {
+        const data = JSON.parse(event.data) as StatusUpdate
+        status.value = data
+
+        // Debug logging to help diagnose status issues
+        console.log('SSE Status Event Update:', {
+          topLevelRunning: data.running,
+          nestedStatusRunning: data.status?.running,
+          listen_addr: data.listen_addr,
+          timestamp: data.timestamp,
+          finalRunningValue: data.running !== undefined ? data.running : (data.status?.running ?? false)
+        })
+      } catch (error) {
+        console.error('Failed to parse SSE status event:', error)
+      }
+    })
+
+    // Listen for servers.changed events to trigger immediate UI updates
+    es.addEventListener('servers.changed', (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        console.log('SSE servers.changed event received:', data)
+
+        // Import and call serversStore.fetchServers() to refresh server list
+        // Note: This creates a circular dependency, so we'll emit a custom event instead
+        window.dispatchEvent(new CustomEvent('mcpproxy:servers-changed', { detail: data }))
+      } catch (error) {
+        console.error('Failed to parse SSE servers.changed event:', error)
+      }
+    })
+
+    // Listen for attention.changed events (Spec 109 FR-001/FR-006). The
+    // rendered payload is already narrowed to {count, ids} per caller — the
+    // attention store refetches GET /attention for the full item shape
+    // (summaries, fixes) rather than reconstructing it from ids here.
+    es.addEventListener('attention.changed', (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        window.dispatchEvent(new CustomEvent('mcpproxy:attention-changed', { detail: data }))
+      } catch (error) {
+        console.error('Failed to parse SSE attention.changed event:', error)
+      }
+    })
+
+    es.addEventListener('review.changed', (event) => {
+      try {
+        window.dispatchEvent(new CustomEvent('mcpproxy:review-changed', { detail: JSON.parse(event.data) }))
+      } catch (error) {
+        console.error('Failed to parse SSE review.changed event:', error)
+      }
+    })
+
+    // Spec 108-f FR-038: both are invalidations. The payload is not used; the
+    // profiles store and the clients store refetch. Scoped subscribers never
+    // receive either event, so nothing relies on them for correctness.
+    // Spec 115: credentials.changed (issue/revoke/forget on any surface) is the
+    // same kind of invalidation.
+    for (const name of ['profiles.changed', 'client.binding_changed', 'credentials.changed']) {
+      es.addEventListener(name, (event) => {
+        let detail: unknown = null
+        try { detail = JSON.parse((event as MessageEvent).data) } catch { /* the event is a bare invalidation */ }
+        window.dispatchEvent(new CustomEvent(`mcpproxy:${name}`, { detail }))
+      })
+    }
+
+    // Listen for config.reloaded events
+    es.addEventListener('config.reloaded', (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        console.log('SSE config.reloaded event received:', data)
+
+        // Trigger server list refresh on config reload
+        window.dispatchEvent(new CustomEvent('mcpproxy:config-reloaded', { detail: data }))
+      } catch (error) {
+        console.error('Failed to parse SSE config.reloaded event:', error)
+      }
+    })
+
+    // Listen for config.saved events to notify Configuration page
+    es.addEventListener('config.saved', (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        console.log('SSE config.saved event received:', data)
+
+        // Dispatch event for Configuration page to refresh
+        window.dispatchEvent(new CustomEvent('mcpproxy:config-saved', { detail: data }))
+      } catch (error) {
+        console.error('Failed to parse SSE config.saved event:', error)
+      }
+    })
+
+    // Listen for security.scanner_changed events so the Security page can
+    // refresh the scanner list when a background image pull finishes (spec 039).
+    es.addEventListener('security.scanner_changed', (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        window.dispatchEvent(new CustomEvent('mcpproxy:scanner-changed', { detail: data }))
+      } catch (error) {
+        console.error('Failed to parse SSE security.scanner_changed event:', error)
+      }
+    })
+
+    // Spec 077 US4 (MCP-2207): a single debounced settled event per server per
+    // scan replaces the per-scanner scan_started/progress/completed/failed
+    // storm. Forward it so scan-status consumers can refresh once per scan.
+    es.addEventListener('security.scan_settled', (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        const payload = data.payload || data
+        window.dispatchEvent(new CustomEvent('mcpproxy:scan-settled', { detail: payload }))
+      } catch (error) {
+        console.error('Failed to parse SSE security.scan_settled event:', error)
+      }
+    })
+
+    // Listen for activity events (tool calls, policy decisions, etc.).
+    //
+    // These payloads carry the call's raw arguments and response, so they are
+    // NOT logged: `console.log(data)` printed whatever secret the call carried
+    // straight into the DevTools console, which is the same leak the activity
+    // drawer was fixed for (audit F13). Only parse failures are logged.
+    es.addEventListener('activity.tool_call.started', (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        // Extract payload - SSE wraps activity data in {payload: ..., timestamp: ...}
+        const payload = data.payload || data
+        window.dispatchEvent(new CustomEvent('mcpproxy:activity-started', { detail: payload }))
+      } catch (error) {
+        console.error('Failed to parse SSE activity.tool_call.started event:', error)
+      }
+    })
+
+    es.addEventListener('activity.tool_call.completed', (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        // Extract payload - SSE wraps activity data in {payload: ..., timestamp: ...}
+        const payload = data.payload || data
+        window.dispatchEvent(new CustomEvent('mcpproxy:activity-completed', { detail: payload }))
+      } catch (error) {
+        console.error('Failed to parse SSE activity.tool_call.completed event:', error)
+      }
+    })
+
+    es.addEventListener('activity.policy_decision', (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        // Extract payload - SSE wraps activity data in {payload: ..., timestamp: ...}
+        const payload = data.payload || data
+        window.dispatchEvent(new CustomEvent('mcpproxy:activity-policy', { detail: payload }))
+      } catch (error) {
+        console.error('Failed to parse SSE activity.policy_decision event:', error)
+      }
+    })
+
+    es.addEventListener('activity', (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        // Extract payload - SSE wraps activity data in {payload: ..., timestamp: ...}
+        const payload = data.payload || data
+        window.dispatchEvent(new CustomEvent('mcpproxy:activity', { detail: payload }))
+      } catch (error) {
+        console.error('Failed to parse SSE activity event:', error)
+      }
+    })
+
+    // Listen for internal tool call events (Spec 024)
+    es.addEventListener('activity.internal_tool_call.completed', (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        const payload = data.payload || data
+        window.dispatchEvent(new CustomEvent('mcpproxy:activity-completed', { detail: payload }))
+      } catch (error) {
+        console.error('Failed to parse SSE activity.internal_tool_call.completed event:', error)
+      }
+    })
+
+    // Listen for system lifecycle events (Spec 024)
+    // Note: Backend sends "activity.system.start" (with dots, not underscores)
+    es.addEventListener('activity.system.start', (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        console.log('SSE activity.system_start event received:', data)
+        const payload = data.payload || data
+        window.dispatchEvent(new CustomEvent('mcpproxy:activity', { detail: payload }))
+      } catch (error) {
+        console.error('Failed to parse SSE activity.system_start event:', error)
+      }
+    })
+
+    // Note: Backend sends "activity.system.stop" (with dots, not underscores)
+    es.addEventListener('activity.system.stop', (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        console.log('SSE activity.system_stop event received:', data)
+        const payload = data.payload || data
+        window.dispatchEvent(new CustomEvent('mcpproxy:activity', { detail: payload }))
+      } catch (error) {
+        console.error('Failed to parse SSE activity.system_stop event:', error)
+      }
+    })
+
+    // Listen for config change events (Spec 024)
+    es.addEventListener('activity.config_change', (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        console.log('SSE activity.config_change event received:', data)
+        const payload = data.payload || data
+        window.dispatchEvent(new CustomEvent('mcpproxy:activity', { detail: payload }))
+      } catch (error) {
+        console.error('Failed to parse SSE activity.config_change event:', error)
+      }
+    })
+
+    es.onerror = () => {
+      // Browser EventSource instances can deliver a queued error after close
+      // or replacement. It belongs to the retired generation and must not
+      // schedule a reconnect for the current (or disconnected) principal.
+      if (!isCurrentSource()) return
+      connected.value = false
+      // SEC-07: do NOT log the error event. Its `target` is the EventSource,
+      // whose `url` carries the API key as a ?apikey= query parameter, so
+      // logging the event puts the WHOLE key in the devtools console. The
+      // event itself carries no diagnostic detail beyond readyState anyway.
+      console.error('EventSource error occurred; readyState:', es.readyState)
+
+      // Check if this might be an authentication error
+      if (es.readyState === EventSource.CLOSED) {
+        console.error('EventSource connection closed - possible authentication failure')
+
+        // If we have an API key but still failed, try reinitializing
+        if (api.hasAPIKey()) {
+          console.log('Attempting to reinitialize API key and retry connection...')
+          api.reinitializeAPIKey()
+        }
+      }
+
+      // Retry once after a delay while this exact source remains current.
+      // Multiple error callbacks from the same EventSource share one timer.
+      if (reconnectTimer !== null) return
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null
+        if (!isCurrentSource()) return
+        console.log('Retrying EventSource connection in 5 seconds...')
+        connectEventSource()
+      }, 5000)
+    }
+  }
+
+  function disconnectEventSource() {
+    eventSourceGeneration++
+    clearReconnectTimer()
+    if (eventSource.value) {
+      eventSource.value.close()
+      eventSource.value = null
+    }
+    connected.value = false
+  }
+
+  /** Applies the resolved daisyUI theme to <html> without touching the selection. */
+  function applyResolvedTheme() {
+    const resolved = resolveThemeName(currentTheme.value)
+    resolvedTheme.value = resolved
+    if (typeof document !== 'undefined') {
+      document.documentElement.setAttribute('data-theme', resolved)
+    }
+  }
+
+  // While `system` is selected the UI has to follow the OS flipping between
+  // light and dark; an explicit choice ignores the media query entirely.
+  let colorSchemeQuery: MediaQueryList | null = null
+  function watchColorScheme() {
+    if (colorSchemeQuery) return
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
+    try {
+      colorSchemeQuery = window.matchMedia('(prefers-color-scheme: dark)')
+    } catch {
+      return
+    }
+    const query = colorSchemeQuery
+    const onChange = () => {
+      if (currentTheme.value === SYSTEM_THEME) applyResolvedTheme()
+    }
+    const detach = () => {
+      if (typeof query.removeEventListener === 'function') {
+        query.removeEventListener('change', onChange)
+      } else if (typeof query.removeListener === 'function') {
+        query.removeListener(onChange)
+      }
+      colorSchemeQuery = null
+    }
+    if (typeof query.addEventListener === 'function') {
+      query.addEventListener('change', onChange)
+    } else if (typeof query.addListener === 'function') {
+      // Safari < 14
+      query.addListener(onChange)
+    }
+    // The store outlives most things, but HMR and tests dispose and recreate it;
+    // without this each incarnation would leave its listener behind.
+    onScopeDispose(detach)
+  }
+
+  function setTheme(themeName: string) {
+    const theme = themes.find(t => t.name === themeName)
+    if (!theme) return
+    currentTheme.value = themeName
+    applyResolvedTheme()
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, themeName)
+    } catch {
+      // localStorage unavailable (private browsing, etc.) — keep in-memory
+    }
+  }
+
+  function loadTheme() {
+    let savedTheme: string | null = null
+    try {
+      savedTheme = localStorage.getItem(THEME_STORAGE_KEY)
+    } catch {
+      savedTheme = null
+    }
+    // No stored choice (or a theme that no longer exists) => follow the OS.
+    currentTheme.value =
+      savedTheme && themes.some(t => t.name === savedTheme) ? savedTheme : SYSTEM_THEME
+    applyResolvedTheme()
+    watchColorScheme()
+  }
+
+  function toggleSidebar() {
+    sidebarCollapsed.value = !sidebarCollapsed.value
+    try {
+      localStorage.setItem(
+        'mcpproxy-sidebar-collapsed',
+        sidebarCollapsed.value ? '1' : '0'
+      )
+    } catch {
+      // localStorage unavailable (private browsing, etc.) — just keep in-memory
+    }
+  }
+
+  function addToast(toast: Omit<Toast, 'id'>): string {
+    const id = Math.random().toString(36).substr(2, 9)
+    const newToast: Toast = {
+      ...toast,
+      id,
+      duration: toast.duration ?? 5000,
+    }
+
+    toasts.value.push(newToast)
+
+    // Auto-remove toast after duration
+    if (newToast.duration && newToast.duration > 0) {
+      setTimeout(() => {
+        removeToast(id)
+      }, newToast.duration)
+    }
+
+    return id
+  }
+
+  function removeToast(id: string) {
+    const index = toasts.value.findIndex(t => t.id === id)
+    if (index > -1) {
+      toasts.value.splice(index, 1)
+    }
+  }
+
+  function clearToasts() {
+    toasts.value = []
+  }
+
+  async function fetchInfo() {
+    try {
+      const response = await api.getInfo()
+      if (response.success && response.data) {
+        info.value = response.data
+        if (response.data.update?.checked_at) {
+          updateCheckedAt.value = response.data.update.checked_at
+        }
+      }
+    } catch (error) {
+      console.error('Failed to fetch info:', error)
+    }
+  }
+
+  async function checkForUpdates(): Promise<{ ok: boolean; error?: string }> {
+    if (checkingForUpdates.value) return { ok: false, error: 'already checking' }
+    checkingForUpdates.value = true
+    try {
+      const response = await api.getInfo({ refresh: true })
+      if (response.success && response.data) {
+        info.value = response.data
+        // Spec 079 FR-015: when update checking is disabled
+        // (update_check.enabled=false or MCPPROXY_DISABLE_AUTO_UPDATE), the
+        // daemon performs no check and omits the update object — say so
+        // instead of a misleading "latest version" toast.
+        if (!response.data.update) {
+          addToast({
+            type: 'info',
+            title: 'Update checks are disabled',
+            message: 'Enable update_check in the configuration to check for updates.',
+          })
+          return { ok: true }
+        }
+        updateCheckedAt.value = response.data.update?.checked_at ?? new Date().toISOString()
+        const checkErr = response.data.update?.check_error
+        if (checkErr) {
+          // Spec 079 FR-020: a failed check (offline, rate-limited) is
+          // "unknown", never an alarming error state — inform, don't alarm.
+          addToast({
+            type: 'info',
+            title: 'Could not check for updates',
+            message: 'The update service was unreachable (offline or rate-limited). Try again later.',
+          })
+          return { ok: false, error: checkErr }
+        }
+        if (response.data.update?.available) {
+          addToast({
+            type: 'info',
+            title: 'Update available',
+            message: response.data.update.latest_version || '',
+          })
+        } else {
+          addToast({ type: 'success', title: 'You are running the latest version.' })
+        }
+        return { ok: true }
+      }
+      const err = response.error || 'Request failed'
+      addToast({ type: 'error', title: 'Update check failed', message: err })
+      return { ok: false, error: err }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      console.error('Failed to check for updates:', error)
+      addToast({ type: 'error', title: 'Update check failed', message: msg })
+      return { ok: false, error: msg }
+    } finally {
+      checkingForUpdates.value = false
+    }
+  }
+
+  /**
+   * Persist one routing/serialization field and refresh the routing snapshot.
+   *
+   * PATCH (not a full apply) so nothing else in the config is round-tripped:
+   * the header switcher must never be able to rewrite a value the operator did
+   * not touch. Returns the apply result so the caller can distinguish "applied
+   * now" from "saved, needs a restart" — routing_mode is the only one of the
+   * three that takes the second path.
+   */
+  async function applyModeField(field: string, value: string) {
+    try {
+      const response = await api.patchConfig({ [field]: value })
+      if (!response.success || !response.data) {
+        const msg = response.error || 'Failed to apply the change'
+        addToast({ type: 'error', title: 'Could not change mode', message: msg })
+        return { ok: false as const, requiresRestart: false, error: msg }
+      }
+      // Refresh from the server rather than assuming: on the restart path the
+      // served mode deliberately does NOT change, and only /api/v1/routing
+      // knows what is now pending.
+      await fetchRouting()
+      return {
+        ok: true as const,
+        requiresRestart: Boolean(response.data.requires_restart),
+        restartReason: response.data.restart_reason || '',
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      addToast({ type: 'error', title: 'Could not change mode', message: msg })
+      return { ok: false as const, requiresRestart: false, error: msg }
+    }
+  }
+
+  async function fetchRouting() {
+    try {
+      const response = await api.getRouting()
+      if (response.success && response.data) {
+        routing.value = response.data
+      }
+    } catch (error) {
+      console.error('Failed to fetch routing:', error)
+    }
+  }
+
+  // Spec 109-k FR-080a: GET /api/v1/status.features.scope_filters is the one
+  // place useScopeQuery's profile/client/token rows learn whether this build
+  // supports them (zcode round 1, F1 — setAvailableFeatures previously had no
+  // production caller, so those rows stayed permanently hidden even once
+  // Spec 108 ships the feature). The SSE "status" event carries a much
+  // narrower payload (internal/httpapi/server.go) and does not include
+  // `features`, so this has to be a REST fetch, not something read off the
+  // existing event-stream `status` ref.
+  //
+  // Spec 108-j J3: `scopeFeaturesKnown` flips once that fetch has finished, on
+  // success OR failure, and waitForScopeFeatures() is the gate a page awaits
+  // before its FIRST fetch when its URL carries profile/client/token. Without
+  // it a page that mounts before /status answers sends the first request
+  // unfiltered (the parameter is still hidden, rule 7), loads every row and
+  // refetches: the flash url-filter-contract.md rule 1 forbids.
+  const scopeFeaturesKnown = ref(false)
+  let markScopeFeaturesKnown: () => void = () => {}
+  const scopeFeaturesSettled = new Promise<void>(resolve => { markScopeFeaturesKnown = resolve })
+
+  async function fetchScopeFilterFeatures() {
+    try {
+      const response = await api.getStatus()
+      if (response.success && response.data) {
+        setAvailableFeatures(response.data.features?.scope_filters)
+      }
+    } catch (error) {
+      console.error('Failed to fetch status features:', error)
+    } finally {
+      scopeFeaturesKnown.value = true
+      markScopeFeaturesKnown()
+    }
+  }
+
+  // Resolves when the feature list is known, or after `timeoutMs`. The timeout is
+  // deliberate (plan J3): a /status that never answers must not leave a page on a
+  // spinner forever, so the params then stay hidden (rule 7), the page fetches
+  // unfiltered and shows a disabled "Filter unavailable on this server" chip, and
+  // the features arriving later trigger a filtered refetch. A build whose features
+  // were already set elsewhere needs no wait.
+  async function waitForScopeFeatures(timeoutMs = 2000): Promise<void> {
+    if (scopeFeaturesKnown.value) return
+    if (['profile', 'client', 'token'].some(name => isScopeParamAvailable(name))) return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<void>(resolve => { timer = setTimeout(resolve, timeoutMs) })
+    try {
+      await Promise.race([scopeFeaturesSettled, timeout])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
+
+  // Initialize theme on store creation
+  loadTheme()
+
+  return {
+    // State
+    status,
+    connected,
+    currentTheme,
+    resolvedTheme,
+    toasts,
+    themes,
+    info,
+    routing,
+    checkingForUpdates,
+    updateCheckedAt,
+    authRequired,
+    authEpoch,
+
+    // Computed
+    isRunning,
+    listenAddr,
+    upstreamStats,
+    currentThemeConfig,
+    version,
+    updateAvailable,
+    updateNudgesSuppressed,
+    latestVersion,
+    installChannel,
+    updateCommand,
+    updateBehindSummary,
+    routingMode,
+    pendingRoutingMode,
+    routingRestartRequired,
+    toolResponseMode,
+    directToolResponseMode,
+    codeExecutionEnabled,
+    sidebarCollapsed,
+
+    // Actions
+    connectEventSource,
+    disconnectEventSource,
+    setTheme,
+    loadTheme,
+    toggleSidebar,
+    addToast,
+    removeToast,
+    clearToasts,
+    fetchInfo,
+    fetchRouting,
+    fetchScopeFilterFeatures,
+    scopeFeaturesKnown,
+    waitForScopeFeatures,
+    applyModeField,
+    checkForUpdates,
+    setAuthRequired,
+    markAuthRecovered,
+  }
+})

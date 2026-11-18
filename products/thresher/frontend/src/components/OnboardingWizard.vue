@@ -1,0 +1,2181 @@
+<template>
+  <dialog ref="dialogEl" class="modal modal-bottom sm:modal-middle">
+    <div
+      class="modal-box p-0 overflow-hidden flex flex-col"
+      :style="modalSizing"
+    >
+      <!-- Header: title + close -->
+      <div class="flex items-start justify-between px-6 pt-5 pb-3">
+        <div>
+          <h3 class="font-bold text-lg">MCPProxy setup</h3>
+          <p class="text-xs opacity-60 mt-1">
+            <template v-if="onboarding.incompleteTabCount > 0">
+              {{ onboarding.incompleteTabCount }}
+              {{ onboarding.incompleteTabCount === 1 ? 'step' : 'steps' }}
+              still to do
+            </template>
+            <template v-else>You're all set up.</template>
+          </p>
+        </div>
+        <button class="btn btn-ghost btn-sm btn-square" @click="dismiss" aria-label="Close">✕</button>
+      </div>
+
+      <!-- Tabs -->
+      <div role="tablist" class="tabs tabs-border px-6 shrink-0">
+        <a
+          v-for="tab in tabs"
+          :key="tab.id"
+          role="tab"
+          class="tab gap-2"
+          :class="{ 'tab-active text-primary': activeTab === tab.id }"
+          :data-test="`tab-${tab.id}`"
+          @click="selectTab(tab.id)"
+        >
+          <span
+            class="inline-flex items-center justify-center w-5 h-5 rounded-full text-[11px] font-semibold"
+            :class="tab.complete ? 'bg-success text-success-content' : 'bg-base-300 text-base-content/60'"
+          >
+            <span v-if="tab.complete">✓</span>
+            <span v-else>{{ tab.idx }}</span>
+          </span>
+          <span>{{ tab.label }}</span>
+        </a>
+      </div>
+
+      <!-- Body (scrollable) -->
+      <div class="px-6 py-4 overflow-y-auto flex-1">
+        <!-- ============================ -->
+        <!-- Tab: Clients -->
+        <!-- ============================ -->
+        <section v-if="activeTab === 'clients'" data-test="panel-clients">
+          <!-- The wizard's primary client path is the same component used by
+               Clients. Keep the legacy markup below inert temporarily while
+               its presentation-only helpers are retired; it must never own a
+               second preview/write flow. -->
+          <ClientConnectList :show="show" embedded @close="dismiss" />
+        </section>
+        <section v-if="false" aria-hidden="true">
+          <p class="text-sm opacity-70 mb-4">
+            Pick at least one AI tool. MCPProxy registers itself in that tool's config so the assistant can talk to mcpproxy. You'll see the exact change before anything is written, and a timestamped backup is created first.
+          </p>
+
+          <div v-if="loadingClients" class="flex justify-center py-6">
+            <span class="loading loading-spinner loading-md"></span>
+          </div>
+          <div v-else-if="clientsError" class="alert alert-error mb-2">
+            <span class="text-sm">{{ clientsError }}</span>
+          </div>
+
+          <template v-else>
+            <!-- Detected clients -->
+            <div v-if="detectedClients.length > 0" class="space-y-2 mb-4">
+              <div class="text-[11px] font-semibold uppercase tracking-wider opacity-50">Detected on this machine</div>
+              <ClientRow
+                v-for="c in detectedClients"
+                :key="c.id"
+                :client="c"
+                :busy="busyClients[c.id]"
+                :backup-path="connectBackups[c.id]"
+                :copied-backup="copiedBackupClient === c.id"
+                :preview="previews[c.id]"
+                :preview-busy="previewBusy[c.id]"
+                :preview-error="previewErrors[c.id]"
+                :undo-preview="undoPreviews[c.id]"
+                :undo-open="undoOpen[c.id]"
+                :undo-busy="undoBusy[c.id]"
+                @copy-backup="copyBackupPath"
+                @connect="startConnect"
+                @confirm="confirmConnect"
+                @cancel="cancelPreview"
+                @undo="startUndo"
+                @confirm-undo="confirmUndo"
+                @cancel-undo="cancelUndo"
+              />
+            </div>
+
+            <!-- Pinned trio (only the ones not already in detected) -->
+            <div v-if="pinnedClients.length > 0" class="space-y-2 mb-4">
+              <div class="text-[11px] font-semibold uppercase tracking-wider opacity-50">Most popular</div>
+              <ClientRow
+                v-for="c in pinnedClients"
+                :key="c.id"
+                :client="c"
+                :busy="busyClients[c.id]"
+                :backup-path="connectBackups[c.id]"
+                :copied-backup="copiedBackupClient === c.id"
+                :preview="previews[c.id]"
+                :preview-busy="previewBusy[c.id]"
+                :preview-error="previewErrors[c.id]"
+                :undo-preview="undoPreviews[c.id]"
+                :undo-open="undoOpen[c.id]"
+                :undo-busy="undoBusy[c.id]"
+                @copy-backup="copyBackupPath"
+                @connect="startConnect"
+                @confirm="confirmConnect"
+                @cancel="cancelPreview"
+                @undo="startUndo"
+                @confirm-undo="confirmUndo"
+                @cancel-undo="cancelUndo"
+              />
+            </div>
+
+            <!-- Collapsible: more clients -->
+            <details v-if="moreClients.length > 0" class="group mb-2">
+              <summary class="cursor-pointer text-sm opacity-70 hover:opacity-100 select-none flex items-center gap-1 py-1">
+                <span class="transition-transform group-open:rotate-90">▸</span>
+                Show {{ moreClients.length }} more {{ moreClients.length === 1 ? 'client' : 'clients' }}
+              </summary>
+              <div class="space-y-2 mt-2">
+                <ClientRow
+                  v-for="c in moreClients"
+                  :key="c.id"
+                  :client="c"
+                  :busy="busyClients[c.id]"
+                  :backup-path="connectBackups[c.id]"
+                  :copied-backup="copiedBackupClient === c.id"
+                  :preview="previews[c.id]"
+                  :preview-busy="previewBusy[c.id]"
+                  :preview-error="previewErrors[c.id]"
+                  :undo-preview="undoPreviews[c.id]"
+                  :undo-open="undoOpen[c.id]"
+                  :undo-busy="undoBusy[c.id]"
+                  @copy-backup="copyBackupPath"
+                  @connect="startConnect"
+                  @confirm="confirmConnect"
+                  @cancel="cancelPreview"
+                  @undo="startUndo"
+                  @confirm-undo="confirmUndo"
+                  @cancel-undo="cancelUndo"
+                />
+              </div>
+            </details>
+
+            <div v-if="connectMessage" class="mt-3">
+              <div class="alert alert-sm" :class="connectMessageOk ? 'alert-success' : 'alert-error'">
+                <span class="text-sm">{{ connectMessage }}</span>
+                <p v-if="connectMessageOk && connectReloadHint" data-test="connect-reload-hint" class="mt-1 text-xs">
+                  {{ connectReloadHint }}
+                </p>
+              </div>
+            </div>
+          </template>
+
+          <!-- Inline security expander (Spec 046 v2 FR-V06) -->
+          <details class="mt-6 border-t border-base-300 pt-4">
+            <summary class="cursor-pointer text-sm font-medium opacity-80 hover:opacity-100 select-none flex items-center gap-1">
+              <span class="transition-transform group-open:rotate-90">▸</span>
+              Show security settings
+            </summary>
+            <div class="mt-3 space-y-3 text-sm">
+              <div class="flex items-start gap-3">
+                <div class="flex-1 min-w-0">
+                  <div class="font-medium">Bind interface</div>
+                  <div class="text-xs opacity-60 mt-0.5">
+                    mcpproxy is listening on <code class="font-mono text-[11px]">{{ listenAddr || 'localhost' }}</code>.
+                    To expose it on the LAN, edit <span class="opacity-80">listen</span> in
+                    <router-link to="/settings" class="link link-primary">Settings → Configuration</router-link>.
+                  </div>
+                </div>
+              </div>
+              <div class="flex items-start gap-3">
+                <input
+                  type="checkbox"
+                  class="checkbox checkbox-sm mt-0.5"
+                  aria-label="Require API key on /mcp"
+                  :checked="requireMcpAuth"
+                  :disabled="securityBusy"
+                  @change="onToggleRequireAuth(($event.target as HTMLInputElement).checked)"
+                  data-test="toggle-require-mcp-auth"
+                />
+                <div class="flex-1 min-w-0">
+                  <div class="font-medium">Require API key on /mcp</div>
+                  <div class="text-xs opacity-60 mt-0.5">
+                    On by default for LAN-bound mcpproxy. Off-by-default keeps localhost-only setup frictionless.
+                  </div>
+                </div>
+              </div>
+            </div>
+          </details>
+        </section>
+
+        <!-- ============================ -->
+        <!-- Tab: Servers -->
+        <!-- ============================ -->
+        <section v-else-if="activeTab === 'servers'" data-test="panel-servers">
+          <p class="text-sm opacity-70 mb-4">
+            Pick which servers from your existing AI clients to import. Same name in multiple sources? We auto-rename collisions like
+            <code class="font-mono text-[11px] bg-base-200 px-1 rounded">mcpproxy_claude_code</code> so each entry stays distinct.
+          </p>
+
+          <!-- The done card below is the one completion state; suppress the
+               importer's own "imported" line while it shows (review F2.1). -->
+          <ImportServers
+            :key="importSession"
+            detected
+            :show-empty="false"
+            :show-message="serversView !== 'imported'"
+            @imported="onSharedImport"
+          />
+
+          <!-- Detected import sources (Spec 046 v2 — sectioned checkbox layout) -->
+          <div v-if="false" class="flex justify-center py-4">
+            <span class="loading loading-spinner loading-md"></span>
+          </div>
+          <!-- Spec 109-ux-navigation-consistency US7 Acceptance Scenario 4:
+               nothing left to import, but the step isn't done — everything
+               imported so far is still quarantined. The generic "Nothing to
+               import" dead end below is wrong here: there IS something to do,
+               it's reviewing what was already brought in. -->
+          <div
+            v-else-if="serversView === 'review'"
+            class="border border-base-300 rounded-lg mb-5"
+            data-test="servers-inline-review"
+          >
+            <p class="px-4 pt-4 pb-2 text-sm">
+              <span class="font-semibold">Approve a server to finish this step.</span>{{ ' ' }}<span class="opacity-70">{{ awaitingReviewText }}</span>
+            </p>
+            <ReviewQueueList :rows="quarantinedReviewRows" @review="goToServerReview" />
+            <p v-if="serverAddedJustNow" class="text-xs text-success px-4 pb-3 pt-1">
+              ✓ Server added — it's currently in quarantine. Review it in the Review queue after this wizard.
+            </p>
+          </div>
+          <!-- Nothing to import. Step 2 is otherwise entirely about picking
+               servers out of an existing MCP setup, which leaves a user who has
+               none — the exact user this wizard matters most to — staring at a
+               dead end. Give that user the two ways to get a first server. -->
+          <div
+            v-else-if="serversView === 'imported'"
+            class="border border-base-300 rounded-lg p-6 text-center mb-5"
+            data-test="servers-import-done"
+          >
+            <div class="font-semibold text-success">
+              {{ importedThisSession }} server{{ importedThisSession === 1 ? '' : 's' }} imported.
+            </div>
+            <p class="text-sm opacity-70 mt-1">Next: check that your client can reach them.</p>
+            <button
+              type="button"
+              class="btn btn-primary btn-sm mt-4"
+              data-test="servers-import-done-verify"
+              @click="selectTab('verify')"
+            >
+              Continue to Verify
+            </button>
+          </div>
+          <div
+            v-else-if="serversView === 'empty'"
+            class="border border-base-300 rounded-lg p-6 text-center mb-5"
+            data-test="servers-nothing-to-import"
+          >
+            <div class="text-3xl opacity-40 mb-2">📦</div>
+            <div class="font-semibold">Nothing to import</div>
+            <p class="text-sm opacity-70 mt-1 max-w-md mx-auto">
+              We found no MCP servers in your AI clients' configs on this machine —
+              so there is nothing to bring across. Start from the registry instead,
+              or add a server yourself.
+            </p>
+            <div class="flex flex-wrap gap-2 justify-center mt-4">
+              <button
+                class="btn btn-primary btn-sm"
+                data-test="nothing-to-import-registry"
+                @click="goToRegistry"
+              >
+                Browse the registry
+              </button>
+              <button
+                class="btn btn-outline btn-sm"
+                data-test="nothing-to-import-manual"
+                @click="openAddServer"
+              >
+                Add a server manually
+              </button>
+            </div>
+            <div v-if="addServerOpen" class="text-left mt-4" data-test="wizard-manual-form">
+              <ManualServerForm :navigate-after-add="false" :allow-trust-mode-selection="false" @added="onServerAdded" />
+            </div>
+            <p v-if="serverAddedJustNow" class="text-xs text-success mt-3">
+              ✓ Server added — it's currently in quarantine. Review it in the Review queue after this wizard.
+            </p>
+          </div>
+          <!-- The list is capped and scrolls in place. Uncapped it ran off the
+               bottom of the modal body and clipped its last row with no hint
+               that more existed; the cap also leaves the security panel below
+               it partly on screen, so the choice it offers is visible rather
+               than something the user has to go looking for. -->
+          <div v-else-if="false" class="border border-base-300 rounded-lg overflow-hidden mb-4 max-h-[32vh] overflow-y-auto">
+            <div
+              v-for="(src, idx) in importSourcesWithServers"
+              :key="src.path"
+              :data-test="`import-section-${src.format}`"
+              :class="idx > 0 ? 'border-t border-base-300' : ''"
+            >
+              <!-- Section header: client name + path + select-all checkbox -->
+              <label class="flex items-start gap-3 px-3 py-2 bg-base-200/50 cursor-pointer">
+                <input
+                  type="checkbox"
+                  class="checkbox checkbox-sm mt-0.5"
+                  :checked="isAllSelected(src)"
+                  :indeterminate.prop="isIndeterminate(src)"
+                  :data-test="`select-all-${src.format}`"
+                  @change="toggleAllInSource(src, ($event.target as HTMLInputElement).checked)"
+                />
+                <div class="min-w-0 flex-1">
+                  <div class="font-medium text-sm flex items-center gap-2">
+                    <span>{{ src.name }}</span>
+                    <span class="text-[11px] opacity-50">— {{ src.serverCount }} server{{ src.serverCount === 1 ? '' : 's' }}</span>
+                  </div>
+                  <div class="text-[11px] opacity-50 truncate font-mono" :title="src.path">{{ src.path }}</div>
+                </div>
+              </label>
+              <!-- Server rows (indented + with vertical guide so the visual
+                   hierarchy 'this server belongs to that client' is obvious) -->
+              <ul class="divide-y divide-base-300">
+                <li
+                  v-for="name in src.serverNames"
+                  :key="name"
+                  class="flex items-start gap-3 pl-10 pr-3 py-2 relative hover:bg-base-200/40"
+                >
+                  <!-- Vertical guide -->
+                  <span class="absolute left-5 top-0 bottom-0 w-px bg-base-300" aria-hidden="true"></span>
+                  <label class="flex items-start gap-3 flex-1 min-w-0 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      class="checkbox checkbox-sm mt-0.5"
+                      :checked="isSelected(src.path, name)"
+                      :data-test="`server-checkbox-${src.format}-${name}`"
+                      @change="toggleServer(src.path, name, ($event.target as HTMLInputElement).checked)"
+                    />
+                    <span class="min-w-0 flex-1">
+                      <span class="text-sm truncate block">{{ name }}</span>
+                      <!-- Spec 109-b FR-040: second line (command+args or
+                           url+auth-type) and its tags. -->
+                      <span
+                        v-if="importedRow(src, name)"
+                        class="text-[11px] opacity-50 font-mono truncate block"
+                        :data-test="`import-summary-${src.format}-${name}`"
+                      >
+                        {{ importedRow(src, name)!.summary }}
+                      </span>
+                      <span v-if="importedRow(src, name)?.tags?.length" class="flex flex-wrap gap-1 mt-1">
+                        <span
+                          v-for="tag in importedRow(src, name)!.tags"
+                          :key="tag"
+                          class="badge badge-ghost badge-xs font-normal"
+                          :class="{ 'badge-warning': tag === 'needs secret' }"
+                          :data-test="`import-tag-${src.format}-${name}-${tag.replaceAll(' ', '-')}`"
+                        >{{ tag }}</span>
+                      </span>
+                    </span>
+                  </label>
+                  <span
+                    v-if="conflictTarget(src, name)"
+                    class="badge badge-warning badge-sm gap-1 shrink-0 font-normal"
+                    :title="`This name conflicts across sources — will be imported as ${conflictTarget(src, name)}`"
+                  >
+                    →
+                    <code class="font-mono text-[11px]">{{ conflictTarget(src, name) }}</code>
+                  </span>
+                </li>
+              </ul>
+            </div>
+          </div>
+
+          <!-- Selection error (after import attempt) -->
+          <div v-if="selectionImportMessage" class="alert mb-4" :class="selectionImportOk ? 'alert-success' : 'alert-error'">
+            <span class="text-sm">{{ selectionImportMessage }}</span>
+          </div>
+
+          <!-- Spec 109-ux-navigation-consistency FR-043: the global Docker
+               isolation and quarantine defaults are not editable here — they
+               apply to every server on this instance, imported or not, and
+               belong in Settings. This step only decides whether THIS
+               import goes through quarantine, via the footer checkbox below. -->
+          <p
+            class="text-xs opacity-70 mb-4 leading-relaxed"
+            data-test="security-defaults-summary"
+          >
+            Docker isolation is <strong>{{ dockerIsolationDefault ? 'on' : 'off' }}</strong><span v-if="dockerIsolationDefault && dockerStatus === false" class="text-warning"> (Docker not detected)</span> and new-server quarantine is <strong>{{ quarantineEnabled ? 'on' : 'off' }}</strong> by default —
+            <a :href="hrefFor('/settings')" class="link link-primary" @click="goToSettings">change these in Settings →</a>
+          </p>
+
+          <!-- Only an alternative when there is something to import; the
+               nothing-to-import branch above already offers manual add as a
+               first-class action, so this would just repeat it. -->
+          <details
+            v-if="importSourcesWithServers.length > 0"
+            class="border border-base-300 rounded-lg p-3 text-sm"
+            data-test="manual-add-details"
+          >
+            <summary class="cursor-pointer font-medium flex items-center gap-2 select-none">
+              <span class="transition-transform group-open:rotate-90">▸</span>
+              Add a single server manually instead
+            </summary>
+            <div class="mt-3">
+              <button
+                v-if="!addServerOpen"
+                class="btn btn-primary btn-sm w-full"
+                @click="openAddServer"
+                data-test="add-server-button"
+              >
+                Open the add-server form
+              </button>
+              <div v-else data-test="wizard-manual-form">
+                <ManualServerForm :navigate-after-add="false" :allow-trust-mode-selection="false" @added="onServerAdded" />
+              </div>
+              <p v-if="serverAddedJustNow" class="text-xs text-success mt-2">
+                ✓ Server added — it's currently in quarantine. Review it in the Review queue after this wizard.
+              </p>
+              <p v-else-if="onboarding.hasConfiguredServer" class="text-xs opacity-60 mt-2">
+                {{ serverCountLabel }} configured.
+              </p>
+            </div>
+          </details>
+          <details class="border border-base-300 rounded-lg p-3 text-sm mt-3" data-test="wizard-shared-import-details">
+            <summary class="cursor-pointer font-medium">Paste a config to import instead</summary>
+            <div class="mt-3"><ImportServers @imported="onSharedImport" /></div>
+          </details>
+        </section>
+
+        <!-- ============================ -->
+        <!-- Tab: Verify -->
+        <!-- ============================ -->
+        <section v-else-if="activeTab === 'verify'" data-test="panel-verify">
+          <!-- Two milestones, deliberately separate (UX audit F13). The MCP
+               `initialize` handshake behind firstMCPClientEver proves the
+               wiring only; the value the product exists for is an upstream
+               tool actually running, which is first_real_tool_call_ever. -->
+          <template v-if="onboarding.firstMCPClientEver">
+            <div class="flex flex-col items-center gap-2 pt-6 pb-4 text-center" data-test="verify-client-connected" data-state="satisfied">
+              <div class="text-4xl">✅</div>
+              <div class="font-semibold text-lg">AI client connected</div>
+              <div class="text-sm opacity-70 max-w-md">
+                Your AI client completed an MCP handshake with mcpproxy, so the wiring is right.<span v-if="upstreamCallState === 'pending'"> It does not yet mean a tool has run.</span>
+              </div>
+              <div v-if="onboarding.mcpClientsSeenEver.length > 0" class="text-xs opacity-60 mt-2">
+                Recognized: <span class="font-medium">{{ onboarding.mcpClientsSeenEver.join(', ') }}</span>
+              </div>
+            </div>
+            <!-- Pending is a neutral next step, never an error: nothing here
+                 gates the wizard, and an install that only proxies is fine.
+                 Hidden entirely while the state is unknown — see
+                 upstreamCallState; a row we cannot substantiate is worse than
+                 no row. -->
+            <div
+              v-if="upstreamCallState !== 'unknown'"
+              class="flex items-start justify-center gap-2 pb-4 text-sm text-center max-w-md mx-auto"
+              data-test="verify-first-upstream-call"
+              :data-state="upstreamCallState"
+            >
+              <template v-if="upstreamCallState === 'satisfied'">
+                <span>✅</span>
+                <span>
+                  <span class="font-semibold">First upstream tool call</span> — a tool on one of your MCP servers ran through mcpproxy and returned a result.
+                </span>
+              </template>
+              <template v-else>
+                <span class="opacity-50">📡</span>
+                <span class="opacity-70">
+                  <span class="font-semibold">No upstream tool call recorded yet</span> — try the first prompt below, which calls a tool on one of your servers; the rest search and inspect mcpproxy itself.
+                </span>
+              </template>
+            </div>
+          </template>
+          <template v-else>
+            <div class="flex flex-col items-center gap-3 py-6 text-center">
+              <div class="text-4xl opacity-50">📡</div>
+              <div class="font-semibold text-lg">Waiting for your first request</div>
+              <div class="text-sm opacity-70 max-w-md">
+                Open your AI agent and ask it to call <code class="font-mono text-[12px]">retrieve_tools</code> through mcpproxy. We'll detect the round-trip live.
+              </div>
+              <div class="flex items-center gap-2 mt-2 text-xs opacity-60">
+                <span class="loading loading-dots loading-sm"></span>
+                <span>Listening…</span>
+              </div>
+            </div>
+          </template>
+
+          <!-- Spec 109-b FR-042: each connected client's reload hint — most
+               clients only read their MCP config at startup, so a connect
+               that succeeded doesn't mean the client is using it yet. -->
+          <div v-if="connectedClientsWithHints.length > 0" class="mt-4 border-t border-base-300 pt-4" data-test="verify-reload-hints">
+            <div class="text-[11px] font-semibold uppercase tracking-wider opacity-50 mb-2">Reload your client to pick it up</div>
+            <ul class="space-y-1">
+              <li
+                v-for="c in connectedClientsWithHints"
+                :key="c.id"
+                class="text-sm"
+                :data-test="`reload-hint-${c.id}`"
+              >
+                <span class="font-medium">{{ c.name }}:</span> {{ c.reload_hint }}
+              </li>
+            </ul>
+          </div>
+
+          <!-- Quick prompt suggestions. The first dispatches to an upstream
+               server (the milestone above); the rest exercise a different
+               built-in mcpproxy tool each. Spec 109-b FR-042: prompts are
+               only generated from usable servers — with none, there is
+               nothing an agent could actually call yet. -->
+          <div class="mt-4 border-t border-base-300 pt-4">
+            <div class="text-[11px] font-semibold uppercase tracking-wider opacity-50 mb-2">Try one of these prompts</div>
+            <div
+              v-if="suggestedPrompts.length === 0"
+              class="bg-base-200 rounded-lg p-3 text-sm opacity-70 text-center"
+              data-test="verify-no-usable-server"
+            >
+              Approve a server first —
+              <a :href="hrefFor('/servers')" class="link link-primary" @click="goToServersList">review it on the Servers page</a>.
+            </div>
+            <ul v-else class="space-y-1.5" data-test="verify-sample-prompts">
+              <li
+                v-for="(p, idx) in suggestedPrompts"
+                :key="idx"
+                class="bg-base-200 rounded-lg p-2.5 text-sm font-mono"
+              >
+                "{{ p.text }}"
+                <span class="text-[11px] opacity-50 ml-2 not-italic font-sans">→ {{ p.hint }}</span>
+              </li>
+            </ul>
+          </div>
+
+          <!-- Recent activity preview — every MCP request is observable here
+               and on the Activity Log page (Spec 046 v2) -->
+          <div class="mt-4 border-t border-base-300 pt-4" data-test="verify-activity-section">
+            <div class="flex items-center justify-between mb-2">
+              <div class="text-[11px] font-semibold uppercase tracking-wider opacity-50">Recent activity</div>
+              <router-link to="/activity" class="text-[11px] link link-primary opacity-80 hover:opacity-100" data-test="link-activity-log">
+                View all in Activity Log →
+              </router-link>
+            </div>
+            <div v-if="loadingActivity" class="flex justify-center py-3">
+              <span class="loading loading-spinner loading-sm"></span>
+            </div>
+            <div
+              v-else-if="recentActivity.length === 0"
+              class="bg-base-200 rounded-lg p-3 text-sm opacity-70 text-center"
+              data-test="verify-activity-empty"
+            >
+              Once your AI starts calling tools, every request shows up here — and in the
+              <router-link to="/activity" class="link link-primary">Activity Log</router-link>.
+            </div>
+            <ul v-else class="space-y-1.5" data-test="verify-activity-list">
+              <li
+                v-for="rec in recentActivity"
+                :key="rec.id"
+                class="flex items-center gap-3 px-3 py-2 rounded-lg bg-base-200/60 text-sm"
+              >
+                <span
+                  class="badge badge-xs shrink-0"
+                  :class="rec.status === 'success' ? 'badge-success' : rec.status === 'error' ? 'badge-error' : 'badge-warning'"
+                  :title="rec.status"
+                >{{ rec.status === 'success' ? '✓' : rec.status === 'error' ? '✗' : '!' }}</span>
+                <span class="font-mono text-xs opacity-60 shrink-0">{{ formatTime(rec.timestamp) }}</span>
+                <span class="font-medium truncate flex-1">
+                  <span v-if="rec.server_name" class="opacity-70">{{ rec.server_name }}:</span>{{ rec.tool_name || rec.type }}
+                </span>
+                <span v-if="rec.duration_ms !== undefined" class="text-xs opacity-50 shrink-0">{{ rec.duration_ms }}ms</span>
+              </li>
+            </ul>
+          </div>
+
+          <!-- Spec 109-b FR-044: one-line telemetry notice for the wizard's
+               final step. TelemetryBanner.vue hides itself while the wizard
+               is open, so this is the only place it appears until the user
+               closes the wizard. -->
+          <TelemetryBanner variant="inline" />
+        </section>
+      </div>
+
+      <!-- Footer (sticky, non-scrollable) -->
+      <!-- Servers tab gets a dedicated import-action footer so the import
+           buttons stay visible as the list above scrolls. The security panel
+           itself sits in the step body, not here — see the comment there. -->
+      <div
+        v-if="false"
+        class="border-t border-base-300 shrink-0 bg-base-200/40"
+      >
+        <!-- Action footer. Only shown when there is something to import — the
+             nothing-to-import branch has its own actions in the body. -->
+        <div v-if="importSourcesWithServers.length > 0" class="flex items-center justify-between gap-3 px-6 py-3">
+          <div class="flex items-center gap-3 min-w-0">
+            <button class="btn btn-ghost btn-sm" @click="goBack" data-test="wizard-back">← Back</button>
+            <div class="text-xs">
+              <span v-if="selectedCount === 0" class="opacity-50">Select at least one server to import</span>
+              <span v-else>
+                <span class="font-semibold text-primary">{{ selectedCount }}</span>
+                <span class="opacity-70"> selected</span>
+                <span v-if="conflictCount > 0" class="opacity-70">
+                  · <span class="text-warning">{{ conflictCount }} renamed</span>
+                </span>
+              </span>
+            </div>
+          </div>
+          <!-- Spec 109-ux-navigation-consistency FR-043: ONE primary action,
+               labelled with the count being imported, plus a per-import
+               quarantine checkbox (default on). Two equally-weighted
+               primaries made the user guess which import was safer, with the
+               reviewed path rendered as the weaker of the pair — a single
+               action with an explicit, defaulted-safe checkbox removes that
+               guess. -->
+          <div class="flex items-center gap-3">
+            <!-- Every step offers a way out, this one included: the sweep and
+                 the header ✕ both depend on it, and a step whose only exits are
+                 "import" is a trap. -->
+            <button class="btn btn-ghost btn-sm" @click="dismiss" data-test="close-wizard">Close</button>
+            <label class="flex items-center gap-2 text-xs cursor-pointer select-none">
+              <input
+                type="checkbox"
+                class="checkbox checkbox-sm"
+                :checked="quarantineOnImport"
+                :disabled="importBusyAny"
+                title="Unchecking skips quarantine — the servers connect and expose their tools immediately, with no review"
+                @change="onToggleQuarantineOnImport($event)"
+                data-test="footer-quarantine-checkbox"
+              />
+              <span>Quarantine imported servers for review</span>
+            </label>
+            <button
+              class="btn btn-primary btn-sm gap-1 min-w-[160px]"
+              :disabled="selectedCount === 0 || importBusyAny"
+              @click="onBulkImport(quarantineOnImport)"
+              data-test="bulk-import-primary"
+            >
+              <span v-if="bulkImportBusy" class="loading loading-spinner loading-xs"></span>
+              <span v-else-if="quarantineOnImport">🛡</span>
+              Import {{ selectedCount }} server{{ selectedCount === 1 ? '' : 's' }}
+            </button>
+          </div>
+        </div>
+        <!-- Nothing to import: no import action to offer, but the step still
+             needs a way forward and back. -->
+        <div v-else class="flex items-center justify-between px-6 py-3">
+          <button class="btn btn-ghost btn-sm" @click="goBack" data-test="wizard-back">← Back</button>
+          <button class="btn btn-primary btn-sm" @click="dismiss" data-test="close-wizard">
+            {{ onboarding.incompleteTabCount === 0 ? 'Done' : 'Close for now' }}
+          </button>
+        </div>
+      </div>
+      <!-- Default footer for other tabs -->
+      <div
+        v-else
+        class="flex items-center justify-between gap-3 px-6 py-3 border-t border-base-300 shrink-0"
+      >
+        <div class="flex items-center gap-3 min-w-0">
+          <button
+            v-if="canGoBack"
+            class="btn btn-ghost btn-sm"
+            @click="goBack"
+            data-test="wizard-back"
+          >← Back</button>
+          <div class="text-xs opacity-50 truncate">
+            Tip: you can always re-open this from the sidebar's <span class="font-medium">Setup</span> entry.
+          </div>
+        </div>
+        <button class="btn btn-primary btn-sm" @click="dismiss" data-test="close-wizard">
+          {{ onboarding.incompleteTabCount === 0 ? 'Done' : 'Close for now' }}
+        </button>
+      </div>
+    </div>
+    <form method="dialog" class="modal-backdrop" @click.prevent="dismiss"><button>close</button></form>
+  </dialog>
+
+</template>
+
+<script setup lang="ts">
+import { ref, reactive, computed, watch, onUnmounted, h, type FunctionalComponent } from 'vue'
+import { useRouter } from 'vue-router'
+import api from '@/services/api'
+import { useOnboardingStore } from '@/stores/onboarding'
+import { useSystemStore } from '@/stores/system'
+import { useServersStore } from '@/stores/servers'
+import ManualServerForm from '@/components/ManualServerForm.vue'
+import ImportServers from '@/components/ImportServers.vue'
+import ClientConnectList from '@/components/ClientConnectList.vue'
+import ReviewQueueList from '@/components/ReviewQueueList.vue'
+import TelemetryBanner from '@/components/TelemetryBanner.vue'
+import { useDialogOpen } from '@/composables/useDialogOpen'
+import { skipReasonLabel } from '@/utils/importSkipReason'
+import { serversStepView, awaitingReviewSentence, countImportedStillQuarantined } from '@/utils/onboardingServersStep'
+import type { ClientStatus, ActivityRecord, ConnectPreview, ImportedServer } from '@/types'
+
+interface Props {
+  show: boolean
+}
+
+interface Emits {
+  (e: 'close'): void
+}
+
+const props = defineProps<Props>()
+const emit = defineEmits<Emits>()
+const { dialogEl } = useDialogOpen(() => props.show, () => dismiss())
+
+const onboarding = useOnboardingStore()
+const systemStore = useSystemStore()
+const serversStore = useServersStore()
+const router = useRouter()
+
+type TabID = 'clients' | 'servers' | 'verify'
+const activeTab = ref<TabID>('clients')
+// A reopened wizard starts a new import session. Keying the shared importer
+// ensures its selection and quarantine confirmation never leak across opens.
+const importSession = ref(0)
+// True once the user picks a tab (tab strip or Back) during the current open.
+// onOpened() awaits several fetches before choosing the initial tab; without
+// this flag a delayed result would overwrite the tab the user already chose
+// while those fetches were pending.
+let userPickedTab = false
+function selectTab(id: TabID) {
+  userPickedTab = true
+  activeTab.value = id
+}
+
+const clients = ref<ClientStatus[]>([])
+const loadingClients = ref(false)
+const clientsError = ref<string | null>(null)
+const busyClients = reactive<Record<string, boolean>>({})
+const connectMessage = ref('')
+const connectMessageOk = ref(true)
+const connectReloadHint = ref('')
+// Spec 078 US2 / FR-006: backup path per client for connects performed in this
+// wizard session. string = timestamped backup created; null = success but no
+// prior file existed (nothing to back up); absent = no connect happened yet.
+const connectBackups = reactive<Record<string, string | null>>({})
+const copiedBackupClient = ref<string | null>(null)
+// Spec 078 US1: preview the exact change before writing. previews[id] present
+// => the confirm/cancel panel is shown in that client's row; the write only
+// happens on confirm. previewErrors holds a non-denial fetch failure.
+const previews = reactive<Record<string, ConnectPreview>>({})
+const previewBusy = reactive<Record<string, boolean>>({})
+const previewErrors = reactive<Record<string, string>>({})
+// Spec 078 US3: session-scoped one-click undo. undoPreviews snapshots the
+// preview the user confirmed, so the revert panel can show the change about to
+// be reverted (FR-009) without another config read. undoOpen[id] shows the
+// confirm panel; the actual restore only happens on its confirm button.
+const undoPreviews = reactive<Record<string, ConnectPreview>>({})
+const undoOpen = reactive<Record<string, boolean>>({})
+const undoBusy = reactive<Record<string, boolean>>({})
+const addServerOpen = ref(false)
+const serverAddedJustNow = ref(false)
+
+const requireMcpAuth = ref(false)
+const dockerIsolationDefault = ref(true)
+const quarantineEnabled = ref(true)
+const listenAddr = ref('')
+const securityBusy = ref(false)
+// null = not yet known (don't show warning); true/false = detected state
+const dockerStatus = ref<boolean | null>(null)
+
+// Spec 046 v2 — server-import preview rows.
+interface ImportSource {
+  name: string
+  format: string
+  path: string
+  exists: boolean
+  previewLoading: boolean
+  previewError: string
+  serverCount: number
+  serverNames: string[]
+  // Spec 109-b FR-040: the preview rows themselves (summary/tags/env), so the
+  // template can render the second line without a second fetch.
+  serverRows: ImportedServer[]
+}
+const importSources = ref<ImportSource[]>([])
+const loadingImportSources = ref(false)
+
+// Verify tab — recent activity preview.
+const recentActivity = ref<ActivityRecord[]>([])
+const loadingActivity = ref(false)
+
+// Verify tab — second milestone (UX audit F13). Lifetime flag from the
+// Spec 044 activation bucket, read off `GET /api/v1/status`, which already
+// serves the whole block to an admin caller. The activity log cannot answer
+// this: it is pruned at 7 days / 10 000 records, so a state derived from it
+// would silently regress.
+//
+// Tri-state on purpose. `null` is "we cannot tell" — an absent activation
+// block (early startup, telemetry unwired, a core that predates it), or a
+// fetch that has not yet succeeded even once. Rendering that as "no tool call
+// yet" would be exactly the unfounded claim this whole change exists to remove.
+//
+// A LATER fetch that fails keeps the last known value rather than reverting to
+// null (see fetchActivation's catch): the row would otherwise flicker off on
+// every dropped poll, and the 5s poll re-converges on its own. Stale-for-a-few-
+// seconds beats blinking, and the state is not a gate.
+const firstRealToolCallEver = ref<boolean | null>(null)
+
+// Resolved by the backend (servedRoutingMode), so it is always one of
+// retrieve_tools | direct | code_execution — never blank — once fetched.
+const routingMode = ref('')
+
+// `first_real_tool_call_ever` is stamped at EXACTLY ONE site in the core: the
+// call_tool_read/write/destructive handler. The direct tool surface and
+// code_execution sub-calls dispatch upstream without stamping it, so under
+// those routing modes a false flag means "not tracked", not "never happened".
+//   satisfied — the flag latched; a truthful lifetime fact under ANY mode.
+//   pending   — flag false AND we are on the mode that actually stamps it.
+//   unknown   — anything else; the row stays off rather than assert a
+//               negative we cannot back.
+//
+// `pending` is still not a proof of absence, and the copy is worded for that
+// (round-2 review). Even under retrieve_tools the flag has blind spots: that
+// mode also exposes `code_execution` (mcp_routing.go: "available but not the
+// primary workflow"), whose sub-calls do not stamp it, and /mcp/all and
+// /mcp/code are mounted unconditionally — "regardless of config"
+// (internal/server/server.go) — so a client aimed at the direct surface makes
+// real upstream calls that never reach the stamping handler. Hence "No upstream
+// tool call RECORDED yet": a statement about what mcpproxy measured, which is
+// true, rather than about what the user did, which we cannot see.
+const upstreamCallState = computed<'satisfied' | 'pending' | 'unknown'>(() => {
+  if (firstRealToolCallEver.value === true) return 'satisfied'
+  if (firstRealToolCallEver.value === false && routingMode.value === 'retrieve_tools') return 'pending'
+  return 'unknown'
+})
+
+// Selection: keyed by `${path}::${serverName}`. Default unchecked.
+const selection = ref<Set<string>>(new Set())
+const bulkImportBusy = ref(false)
+const importBusyAny = computed(() => bulkImportBusy.value)
+const selectionImportMessage = ref('')
+const selectionImportOk = ref(false)
+// Spec 109-ux-navigation-consistency FR-043: the footer's single per-import
+// quarantine checkbox. Default on (the safe choice); it is independent of
+// the global `quarantineEnabled` default shown read-only above.
+const quarantineOnImport = ref(true)
+
+const importSourcesWithServers = computed(() =>
+  importSources.value.filter(s => s.serverCount > 0)
+)
+
+// Spec 109-ux-navigation-consistency US7 Acceptance Scenario 4: when there is
+// nothing left to import (every client config server is already on this
+// instance) but has_usable_server is still false because everything imported
+// sits in quarantine, the step must not fall through to the generic
+// "Nothing to import" dead end — that copy ("Start from the registry
+// instead, or add a server yourself") is actively wrong when servers already
+// exist and only need a review. This is a scoped stand-in for the full
+// cross-surface review screen. The queue list is shared with Review.vue so
+// the wizard preserves its step semantics without becoming a second approval
+// implementation.
+const quarantinedServersAwaitingReview = computed(() =>
+  serversStore.quarantinedServers
+)
+const quarantinedReviewRows = computed(() => quarantinedServersAwaitingReview.value.map(server => ({
+  server: server.name,
+  kind: 'server_review',
+  quarantined: true,
+  tools_captured: server.tool_count,
+})))
+// Only the backend has the approval-record information needed to decide
+// usability. A visible tool_count can consist entirely of blocked tools, so it
+// must never complete onboarding on its own.
+const hasUsableServer = computed(() => onboarding.hasUsableServer)
+
+// Servers brought in by an import during THIS wizard open (reset in
+// onOpened). Manual add is not an import and does not count here.
+const importedThisSession = ref(0)
+// Names of the servers an import of THIS session put into quarantine, so the
+// "including the N you just imported" sentence counts only those still waiting.
+const importedQuarantinedNames = ref<Set<string>>(new Set())
+// Which body the Servers step shows: choose / review / imported / empty
+// (fix-usertest-web T200). Pure rules live in utils/onboardingServersStep.ts.
+const serversView = computed(() => serversStepView({
+  sourcesWithServers: importSourcesWithServers.value.length,
+  hasUsableServer: hasUsableServer.value,
+  awaitingReview: quarantinedServersAwaitingReview.value.length,
+  importedThisSession: importedThisSession.value,
+}))
+const awaitingReviewText = computed(() => awaitingReviewSentence(
+  quarantinedServersAwaitingReview.value.length,
+  countImportedStillQuarantined(
+    importedQuarantinedNames.value,
+    quarantinedServersAwaitingReview.value.map(server => server.name),
+  ),
+))
+
+function selectionKey(path: string, name: string) {
+  return `${path}::${name}`
+}
+function isSelected(path: string, name: string): boolean {
+  return selection.value.has(selectionKey(path, name))
+}
+function toggleServer(path: string, name: string, on: boolean) {
+  const key = selectionKey(path, name)
+  // Vue's reactivity needs a fresh Set instance for refs holding Set/Map.
+  const next = new Set(selection.value)
+  if (on) next.add(key)
+  else next.delete(key)
+  selection.value = next
+}
+function isAllSelected(src: ImportSource): boolean {
+  return src.serverNames.length > 0 && src.serverNames.every(n => isSelected(src.path, n))
+}
+function isIndeterminate(src: ImportSource): boolean {
+  const some = src.serverNames.some(n => isSelected(src.path, n))
+  return some && !isAllSelected(src)
+}
+function toggleAllInSource(src: ImportSource, on: boolean) {
+  const next = new Set(selection.value)
+  for (const n of src.serverNames) {
+    const key = selectionKey(src.path, n)
+    if (on) next.add(key)
+    else next.delete(key)
+  }
+  selection.value = next
+}
+
+const selectedCount = computed(() => selection.value.size)
+
+// Build the conflict map across SELECTED servers only. A name is conflicted
+// iff it is selected from 2+ sources. Conflicted servers are renamed to
+// `<originalName>_<format>` so the resulting mcpproxy entries are distinct.
+const conflictTargets = computed<Map<string, string>>(() => {
+  // name -> Set<path> for selected servers
+  const namesToPaths = new Map<string, Set<string>>()
+  for (const key of selection.value) {
+    const sep = key.indexOf('::')
+    if (sep === -1) continue
+    const path = key.slice(0, sep)
+    const name = key.slice(sep + 2)
+    if (!namesToPaths.has(name)) namesToPaths.set(name, new Set())
+    namesToPaths.get(name)!.add(path)
+  }
+  // For each name selected from 2+ sources, mark all (path, name) → renamed.
+  const out = new Map<string, string>() // selectionKey -> newName
+  for (const [name, paths] of namesToPaths) {
+    if (paths.size < 2) continue
+    for (const path of paths) {
+      const src = importSources.value.find(s => s.path === path)
+      if (!src) continue
+      out.set(selectionKey(path, name), `${name}_${src.format.replace(/-/g, '_')}`)
+    }
+  }
+  return out
+})
+function conflictTarget(src: ImportSource, name: string): string | undefined {
+  return conflictTargets.value.get(selectionKey(src.path, name))
+}
+// Spec 109-b FR-040: look up a source's preview row by name for the second
+// line (summary/tags). O(n) over a per-client server list, which is small.
+function importedRow(src: ImportSource, name: string): ImportedServer | undefined {
+  return src.serverRows.find(r => r.name === name)
+}
+const conflictCount = computed(() => conflictTargets.value.size)
+
+let pollHandle: ReturnType<typeof setInterval> | null = null
+
+// Tabs config
+const tabs = computed(() => [
+  {
+    id: 'clients' as TabID,
+    label: 'Clients',
+    idx: 1,
+    complete: onboarding.hasConnectedClient,
+  },
+  {
+    id: 'servers' as TabID,
+    label: 'Servers',
+    idx: 2,
+    // Spec 109-b FR-041: complete only once a server is actually usable
+    // (enabled, not quarantined, connected, with an approved tool) — a
+    // server entry that still needs review does not finish this step.
+    complete: hasUsableServer.value,
+  },
+  {
+    id: 'verify' as TabID,
+    label: 'Verify',
+    idx: 3,
+    complete: onboarding.firstMCPClientEver,
+  },
+])
+
+// Modal sizing per spec FR-V10
+const modalSizing = computed(() => ({
+  width: 'min(960px, 90vw)',
+  maxWidth: 'min(960px, 90vw)',
+  height: 'min(640px, 85vh)',
+  maxHeight: 'min(640px, 85vh)',
+}))
+
+// --- Client sort: detected → pinned trio → others -----------------------
+const PINNED_TRIO: readonly string[] = ['claude-code', 'codex', 'gemini']
+
+// MCP-2952: the `GET /api/v1/connect` listing is stat-only (#706/MCP-2829) and
+// always reports connected=false. Merge the content-resolved
+// connected_client_ids the wizard already fetched via onboarding.fetchState()
+// so connected clients render the Connected badge instead of a Connect button.
+// Derived (not mutated) so polling refreshes stay correct.
+const mergedClients = computed<ClientStatus[]>(() => {
+  const connectedIds = new Set(onboarding.connectedClientIds)
+  return clients.value.map(c =>
+    c.connected || !connectedIds.has(c.id) ? c : { ...c, connected: true }
+  )
+})
+
+const detectedClients = computed(() =>
+  mergedClients.value.filter(c => c.exists)
+)
+const pinnedClients = computed(() =>
+  PINNED_TRIO
+    .map(id => mergedClients.value.find(c => c.id === id))
+    .filter((c): c is ClientStatus => !!c && !c.exists)
+)
+const moreClients = computed(() => {
+  const detectedIds = new Set(detectedClients.value.map(c => c.id))
+  const pinnedIds = new Set(pinnedClients.value.map(c => c.id))
+  return mergedClients.value.filter(c => !detectedIds.has(c.id) && !pinnedIds.has(c.id))
+})
+
+const serverCountLabel = computed(() => {
+  const n = onboarding.state?.configured_server_count ?? 0
+  return n === 1 ? '1 server' : `${n} servers`
+})
+
+// Spec 109-b FR-042: the Verify step shows each connected client's reload
+// hint — most clients only read their MCP config at startup, so a connect
+// that succeeded is not yet a client that has picked it up.
+const connectedClientsWithHints = computed(() =>
+  mergedClients.value.filter(c => c.connected && c.reload_hint)
+)
+
+// Spec 109-b FR-042: suggested prompts are generated only from usable
+// servers (enabled, not quarantined, connected, with an approved tool) —
+// never from one still waiting on review, which would send the user to try
+// a tool mcpproxy would refuse to call. Empty when there is nothing usable
+// yet; the template shows "Approve a server first" instead of the list.
+const suggestedPrompts = computed(() => {
+  const usable = onboarding.usableServers
+  if (usable.length === 0) return []
+  return [
+    {
+      text: `Find a tool on ${usable[0]} with mcpproxy, then call it.`,
+      hint: 'retrieve_tools + call_tool_read',
+    },
+    { text: 'Search for MCP tools.', hint: 'retrieve_tools' },
+    { text: 'List my upstream MCP servers and their connection status.', hint: 'upstream_servers' },
+    { text: 'Show me tools pending quarantine approval in mcpproxy.', hint: 'quarantine_security' },
+  ]
+})
+
+// Open lifecycle: refresh state, fetch clients + config, start polling.
+//
+// The caller's tab request is read FIRST, before any await. Two reasons: a
+// request must never outlive the open it was made for (a wizard torn down
+// mid-load would otherwise leak it into the next plain open), and reading it
+// after five round-trips would let a second open consume the same request.
+//
+// `openSeq` makes each run abandonable. Nothing cancels the fetches below, so
+// a close (or a close-then-reopen) while one is in flight would otherwise let
+// the old run finish and stamp its tab over the new one — and call
+// startPolling() on a wizard that is no longer open, leaving a 5s poll running
+// until unmount. Every run checks it still owns the wizard before it writes.
+let openSeq = 0
+async function onOpened() {
+  const seq = ++openSeq
+  userPickedTab = false
+  const requested = onboarding.consumeWizardInitialTab()
+  importSession.value++
+  importedThisSession.value = 0
+  importedQuarantinedNames.value = new Set()
+  serverAddedJustNow.value = false
+  connectMessage.value = ''
+  // Backup lines are session-scoped (Spec 078 US2): don't replay backup
+  // rows from connects performed in a previous wizard session.
+  for (const k of Object.keys(connectBackups)) delete connectBackups[k]
+  copiedBackupClient.value = null
+  // Spec 078 US1: previews are session-scoped too — don't replay a stale
+  // confirm/cancel panel from a previous wizard session.
+  for (const k of Object.keys(previews)) delete previews[k]
+  for (const k of Object.keys(previewErrors)) delete previewErrors[k]
+  // Spec 078 US3: undo is session-scoped (it reverts the connect performed
+  // in THIS wizard session) — a reopened wizard starts without undo state.
+  for (const k of Object.keys(undoPreviews)) delete undoPreviews[k]
+  for (const k of Object.keys(undoOpen)) delete undoOpen[k]
+  // Review round 3 finding: the Servers step's import selection is
+  // session-scoped too. The wizard is mounted once by Dashboard.vue and only
+  // toggled via `show` (never unmounted), so without this reset an
+  // unchecked-and-confirmed "skip quarantine" choice from one session would
+  // silently carry over — unconfirmed — into the next reopen, and a stale
+  // selection/result message from before would flash before the new
+  // previews load.
+  selection.value = new Set()
+  selectionImportMessage.value = ''
+  selectionImportOk.value = false
+  quarantineOnImport.value = true
+  // The requested tab applies immediately so the wizard never paints the
+  // wrong step while the fetches below are in flight.
+  if (requested) activeTab.value = requested
+  await onboarding.fetchState()
+  await Promise.all([
+    fetchClients(),
+    fetchSecurityState(seq),
+    fetchDockerStatus(),
+    fetchImportSources(),
+    fetchRecentActivity(),
+    fetchActivation(),
+    // Spec 109-ux-navigation-consistency US7 Acceptance Scenario 4: the
+    // Servers step's inline review list (below) reads serversStore directly,
+    // so it needs a fresh fetch on every open rather than relying on some
+    // other already-mounted view (Servers.vue, Dashboard.vue) having
+    // populated the shared store first — the wizard can be the first thing
+    // to touch it, e.g. right after a fresh-instance import.
+    serversStore.fetchServers(),
+  ])
+  // Superseded (or closed) while we were loading — leave the wizard alone.
+  if (seq !== openSeq || !props.show) return
+  // Don't override a tab the user picked while the loads were in flight.
+  if (!userPickedTab) activeTab.value = pickInitialTab(requested)
+  startPolling()
+}
+
+// `immediate` matters: an opener can set `wizardOpen` BEFORE this component
+// exists — the Servers page's import link flips the store flag and then routes
+// to the Dashboard, which is what mounts the wizard. A plain watcher would not
+// fire for that (`show` is already true at mount), leaving the wizard rendered
+// but never initialised. This replaces the old onMounted fallback, which
+// kicked off the fetches but skipped the tab choice entirely.
+watch(() => props.show, (open) => {
+  if (open) {
+    void onOpened()
+  } else {
+    // Retire any in-flight open so it cannot resurrect polling behind us.
+    openSeq++
+    stopPolling()
+  }
+}, { immediate: true })
+
+function pickInitialTab(requested: TabID | null): TabID {
+  // An explicit request from the opener wins — "Import from your AI client
+  // configs" on the Servers page means that step, not whichever one the
+  // predicates would have chosen.
+  if (requested) return requested
+  if (!onboarding.hasConnectedClient) return 'clients'
+  if (!hasUsableServer.value) return 'servers'
+  if (!onboarding.firstMCPClientEver) return 'verify'
+  return 'clients'
+}
+
+// --- Step navigation ---
+// The tabs double as steps, so Back is just "the previous tab". Without it the
+// only way out of a step was the tab strip, which reads as navigation rather
+// than as a way to undo a wrong turn.
+const tabOrder: TabID[] = ['clients', 'servers', 'verify']
+const canGoBack = computed(() => tabOrder.indexOf(activeTab.value) > 0)
+function goBack() {
+  const i = tabOrder.indexOf(activeTab.value)
+  if (i > 0) selectTab(tabOrder[i - 1])
+}
+
+// Leaving the wizard for the registry: the wizard is a modal owned by the
+// Dashboard, so it has to close before the route changes or it would hang over
+// the registry page. `dismiss()` emits `close` synchronously (its engagement
+// bookkeeping runs decoupled, in the background — see `dismiss`'s own
+// comment), so by the time this `await` resolves the Dashboard has already
+// flipped `wizardOpen` false. Routing away before that would unmount the
+// Dashboard first, and the wizard would spring back open on return.
+async function goToRegistry() {
+  await dismiss()
+  await router.push('/add-server?tab=catalog')
+}
+
+// Review round 5: the Review/Settings/Servers links below used a plain
+// router-link and navigated away without calling dismiss() first, unlike
+// goToRegistry() above — the same unmount-before-clear race applies to every
+// link that leaves the wizard, not just the registry one. They render as
+// real <a href> (not a <button>, unlike goToRegistry's) for two reasons a
+// second review round caught: router-link itself renders a real anchor, and
+// a plain `<a>` only intercepts the plain-left-click case correctly when it
+// also skips modifier/middle clicks the way router-link does — see
+// isPlainLeftClick below — so cmd/ctrl/shift-click and middle-click still
+// open the target in a new tab via the native href instead of being
+// hijacked into an in-app navigation.
+function isPlainLeftClick(event: MouseEvent): boolean {
+  return event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey
+}
+
+// The href itself must carry the router's real base (e.g. "/ui/") the way
+// router-link's does, or a middle-click/"open in new tab" on a dev server
+// with no base-stripping redirect 404s. router.resolve(...).href computes
+// exactly that. The template evaluates this on every render (unlike the
+// click handlers, which only run on a real click), so it must tolerate a
+// host with no router installed — some unit tests mount this component
+// without one — by falling back to the bare path.
+function hrefFor(path: string): string {
+  return router?.resolve(path)?.href ?? path
+}
+
+async function goToServerReview(event: MouseEvent, name: string) {
+  if (!isPlainLeftClick(event)) return
+  event.preventDefault()
+  await dismiss()
+  await router.push(`/review/${encodeURIComponent(name)}`)
+}
+
+async function goToSettings(event: MouseEvent) {
+  if (!isPlainLeftClick(event)) return
+  event.preventDefault()
+  await dismiss()
+  await router.push('/settings')
+}
+
+async function goToServersList(event: MouseEvent) {
+  if (!isPlainLeftClick(event)) return
+  event.preventDefault()
+  await dismiss()
+  await router.push('/servers')
+}
+
+function startPolling() {
+  stopPolling()
+  // Poll while wizard is open so the Verify tab flips to green within ~5s
+  // of the AfterInitialize hook firing without an SSE channel. Also
+  // refresh the Verify tab's recent-activity panel on the same cadence so
+  // newly-arrived MCP requests are reflected without manual reload.
+  pollHandle = setInterval(() => {
+    void onboarding.fetchState()
+    if (activeTab.value === 'verify') {
+      void fetchRecentActivity()
+      void fetchActivation()
+    }
+  }, 5000)
+}
+
+function stopPolling() {
+  if (pollHandle) {
+    clearInterval(pollHandle)
+    pollHandle = null
+  }
+}
+
+onUnmounted(() => {
+  // Same reason as the close path: an open still awaiting its fetches must not
+  // start a poll on a component that no longer exists.
+  openSeq++
+  stopPolling()
+})
+
+async function fetchClients() {
+  loadingClients.value = true
+  clientsError.value = null
+  try {
+    const res = await api.getConnectStatus()
+    if (res.success && res.data) {
+      clients.value = Array.isArray(res.data) ? res.data : []
+    } else {
+      clientsError.value = res.error ?? 'Failed to load client status'
+    }
+  } catch (err) {
+    clientsError.value = (err as Error).message
+  } finally {
+    loadingClients.value = false
+  }
+}
+
+async function fetchRecentActivity() {
+  loadingActivity.value = true
+  try {
+    const res = await api.getActivities({ limit: 5 })
+    if (res.success && res.data) {
+      recentActivity.value = res.data.activities ?? []
+    }
+  } catch {
+    // graceful — keep prior list
+  } finally {
+    loadingActivity.value = false
+  }
+}
+
+// Never surfaces an error: a missing `activation` block leaves the milestone
+// unknown, and the row simply does not render. It must not read as "not yet"
+// — that is an assertion about the user's install we have no basis for.
+async function fetchActivation() {
+  try {
+    const res = await api.getStatus()
+    if (!res.success || !res.data) return
+    routingMode.value = res.data.routing_mode ?? ''
+    // The flag is monotonic in the core: it latches on and never clears. Once
+    // we have seen it true, a later poll that omits the activation block means
+    // the block went away, not that the tool call un-happened.
+    if (firstRealToolCallEver.value === true) return
+    const flag = res.data.activation?.first_real_tool_call_ever
+    firstRealToolCallEver.value = typeof flag === 'boolean' ? flag : null
+  } catch {
+    // graceful — keep prior value
+  }
+}
+
+function formatTime(ts: string): string {
+  const d = new Date(ts)
+  const now = Date.now()
+  const diff = now - d.getTime()
+  if (diff < 60_000) return 'just now'
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`
+  return d.toLocaleDateString()
+}
+
+// `seq` (when given) ties this read to one open sequence. Unlike the other
+// fetches, what this one writes is user-editable: the quarantine and Docker
+// isolation checkboxes. A read left over from a superseded open landing after
+// the user has already toggled one would silently flip it back to the old
+// server value, so a stale read must not commit.
+async function fetchSecurityState(seq?: number) {
+  try {
+    const res = await api.getConfig()
+    if (seq !== undefined && seq !== openSeq) return
+    if (res.success && res.data) {
+      const cfg = res.data.config ?? {}
+      requireMcpAuth.value = !!cfg.require_mcp_auth
+      quarantineEnabled.value = cfg.quarantine_enabled ?? true
+      listenAddr.value = cfg.listen ?? ''
+      const iso = cfg.docker_isolation ?? cfg.isolation ?? null
+      dockerIsolationDefault.value = iso?.enabled ?? true
+    }
+  } catch {
+    // graceful degradation
+  }
+}
+
+async function fetchDockerStatus() {
+  // Spec 046 v2: feed the Docker isolation toggle's "is Docker actually
+  // available?" warning. We mirror the Dashboard's logic so the message is
+  // consistent: if Docker reports unavailable but at least one connected
+  // stdio server is running, treat as available (the Docker health checker
+  // can lag behind reality).
+  try {
+    const res = await api.getDockerStatus()
+    if (res.success && res.data) {
+      let available = res.data.docker_available ?? false
+      if (!available && serversStore.servers.some(s => s.connected && s.protocol === 'stdio')) {
+        available = true
+      }
+      dockerStatus.value = available
+    } else {
+      dockerStatus.value = false
+    }
+  } catch {
+    dockerStatus.value = false
+  }
+}
+
+async function fetchImportSources() {
+  // Spec 046 v2: parity with the Clients tab. Discover canonical client
+  // config paths, then for each existing one, run a no-side-effect preview
+  // to count importable servers.
+  loadingImportSources.value = true
+  try {
+    const res = await api.getCanonicalConfigPaths()
+    if (!res.success || !res.data) {
+      importSources.value = []
+      return
+    }
+    const sources: ImportSource[] = res.data.paths
+      .filter(p => p.exists)
+      .map(p => ({
+        name: p.name,
+        format: p.format,
+        path: p.path,
+        exists: true,
+        previewLoading: true,
+        previewError: '',
+        serverCount: 0,
+        serverNames: [],
+        serverRows: [],
+        importBusy: '',
+        importMessage: '',
+        importMessageOk: false,
+      }))
+    importSources.value = sources
+
+    // Run previews in parallel — each is bounded by the user's local file
+    // size, so this is safe even with many sources.
+    await Promise.all(
+      sources.map(async (src, idx) => {
+        try {
+          const r = await api.importServersFromPath({
+            path: src.path,
+            format: src.format,
+            preview: true,
+          })
+          if (r.success && r.data) {
+            const imported = r.data.imported ?? []
+            importSources.value[idx] = {
+              ...src,
+              previewLoading: false,
+              serverCount: imported.length,
+              serverNames: imported.map(s => s.name),
+              serverRows: imported,
+            }
+          } else {
+            importSources.value[idx] = {
+              ...src,
+              previewLoading: false,
+              previewError: r.error ?? 'preview failed',
+            }
+          }
+        } catch (err) {
+          importSources.value[idx] = {
+            ...src,
+            previewLoading: false,
+            previewError: (err as Error).message,
+          }
+        }
+      })
+    )
+  } finally {
+    loadingImportSources.value = false
+  }
+}
+
+async function onBulkImport(quarantine: boolean) {
+  if (selection.value.size === 0) return
+  bulkImportBusy.value = true
+  selectionImportMessage.value = ''
+
+  // Group selected (path, name) pairs by source path. Build per-source
+  // server_names + rename map (only for entries flagged as conflicts).
+  type Job = {
+    src: ImportSource
+    serverNames: string[]
+    rename: Record<string, string>
+  }
+  const jobs = new Map<string, Job>()
+  for (const key of selection.value) {
+    const sep = key.indexOf('::')
+    if (sep === -1) continue
+    const path = key.slice(0, sep)
+    const name = key.slice(sep + 2)
+    const src = importSources.value.find(s => s.path === path)
+    if (!src) continue
+    if (!jobs.has(path)) {
+      jobs.set(path, { src, serverNames: [], rename: {} })
+    }
+    const job = jobs.get(path)!
+    job.serverNames.push(name)
+    const renamed = conflictTargets.value.get(key)
+    if (renamed) job.rename[name] = renamed
+  }
+
+  let totalImported = 0
+  let totalSkipped = 0
+  let totalFailed = 0
+  // Tallied by human label (skipReasonLabel), not raw reason string, so
+  // e.g. a self-referencing entry doesn't get lumped into "already
+  // configured" — nothing was previously configured about it.
+  const skippedByLabel = new Map<string, number>()
+  const errors: string[] = []
+  try {
+    const results = await Promise.all(
+      Array.from(jobs.values()).map(async job => {
+        const r = await api.importServersFromPath({
+          path: job.src.path,
+          format: job.src.format,
+          server_names: job.serverNames,
+          rename: Object.keys(job.rename).length > 0 ? job.rename : undefined,
+          skip_quarantine: !quarantine,
+        })
+        return { job, r }
+      })
+    )
+    for (const { job, r } of results) {
+      if (r.success && r.data) {
+        totalImported += r.data.summary?.imported ?? 0
+        totalSkipped += r.data.summary?.skipped ?? 0
+        totalFailed += r.data.summary?.failed ?? 0
+        for (const skipped of r.data.skipped ?? []) {
+          const label = skipReasonLabel(skipped.reason)
+          skippedByLabel.set(label, (skippedByLabel.get(label) ?? 0) + 1)
+        }
+      } else {
+        errors.push(`${job.src.name}: ${r.error ?? 'unknown error'}`)
+      }
+    }
+    selectionImportOk.value = errors.length === 0
+    if (errors.length === 0) {
+      // Captured BEFORE clearing selection below: conflictCount is a
+      // computed derived from `selection`, so reading it after the clear
+      // (review round 3 finding) always evaluates to 0 and the toast never
+      // reports a rename count even when the footer just showed one.
+      const renamedCount = conflictCount.value
+      const dest = quarantine ? 'into quarantine' : 'as active'
+      let msg = `✓ Imported ${totalImported} server${totalImported === 1 ? '' : 's'} ${dest}`
+      if (skippedByLabel.size > 0) {
+        msg += Array.from(skippedByLabel.entries())
+          .map(([label, count]) => ` · ${count} skipped (${label})`)
+          .join('')
+      } else if (totalSkipped > 0) {
+        // Reasons weren't returned (older core) — fall back to the count alone.
+        msg += ` · ${totalSkipped} skipped`
+      }
+      if (totalFailed > 0) msg += ` · ${totalFailed} failed`
+      if (quarantine && totalImported > 0) msg += '. Approve from the Servers page.'
+      selectionImportMessage.value = msg
+      selection.value = new Set()
+      // Spec 046 — bulk-import counts as completing the server step.
+      if (totalImported > 0 && onboarding.state?.state.server_step_status !== 'completed') {
+        await onboarding.markServerCompleted()
+      }
+      systemStore.addToast({
+        type: 'success',
+        title: 'Import complete',
+        message: `${totalImported} server${totalImported === 1 ? '' : 's'}${renamedCount > 0 ? ` (${renamedCount} renamed)` : ''}`,
+      })
+    } else {
+      selectionImportMessage.value = `Some imports failed: ${errors.join(' · ')}`
+    }
+    await Promise.all([
+      serversStore.fetchServers(),
+      onboarding.fetchState(),
+      // Refresh previews so already-imported servers drop off the list.
+      fetchImportSources(),
+    ])
+  } catch (err) {
+    selectionImportMessage.value = (err as Error).message
+    selectionImportOk.value = false
+  } finally {
+    bulkImportBusy.value = false
+  }
+}
+
+async function patchConfig(patch: Record<string, unknown>) {
+  // /api/v1/config/apply decodes the body directly into config.Config (no
+  // {config: ...} wrapper). Settings.vue calls applyConfig(config) the same
+  // bare way; the wizard's earlier {config: merged} wrap was sending an
+  // unrelated outer object that the backend rejected with a stale field-
+  // validation error ("tools_limit: must be between 1 and 1000"). Send
+  // the bare config to match the existing contract.
+  securityBusy.value = true
+  try {
+    const cur = await api.getConfig()
+    if (!cur.success || !cur.data) {
+      throw new Error(cur.error ?? 'failed to read config')
+    }
+    const merged = { ...cur.data.config, ...patch }
+    const res = await api.applyConfig(merged)
+    if (!res.success) {
+      throw new Error(res.error ?? 'failed to apply config')
+    }
+    await fetchSecurityState()
+    systemStore.addToast({ type: 'success', title: 'Settings saved', message: 'Updated' })
+  } catch (err) {
+    systemStore.addToast({
+      type: 'error',
+      title: 'Save failed',
+      message: (err as Error).message,
+    })
+  } finally {
+    securityBusy.value = false
+  }
+}
+
+function onToggleRequireAuth(v: boolean) {
+  void patchConfig({ require_mcp_auth: v })
+}
+
+// Spec 109-ux-navigation-consistency FR-043: this checkbox only decides
+// whether THIS import goes through quarantine — it never writes the global
+// `quarantine_enabled` default (that lives in Settings, summarized above).
+// Default on; unchecking it requires an explicit confirmation because it
+// widens the blast radius of a bad import to "connects immediately, no
+// review". Reverting the DOM checkbox on cancel is done imperatively: the
+// browser has already flipped its native `checked` state by the time
+// `change` fires, and this element isn't bound with v-model, so leaving the
+// ref untouched would not by itself repaint an already-changed checkbox.
+function onToggleQuarantineOnImport(event: Event) {
+  const target = event.target as HTMLInputElement
+  if (!target.checked) {
+    const ok = confirm(
+      'Skip quarantine for this import? The imported servers will connect and expose their tools immediately, with no review.'
+    )
+    if (!ok) {
+      target.checked = true
+      return
+    }
+  }
+  quarantineOnImport.value = target.checked
+}
+
+// Spec 078 US1: the row's Connect fetches the preview first and opens the
+// confirm/cancel panel — nothing is written until confirm. A denied read is
+// surfaced as an error message (the wizard has no separate access banner yet;
+// the standalone Connect modal carries the full Spec 075 remediation surface).
+async function startConnect(clientId: string) {
+  previewBusy[clientId] = true
+  delete previewErrors[clientId]
+  try {
+    const res = await api.getConnectPreview(clientId)
+    if (res.success && res.data) {
+      previews[clientId] = res.data
+    } else {
+      previewErrors[clientId] = res.error || 'Failed to load preview'
+    }
+  } catch (err) {
+    previewErrors[clientId] = (err as Error).message
+  } finally {
+    previewBusy[clientId] = false
+  }
+}
+
+// Cancel dismisses the preview WITHOUT writing anything.
+function cancelPreview(clientId: string) {
+  delete previews[clientId]
+  delete previewErrors[clientId]
+}
+
+// Confirm proceeds; an existing same-named entry implies force=true (the user
+// saw the overwrite warning in the preview).
+async function confirmConnect(clientId: string) {
+  const preview = previews[clientId]
+  const force = preview?.entry_exists === true
+  delete previews[clientId]
+  delete previewErrors[clientId]
+  await connectOne(clientId, force, preview)
+}
+
+async function connectOne(clientId: string, force = false, preview?: ConnectPreview) {
+  busyClients[clientId] = true
+  connectMessage.value = ''
+  connectReloadHint.value = ''
+  try {
+    const res = await api.connectClient(clientId, 'mcpproxy', force)
+    if (res.success && res.data) {
+      connectMessageOk.value = true
+      connectMessage.value = res.data.message || `Connected ${clientId}`
+      connectReloadHint.value = res.data.reload_hint || ''
+      // Spec 078 US2: keep the backup path so the row can surface it; an
+      // empty/absent backup_path on success means no prior file existed.
+      connectBackups[clientId] = res.data.backup_path || null
+      // Spec 078 US3: remember what was written so the Undo panel can show
+      // the change it is about to revert (FR-009).
+      if (preview) undoPreviews[clientId] = preview
+      delete undoOpen[clientId]
+      await fetchClients()
+      // Spec 046 — record connect-step completion for telemetry funnel.
+      // Only the first successful connect transitions the status; subsequent
+      // calls are no-ops on the backend.
+      if (onboarding.state?.state.connect_step_status !== 'completed') {
+        await onboarding.markConnectCompleted()
+      }
+      await onboarding.fetchState()
+      systemStore.addToast({
+        type: 'success',
+        title: 'Client connected',
+        message: `mcpproxy registered in ${clientId}`,
+      })
+    } else {
+      connectMessageOk.value = false
+      connectMessage.value = res.error ?? 'Failed to connect'
+    }
+  } catch (err) {
+    connectMessageOk.value = false
+    connectMessage.value = (err as Error).message
+  } finally {
+    busyClients[clientId] = false
+  }
+}
+
+// Spec 078 US2: one-click copy of a row's backup path (same clipboard pattern
+// as ClientConnectList's copy affordances).
+async function copyBackupPath(clientId: string) {
+  const path = connectBackups[clientId]
+  if (!path) return
+  try {
+    await navigator.clipboard.writeText(path)
+    copiedBackupClient.value = clientId
+    setTimeout(() => {
+      if (copiedBackupClient.value === clientId) copiedBackupClient.value = null
+    }, 2000)
+  } catch {
+    // Clipboard unavailable: the full path is already rendered in the row.
+  }
+}
+
+// Spec 078 US3 / FR-009: Undo shows the change to be reverted first; the
+// restore only runs from the panel's confirm button.
+function startUndo(clientId: string) {
+  undoOpen[clientId] = true
+}
+
+function cancelUndo(clientId: string) {
+  delete undoOpen[clientId]
+}
+
+async function confirmUndo(clientId: string) {
+  undoBusy[clientId] = true
+  connectMessage.value = ''
+  connectReloadHint.value = ''
+  try {
+    const res = await api.undoConnectClient(clientId, 'mcpproxy', connectBackups[clientId] ?? null)
+    if (res.success && res.data) {
+      connectMessageOk.value = true
+      connectMessage.value = res.data.message || `Undid the ${clientId} connect`
+      delete connectBackups[clientId]
+      delete undoPreviews[clientId]
+      delete undoOpen[clientId]
+      await fetchClients()
+      // Telemetry (FR-016): connect_step completion is a one-time funnel
+      // transition and is deliberately NOT retracted on undo — the user did
+      // complete the step; undo is a reversal of the file change, not of the
+      // funnel event.
+      await onboarding.fetchState()
+      systemStore.addToast({
+        type: 'info',
+        title: 'Connect undone',
+        message: `${clientId} restored to its pre-connect state`,
+      })
+    } else {
+      // Honest refusal (e.g. the config changed since the connect): show the
+      // backend's message and keep the row's state so the user can decide.
+      connectMessageOk.value = false
+      connectMessage.value = res.error ?? 'Failed to undo the connect'
+      delete undoOpen[clientId]
+    }
+  } catch (err) {
+    connectMessageOk.value = false
+    connectMessage.value = (err as Error).message
+    delete undoOpen[clientId]
+  } finally {
+    undoBusy[clientId] = false
+  }
+}
+
+function openAddServer() {
+  addServerOpen.value = true
+}
+
+async function onServerAdded() {
+  addServerOpen.value = false
+  serverAddedJustNow.value = true
+  // Spec 046 — record server-step completion for telemetry funnel.
+  if (onboarding.state?.state.server_step_status !== 'completed') {
+    await onboarding.markServerCompleted()
+  }
+  await Promise.all([
+    serversStore.fetchServers(),
+    onboarding.fetchState(),
+  ])
+  systemStore.addToast({
+    type: 'success',
+    title: 'Server added',
+    message: 'It is in quarantine. Review and approve from the Review queue.',
+  })
+}
+
+async function onSharedImport(count: number, names: string[] = []) {
+  if (count === 0) return
+  importedThisSession.value += count
+  serverAddedJustNow.value = true
+  const quarantinedBefore = new Set(quarantinedServersAwaitingReview.value.map(server => server.name))
+  await Promise.all([fetchImportSources(), serversStore.fetchServers(), onboarding.fetchState()])
+  // Whatever newly entered quarantine because of this import is "just imported".
+  const next = new Set(importedQuarantinedNames.value)
+  for (const name of names) next.add(name)
+  for (const server of quarantinedServersAwaitingReview.value) {
+    if (!quarantinedBefore.has(server.name)) next.add(server.name)
+  }
+  importedQuarantinedNames.value = next
+}
+
+// `dismiss` is the onClose handler useDialogOpen calls for a NATIVE close
+// (Escape, or the browser's own backdrop/cancel handling) as well as every
+// explicit "close the wizard" affordance. By the time a native close fires,
+// the <dialog> has already closed itself in the DOM; `props.show` is the
+// only thing keeping useDialogOpen's `isOpen()` true, and only the parent's
+// `@close` handler (via `emit('close')`) flips it. This used to await up to
+// three sequential engagement-bookkeeping calls BEFORE emitting close, so
+// `props.show` stayed true for that whole window — reopening the wizard from
+// the sidebar Setup entry during it was a no-op (setting an already-true ref
+// doesn't re-trigger the watch that calls `showModal()` again), same failure
+// class as round 1's H4 dialog-desync bug. Emit synchronously first; the
+// bookkeeping is best-effort and fully decoupled from the dialog's own
+// open/close state, so it runs in the background regardless (review round 2,
+// finding 2).
+function dismiss() {
+  emit('close')
+  void recordDismissalEngagement()
+}
+
+async function recordDismissalEngagement() {
+  // Engagement is permanent: once the wizard has been opened and dismissed,
+  // we don't auto-popup again. The sidebar Setup entry remains visible so
+  // the user can return.
+  if (onboarding.isEngaged) return
+  // Spec 046 — any step the user never advanced through counts as "skipped"
+  // so the funnel (engaged - completed - skipped) reconciles to engaged
+  // total. Per-step calls are no-ops if a status is already recorded.
+  const stepState = onboarding.state?.state
+  if (stepState && !stepState.connect_step_status) {
+    await onboarding.markConnectSkipped()
+  }
+  if (stepState && !stepState.server_step_status) {
+    await onboarding.markServerSkipped()
+  }
+  await onboarding.markEngaged()
+}
+
+// NOTE: no onMounted open-fallback here. The `immediate` watcher above already
+// covers "already open at mount time", and covers it completely — the old
+// fallback started the fetches but never chose the tab, so a wizard opened
+// that way landed on Clients regardless of what the opener asked for.
+
+// Spec 109-b: same per-client glyph ClientConnectList.vue uses (clientIcon there),
+// duplicated rather than imported so this file stays self-contained — falls
+// back to the server-supplied ClientStatus.icon id, then a generic wrench.
+function clientRowIcon(client: ClientStatus): string {
+  const iconMap: Record<string, string> = {
+    'claude-desktop': '✨',
+    'claude-code': '\u{1F4BB}',
+    'cursor': '\u{1F4DD}',
+    'vscode': '\u{1F4D0}',
+    'windsurf': '\u{1F3C4}',
+    'opencode': '⚡',
+    'gemini': '♊',
+    'codex': '⌘',
+    'zed': '⚡',
+    'cline': '\u{1F916}',
+    'continue': '➡️',
+    'zcode': '\u{1F9BE}',
+  }
+  return iconMap[client.id] || client.icon || '\u{1F527}'
+}
+
+// --- ClientRow component ------------------------------------------------
+// Inlined as a functional component to keep this file self-contained while
+// the row layout stays consistent across all three lists.
+const ClientRow: FunctionalComponent<
+  {
+    client: ClientStatus
+    busy?: boolean
+    backupPath?: string | null
+    copiedBackup?: boolean
+    preview?: ConnectPreview
+    previewBusy?: boolean
+    previewError?: string
+    undoPreview?: ConnectPreview
+    undoOpen?: boolean
+    undoBusy?: boolean
+  },
+  {
+    connect: (id: string) => void
+    'copy-backup': (id: string) => void
+    confirm: (id: string) => void
+    cancel: (id: string) => void
+    undo: (id: string) => void
+    'confirm-undo': (id: string) => void
+    'cancel-undo': (id: string) => void
+  }
+> = (props, { emit: rowEmit }) => {
+  const c = props.client
+  const row = h(
+    'div',
+    { class: 'flex items-center justify-between' },
+    [
+      h('div', { class: 'min-w-0 flex-1' }, [
+        h('div', { class: 'font-medium text-sm truncate flex items-center gap-1.5' }, [
+          h('span', { 'aria-hidden': 'true', 'data-test': `client-icon-${c.id}` }, clientRowIcon(c)),
+          c.name,
+        ]),
+        // Spec 109-b FR-037: show the home-shortened path; the full path is
+        // still one hover away via the tooltip.
+        h(
+          'div',
+          { class: 'text-xs opacity-50 truncate', title: c.config_path, 'data-test': `client-path-${c.id}` },
+          c.display_path || c.config_path
+        ),
+      ]),
+      h('div', { class: 'shrink-0 ml-2' }, [
+        !c.supported
+          ? h('span', { class: 'badge badge-ghost badge-sm' }, c.reason || 'Not supported')
+          // Bridge clients (e.g. Claude Desktop) are connectable even without
+          // an existing config file — Connect creates it (parity with
+          // ClientConnectList's connectableClients gating; Spec 078 US2/FR-006:
+          // this is the path that produces the "no prior file" backup case).
+          : !c.exists && !c.bridge
+            ? h('span', { class: 'text-xs opacity-40' }, 'Not installed')
+            : c.connected
+              ? h('span', { class: 'badge badge-success badge-sm' }, 'Connected')
+              : h(
+                  'button',
+                  {
+                    class: 'btn btn-primary btn-xs',
+                    disabled: props.busy || props.previewBusy,
+                    'data-test': `connect-${c.id}`,
+                    onClick: () => rowEmit('connect', c.id),
+                  },
+                  props.busy || props.previewBusy
+                    ? [h('span', { class: 'loading loading-spinner loading-xs' })]
+                    : ['Review & connect']
+                ),
+      ]),
+    ]
+  )
+  // Spec 078 US4 / FR-011: pre-emptive macOS App-Data forewarning. The preview
+  // read behind "Review & connect" is the first access that can fire the macOS
+  // privacy prompt, and only for configs under another app's protected data
+  // (~/Library/Application Support/…) — so the note is keyed off config_path
+  // (inherently macOS-only) and shown exactly where the action is offered,
+  // before it can fire. Once a preview is open the read already succeeded, so
+  // the note is dropped. The Spec 075 post-denial remediation is unchanged.
+  const offersConnect = c.supported && (c.exists || c.bridge) && !c.connected
+  const tccNote =
+    offersConnect && !props.preview && c.config_path.includes('/Library/Application Support/')
+      ? h(
+          'p',
+          {
+            class: 'mt-1 text-[11px] opacity-60 leading-relaxed',
+            'data-test': `client-tcc-note-${c.id}`,
+          },
+          [
+            'macOS may ask for permission when you review or connect — the ',
+            h('span', { class: 'italic' }, '“mcpproxy” wants to access data from other apps'),
+            ' prompt refers to this config file. Choose ',
+            h('strong', {}, 'Allow'),
+            ' so mcpproxy can read and update it.',
+          ]
+        )
+      : null
+
+  // Spec 078 US2 / FR-006: after a connect performed in this wizard session,
+  // surface the timestamped backup (or the honest "no prior file" case) right
+  // in the row. undefined = no connect happened for this client yet.
+  // Spec 078 US3: the same line carries the one-click Undo affordance —
+  // reverting is offered exactly where the change was reported.
+  const undoButton = h(
+    'button',
+    {
+      class: 'btn btn-ghost btn-xs shrink-0 text-error',
+      disabled: props.undoBusy,
+      'data-test': `client-undo-${c.id}`,
+      title: 'Revert this connect: restore the config to its pre-connect state',
+      onClick: () => rowEmit('undo', c.id),
+    },
+    'Undo'
+  )
+  const backupLine =
+    props.backupPath !== undefined
+      ? h(
+          'div',
+          {
+            class: 'mt-1 flex items-start justify-between gap-2 text-[11px] opacity-70',
+            'data-test': `client-backup-${c.id}`,
+          },
+          props.backupPath
+            ? [
+                h('span', { class: 'min-w-0 break-all leading-relaxed' }, [
+                  'A backup of your previous config was saved to ',
+                  h('code', { class: 'font-mono', title: props.backupPath }, props.backupPath),
+                ]),
+                h('span', { class: 'flex items-center shrink-0' }, [
+                  h(
+                    'button',
+                    {
+                      class: 'btn btn-ghost btn-xs shrink-0',
+                      'data-test': `client-copy-backup-${c.id}`,
+                      title: 'Copy the backup path to the clipboard',
+                      onClick: () => rowEmit('copy-backup', c.id),
+                    },
+                    props.copiedBackup ? 'Copied ✓' : 'Copy path'
+                  ),
+                  undoButton,
+                ]),
+              ]
+            : [
+                h(
+                  'span',
+                  { class: 'min-w-0 leading-relaxed' },
+                  'No prior config file existed, so no backup was needed.'
+                ),
+                undoButton,
+              ]
+        )
+      : null
+
+  // Spec 078 US3 / FR-009: before reverting, show the change that will be
+  // undone (the entry the confirmed preview wrote). Confirm/Keep gate the
+  // actual restore; Keep changes nothing.
+  const up = props.undoPreview
+  const undoPanel = props.undoOpen
+    ? h(
+        'div',
+        {
+          class: 'mt-2 rounded-lg bg-base-200/60 border border-error/40 px-3 py-2 space-y-2',
+          'data-test': `client-undo-panel-${c.id}`,
+        },
+        [
+          h(
+            'p',
+            { class: 'text-xs opacity-70 leading-relaxed' },
+            props.backupPath
+              ? [
+                  'Undo restores ',
+                  h('code', { class: 'font-mono text-[11px] break-all' }, up?.config_path ?? c.config_path),
+                  ' to its exact pre-connect state from the backup (a safety copy of the current file is saved first).',
+                ]
+              : [
+                  'Undo removes ',
+                  h('code', { class: 'font-mono text-[11px] break-all' }, up?.config_path ?? c.config_path),
+                  ' — it did not exist before mcpproxy connected (a safety copy is saved first).',
+                ]
+          ),
+          up
+            ? h('div', {}, [
+                h(
+                  'div',
+                  { class: 'text-[11px] font-semibold uppercase tracking-wider text-error/80 mb-1' },
+                  '− will be reverted'
+                ),
+                h(
+                  'pre',
+                  {
+                    class: 'text-[11px] font-mono whitespace-pre-wrap break-all rounded bg-base-300/60 border-l-2 border-error px-2 py-1.5 leading-relaxed',
+                    'data-test': `client-undo-entry-${c.id}`,
+                  },
+                  up.entry_text
+                ),
+              ])
+            : null,
+          h('div', { class: 'flex items-center gap-2 pt-0.5' }, [
+            h(
+              'button',
+              {
+                class: 'btn btn-error btn-xs',
+                disabled: props.undoBusy,
+                'data-test': `client-undo-confirm-${c.id}`,
+                onClick: () => rowEmit('confirm-undo', c.id),
+              },
+              props.undoBusy ? [h('span', { class: 'loading loading-spinner loading-xs' })] : ['Undo connect']
+            ),
+            h(
+              'button',
+              {
+                class: 'btn btn-ghost btn-xs',
+                disabled: props.undoBusy,
+                'data-test': `client-undo-cancel-${c.id}`,
+                onClick: () => rowEmit('cancel-undo', c.id),
+              },
+              'Keep'
+            ),
+          ]),
+        ]
+      )
+    : null
+
+  // Spec 078 US1 / FR-001,003,004: preview the exact change before writing.
+  // Only this entry is added; everything else in the file is untouched. The
+  // Connect/Cancel buttons gate the actual write (Cancel writes nothing).
+  const p = props.preview
+  const previewPanel = p
+    ? h(
+        'div',
+        {
+          class: 'mt-2 rounded-lg bg-base-200/60 border border-base-300 px-3 py-2 space-y-2',
+          'data-test': `client-preview-${c.id}`,
+        },
+        [
+          h('p', { class: 'text-xs opacity-70 leading-relaxed' }, [
+            'Only this entry is added to ',
+            h('code', { class: 'font-mono text-[11px] break-all', title: p.config_path }, p.config_path),
+            '. Everything else in the file stays untouched, and a timestamped backup is created first.',
+          ]),
+          p.entry_exists
+            ? h(
+                'p',
+                { class: 'text-xs text-warning leading-relaxed', 'data-test': `client-preview-overwrite-${c.id}` },
+                `An entry named "${p.server_name}" already exists — connecting will overwrite it (a backup is saved first).`
+              )
+            : p.access_state === 'malformed'
+              ? h(
+                  'p',
+                  { class: 'text-xs text-warning leading-relaxed', 'data-test': `client-preview-malformed-${c.id}` },
+                  `Your current config could not be parsed, so connecting would fail rather than modify an unreadable file. Fix or remove ${p.config_path} first, then try again.`
+                )
+              : p.access_state === 'absent'
+                ? h(
+                    'p',
+                    { class: 'text-xs opacity-60 leading-relaxed', 'data-test': `client-preview-no-file-${c.id}` },
+                    'This file will be created; there is no prior file to back up.'
+                  )
+                : null,
+          h('div', {}, [
+            h('div', { class: 'text-[11px] font-semibold uppercase tracking-wider text-success/80 mb-1' }, '+ will be added'),
+            h(
+              'pre',
+              {
+                class: 'text-[11px] font-mono whitespace-pre-wrap break-all rounded bg-base-300/60 border-l-2 border-success px-2 py-1.5 leading-relaxed',
+                'data-test': `client-preview-entry-${c.id}`,
+              },
+              p.entry_text
+            ),
+          ]),
+          p.contains_api_key
+            ? h(
+                'p',
+                { class: 'text-[11px] opacity-60 leading-relaxed', 'data-test': `client-preview-apikey-${c.id}` },
+                'This entry includes your API key (shown masked). The real key is written into the config so the client can authenticate.'
+              )
+            : null,
+          h('div', { class: 'flex items-center gap-2 pt-0.5' }, [
+            h(
+              'button',
+              {
+                class: 'btn btn-primary btn-xs',
+                disabled: props.busy || p.access_state === 'malformed',
+                'data-test': `client-preview-confirm-${c.id}`,
+                onClick: () => rowEmit('confirm', c.id),
+              },
+              props.busy ? [h('span', { class: 'loading loading-spinner loading-xs' })] : ['Connect']
+            ),
+            h(
+              'button',
+              {
+                class: 'btn btn-ghost btn-xs',
+                disabled: props.busy,
+                'data-test': `client-preview-cancel-${c.id}`,
+                onClick: () => rowEmit('cancel', c.id),
+              },
+              'Cancel'
+            ),
+          ]),
+        ]
+      )
+    : null
+
+  // Non-denial preview fetch failure (the wizard has no separate access banner;
+  // the standalone Connect modal carries the full Spec 075 remediation surface).
+  const previewErrorLine =
+    !p && props.previewError
+      ? h(
+          'p',
+          { class: 'mt-2 text-xs text-error', 'data-test': `client-preview-error-${c.id}` },
+          props.previewError
+        )
+      : null
+
+  const children = [row]
+  if (tccNote) children.push(tccNote)
+  if (backupLine) children.push(backupLine)
+  if (undoPanel) children.push(undoPanel)
+  if (previewPanel) children.push(previewPanel)
+  if (previewErrorLine) children.push(previewErrorLine)
+  return h(
+    'div',
+    {
+      class: 'p-2 rounded-lg border border-base-300',
+      'data-test': `client-row-${c.id}`,
+    },
+    children
+  )
+}
+ClientRow.props = {
+  client: { type: Object, required: true },
+  busy: { type: Boolean, default: false },
+  backupPath: { type: String, default: undefined },
+  copiedBackup: { type: Boolean, default: false },
+  preview: { type: Object, default: undefined },
+  previewBusy: { type: Boolean, default: false },
+  previewError: { type: String, default: undefined },
+  undoPreview: { type: Object, default: undefined },
+  undoOpen: { type: Boolean, default: false },
+  undoBusy: { type: Boolean, default: false },
+}
+ClientRow.emits = ['connect', 'copy-backup', 'confirm', 'cancel', 'undo', 'confirm-undo', 'cancel-undo']
+</script>

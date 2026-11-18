@@ -1,0 +1,316 @@
+<template>
+  <div
+    v-if="diagnostic && diagnostic.code"
+    class="alert"
+    :class="severityAlertClass"
+    role="alert"
+    :aria-label="`Diagnostic ${diagnostic.code}`"
+  >
+    <svg class="w-6 h-6 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+      />
+    </svg>
+    <div class="w-full">
+      <div class="flex items-start justify-between gap-3">
+        <div>
+          <div class="flex items-center gap-2 flex-wrap">
+            <h3 class="font-bold">{{ headerTitle }}</h3>
+            <span class="badge badge-sm" :class="severityBadgeClass" data-testid="error-panel-severity">
+              {{ diagnostic.severity }}
+            </span>
+            <code class="text-xs opacity-80" data-testid="error-panel-code">{{ diagnostic.code }}</code>
+          </div>
+          <p v-if="diagnostic.user_message" class="text-sm mt-1" data-testid="error-panel-message">
+            {{ diagnostic.user_message }}
+          </p>
+          <p v-if="diagnostic.cause" class="text-xs opacity-70 mt-1">
+            <span class="font-semibold">Cause:</span> {{ diagnostic.cause }}
+          </p>
+        </div>
+        <button
+          type="button"
+          class="btn btn-xs btn-ghost"
+          :aria-expanded="expanded ? 'true' : 'false'"
+          :aria-label="expanded ? 'Collapse fix steps' : 'Expand fix steps'"
+          @click="expanded = !expanded"
+        >
+          {{ expanded ? 'Hide steps' : 'Show fix steps' }}
+        </button>
+      </div>
+
+      <div v-if="expanded" class="mt-3 space-y-2" data-testid="error-panel-fix-steps">
+        <ol class="list-decimal list-inside space-y-2 text-sm">
+          <li
+            v-for="(step, idx) in visibleFixSteps"
+            :key="idx"
+            class="flex flex-col gap-1"
+          >
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="font-medium">{{ step.label }}</span>
+              <span
+                v-if="step.destructive"
+                class="badge badge-xs badge-warning"
+                aria-label="Destructive action"
+              >destructive</span>
+            </div>
+            <!-- link fix step -->
+            <a
+              v-if="step.type === 'link' && step.url"
+              :href="step.url"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="link link-primary text-xs break-all"
+            >{{ step.url }}</a>
+
+            <!-- command fix step -->
+            <div
+              v-else-if="step.type === 'command' && step.command"
+              class="flex items-center gap-2"
+            >
+              <code
+                class="text-xs bg-base-200 p-1 rounded break-all flex-1"
+                :data-testid="`error-panel-command-${idx}`"
+              >{{ step.command }}</code>
+              <button
+                type="button"
+                class="btn btn-xs"
+                :aria-label="`Copy command: ${step.label}`"
+                @click="copyCommand(step.command as string)"
+              >Copy</button>
+            </div>
+
+            <!-- button fix step -->
+            <div v-else-if="step.type === 'button' && step.fixer_key" class="flex items-center gap-2 flex-wrap">
+              <!--
+                Non-destructive fixes: single primary Execute button (no dry-run UX noise).
+                Destructive fixes: Preview (dry-run) + Execute (gated by window.confirm()).
+                Fix: gemini P1 — previously non-destructive fixes had no Execute path.
+              -->
+              <button
+                v-if="step.destructive"
+                type="button"
+                class="btn btn-xs btn-warning"
+                :disabled="isFixing(step.fixer_key)"
+                :data-testid="`error-panel-fix-button-${idx}`"
+                @click="runFixer(step, 'dry_run')"
+              >
+                <span
+                  v-if="isFixing(step.fixer_key)"
+                  class="loading loading-spinner loading-xs"
+                ></span>
+                Preview (dry-run)
+              </button>
+              <button
+                type="button"
+                class="btn btn-xs"
+                :class="step.destructive ? 'btn-outline btn-error' : 'btn-primary'"
+                :disabled="isFixing(step.fixer_key)"
+                :data-testid="`error-panel-execute-button-${idx}`"
+                @click="step.destructive ? confirmAndExecute(step) : runFixer(step, 'execute')"
+              >
+                <span
+                  v-if="!step.destructive && isFixing(step.fixer_key)"
+                  class="loading loading-spinner loading-xs"
+                ></span>
+                Execute
+              </button>
+            </div>
+          </li>
+        </ol>
+
+        <a
+          v-if="diagnostic.docs_url"
+          :href="diagnostic.docs_url"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="link link-hover text-xs mt-2 inline-block"
+          data-testid="error-panel-docs-link"
+        >Documentation →</a>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { computed, onBeforeUnmount, ref } from 'vue'
+import type { Diagnostic, DiagnosticFixStep } from '@/types'
+import api from '@/services/api'
+import { useSystemStore } from '@/stores/system'
+import { isOAuthDiagnosticCode } from '@/utils/health'
+
+interface Props {
+  diagnostic: Diagnostic | null | undefined
+  serverName: string
+}
+
+const props = defineProps<Props>()
+const emit = defineEmits<{
+  (e: 'fixed', payload: { fixerKey: string; mode: 'dry_run' | 'execute' }): void
+}>()
+
+const systemStore = useSystemStore()
+
+const expanded = ref(true)
+const runningFixers = ref<Set<string>>(new Set())
+// Id of the last long-lived (multi-line) fix preview this panel raised, so the
+// next one can supersede it instead of stacking on top of it.
+const lastPreviewToastId = ref<string | null>(null)
+
+// The superseding id above lives in this component, but the 60s toast it
+// names lives in the global store. ServerDetail unmounts this panel on every
+// navigation between servers, which would drop the id and leave the toast
+// behind — so a preview opened on each of several servers still stacked past
+// the top of the viewport. Dispose of the preview with the panel that raised
+// it: a tail belongs to the server it was read from.
+//
+// `disposed` covers the other ordering: a click whose request is still in
+// flight when the panel unmounts. The hook then has no id to remove, and the
+// resumed runFixer would raise a 60s toast that nothing owns any more — the
+// same accumulation, one navigation later. A result that arrives after
+// disposal is dropped instead of delivered.
+let disposed = false
+onBeforeUnmount(() => {
+  disposed = true
+  if (lastPreviewToastId.value) {
+    systemStore.removeToast(lastPreviewToastId.value)
+    lastPreviewToastId.value = null
+  }
+})
+
+const severityAlertClass = computed(() => {
+  const sev = props.diagnostic?.severity
+  if (sev === 'error') return 'alert-error'
+  if (sev === 'warn') return 'alert-warning'
+  return 'alert-info'
+})
+
+const severityBadgeClass = computed(() => {
+  const sev = props.diagnostic?.severity
+  if (sev === 'error') return 'badge-error'
+  if (sev === 'warn') return 'badge-warning'
+  return 'badge-info'
+})
+
+const headerTitle = computed(() => {
+  const sev = props.diagnostic?.severity
+  if (sev === 'error') return 'Server Error'
+  if (sev === 'warn') return 'Server Warning'
+  return 'Diagnostic'
+})
+
+// MCP-1821 — the generic "Report a bug" / issues/new link is only appropriate
+// for a genuinely unclassified fault. For OAuth codes the actionable path is to
+// sign in (surfaced by SignInPanel), so suppress any bug-report fix step here.
+const visibleFixSteps = computed<DiagnosticFixStep[]>(() => {
+  const steps = props.diagnostic?.fix_steps || []
+  if (!isOAuthDiagnosticCode(props.diagnostic?.code)) return steps
+  return steps.filter(
+    (step) => !(step.type === 'link' && (step.url || '').includes('issues/new')),
+  )
+})
+
+function isFixing(key: string | undefined) {
+  if (!key) return false
+  return runningFixers.value.has(key)
+}
+
+async function copyCommand(cmd: string) {
+  try {
+    await navigator.clipboard.writeText(cmd)
+    systemStore.addToast({
+      type: 'success',
+      title: 'Command copied',
+      message: cmd.length > 60 ? cmd.slice(0, 57) + '...' : cmd,
+    })
+  } catch (err) {
+    systemStore.addToast({
+      type: 'error',
+      title: 'Copy failed',
+      message: err instanceof Error ? err.message : String(err),
+    })
+  }
+}
+
+function confirmAndExecute(step: DiagnosticFixStep) {
+  if (!step.fixer_key) return
+  const ok = typeof window !== 'undefined' && typeof window.confirm === 'function'
+    ? window.confirm(
+        `Execute destructive fix "${step.label}" on server "${props.serverName}"?\n\nThis action may mutate configuration or trigger a new login.`,
+      )
+    : true
+  if (!ok) return
+  void runFixer(step, 'execute')
+}
+
+async function runFixer(step: DiagnosticFixStep, mode: 'dry_run' | 'execute') {
+  if (!step.fixer_key || !props.diagnostic?.code) return
+  const key = step.fixer_key
+  runningFixers.value.add(key)
+  try {
+    const response = await api.invokeDiagnosticFix({
+      server: props.serverName,
+      code: props.diagnostic.code,
+      fixer_key: key,
+      mode,
+    })
+    if (response.success && response.data) {
+      const outcome = response.data.outcome
+      const titleMode = mode === 'dry_run' ? 'Dry-run' : 'Executed'
+      const message =
+        response.data.preview ||
+        response.data.failure_msg ||
+        `Outcome: ${outcome} (${response.data.duration_ms}ms)`
+      // The panel that asked is gone. The one thing that must not be raised
+      // now is a long-lived PREVIEW — a successful multi-line payload whose
+      // 60s toast would outlive the server view it belongs to, with nothing
+      // left to supersede or dispose of it (see onBeforeUnmount). Everything
+      // else the user submitted is still reported at the default dwell: a
+      // failure (api.ts folds transport errors into resolved {success:false}
+      // responses too, so this branch and the one below are the only places
+      // a failure can surface) and a one-line success such as "Sign-in
+      // started".
+      if (disposed && outcome === 'success' && message.includes('\n')) return
+      // A fixer whose whole product is text to READ — stdio_show_last_logs
+      // returns a 50-line log tail — cannot be delivered in the default 5s
+      // toast. Give a multi-line payload long enough to actually read. Never
+      // after disposal: nothing would remove it.
+      const multiLine = message.includes('\n') && !disposed
+      // A long-lived toast must not accumulate. The toast stack is anchored to
+      // the bottom of the viewport and grows upward with no height bound, so a
+      // few tall 60s previews would push the earlier ones — and their close
+      // buttons — off the top of the screen. Keep at most one long-lived
+      // preview alive per panel: a new tail supersedes the one it replaces.
+      if (lastPreviewToastId.value) {
+        systemStore.removeToast(lastPreviewToastId.value)
+        lastPreviewToastId.value = null
+      }
+      const toastId = systemStore.addToast({
+        type: outcome === 'success' ? 'success' : outcome === 'failed' ? 'error' : 'warning',
+        title: `${titleMode}: ${step.label}`,
+        message,
+        ...(multiLine ? { duration: 60000 } : {}),
+      })
+      if (multiLine) lastPreviewToastId.value = toastId
+      if (!disposed) emit('fixed', { fixerKey: key, mode })
+    } else {
+      systemStore.addToast({
+        type: 'error',
+        title: `Fix failed: ${step.label}`,
+        message: response.error || 'Unknown error',
+      })
+    }
+  } catch (err) {
+    systemStore.addToast({
+      type: 'error',
+      title: `Fix failed: ${step.label}`,
+      message: err instanceof Error ? err.message : String(err),
+    })
+  } finally {
+    runningFixers.value.delete(key)
+  }
+}
+</script>

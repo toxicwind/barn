@@ -1,0 +1,152 @@
+{
+  "version": 2,
+  "generated": "2026-11-03T20:04:24.714Z",
+  "pen": "barn",
+  "theme": "ops tooling",
+  "products": [
+    {
+      "name": "archguard",
+      "path": "/home/toxic/pens/barn/products/archguard",
+      "repo": "https://github.com/toxicwind/archguard.git",
+      "hasBin": false
+    },
+    {
+      "name": "blackbird",
+      "path": "/home/toxic/pens/barn/products/blackbird",
+      "repo": "https://github.com/toxicwind/blackbird.git",
+      "hasBin": false
+    },
+    {
+      "name": "bun-control-mcp",
+      "path": "/home/toxic/pens/barn/products/bun-control-mcp",
+      "repo": "https://github.com/toxicwind/bun-control-mcp.git",
+      "hasBin": false
+    },
+    {
+      "name": "chute",
+      "path": "/home/toxic/pens/barn/products/chute",
+      "repo": "https://github.com/toxicwind/chute.git",
+      "hasBin": false
+    },
+    {
+      "name": "Pens-mesh",
+      "path": "/home/toxic/pens/barn/products/Pens-mesh",
+      "repo": "https://github.com/toxicwind/Pens-mesh.git",
+      "hasBin": false
+    },
+    {
+      "name": "Pens-ops",
+      "path": "/home/toxic/pens/barn/products/Pens-ops",
+      "repo": "https://github.com/toxicwind/Pens-ops.git",
+      "hasBin": false
+    },
+    {
+      "name": "Pens-tailscale",
+      "path": "/home/toxic/pens/barn/products/Pens-tailscale",
+      "repo": "https://github.com/toxicwind/Pens-tailscale.git",
+      "hasBin": false
+    },
+    {
+      "name": "fanout",
+      "path": "/home/toxic/pens/barn/products/fanout",
+      "repo": "https://github.com/toxicwind/fanout.git",
+      "hasBin": false
+    },
+    {
+      "name": "flatbread",
+      "path": "/home/toxic/pens/barn/products/flatbread",
+      "repo": "https://github.com/toxicwind/flatbread.git",
+      "hasBin": false
+    },
+    {
+      "name": "forge",
+      "path": "/home/toxic/pens/barn/products/forge",
+      "repo": "https://github.com/toxicwind/forge.git",
+      "hasBin": false
+    },
+    {
+      "name": "freeinference-coordinator",
+      "path": "/home/toxic/pens/barn/products/freeinference-coordinator",
+      "repo": "https://github.com/toxicwind/freeinference-coordinator.git",
+      "hasBin": false
+    },
+    {
+      "name": "gem-dredge",
+      "path": "/home/toxic/pens/barn/products/gem-dredge",
+      "repo": "https://github.com/toxicwind/gem-dredge.git",
+      "hasBin": false
+    },
+    {
+      "name": "gemini-mcp",
+      "path": "/home/toxic/pens/barn/products/gemini-mcp",
+      "repo": "https://github.com/toxicwind/gemini-mcp.git",
+      "hasBin": false
+    },
+    {
+      "name": "gitleaks",
+      "path": "/home/toxic/pens/barn/products/gitleaks",
+      "repo": "https://github.com/toxicwind/gitleaks.git",
+      "hasBin": false
+    },
+    {
+      "name": "lookout",
+      "path": "/home/toxic/pens/barn/products/lookout",
+      "repo": "https://github.com/toxicwind/lookout.git",
+      "hasBin": false
+    },
+    {
+      "name": "loom",
+      "path": "/home/toxic/pens/barn/products/loom",
+      "repo": "https://github.com/toxicwind/loom.git",
+      "hasBin": false
+    },
+    {
+      "name": "nativelink",
+      "path": "/home/toxic/pens/barn/products/nativelink",
+      "repo": "https://github.com/toxicwind/nativelink.git",
+      "hasBin": false
+    },
+    {
+      "name": "pens-index",
+      "path": "/home/toxic/pens/barn/products/pens-index",
+      "repo": "https://github.com/toxicwind/pens-index.git",
+      "hasBin": false
+    },
+    {
+      "name": "rosec",
+      "path": "/home/toxic/pens/barn/products/rosec",
+      "repo": "https://github.com/toxicwind/rosec.git",
+      "hasBin": false
+    },
+    {
+      "name": "secretsmith",
+      "path": "/home/toxic/pens/barn/products/secretsmith",
+      "repo": "https://github.com/toxicwind/secretsmith.git",
+      "hasBin": false
+    },
+    {
+      "name": "thresher",
+      "path": "/home/toxic/pens/barn/products/thresher",
+      "repo": "https://github.com/toxicwind/thresher.git",
+      "hasBin": false
+    },
+    {
+      "name": "weave",
+      "path": "/home/toxic/pens/barn/products/weave",
+      "repo": "https://github.com/toxicwind/weave.git",
+      "hasBin": false
+    },
+    {
+      "name": "weave-sub",
+      "path": "/home/toxic/pens/barn/products/weave-sub",
+      "repo": "https://github.com/toxicwind/weave-sub.git",
+      "hasBin": false
+    },
+    {
+      "name": "wip-to-product",
+      "path": "/home/toxic/pens/barn/products/wip-to-product",
+      "repo": "https://github.com/toxicwind/wip-to-product.git",
+      "hasBin": false
+    }
+  ]
+}

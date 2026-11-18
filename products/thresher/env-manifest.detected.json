@@ -1,0 +1,1561 @@
+{
+  "product": "thresher",
+  "path": "/home/toxic/pens/barn/products/thresher",
+  "files": 5807,
+  "detected_at": "2026-10-30T06:10:51.678586Z",
+  "env_vars": {
+    "API": [
+      "specs/055-frontend-major-upgrades/verification/qa/_helpers.ts"
+    ],
+    "API_BASE": [
+      "frontend/src/services/auth-api.ts"
+    ],
+    "API_KEY": [
+      ".project_map.json",
+      "frontend/tests/unit/secret-toggle.spec.ts",
+      "internal/config/merge.go",
+      "internal/registries/inputs_test.go",
+      "internal/server/consistency_crosssurface_test.go",
+      "specs/060-settings-page/verification/settings.spec.ts",
+      "vendor.old-20261023/internal/config/merge.go"
+    ],
+    "APP_BUNDLE": [
+      "vendor.old-20261023/native/macos/MCPProxy/scripts/build-macos-tray.sh"
+    ],
+    "APP_NAME": [
+      "vendor.old-20261023/native/macos/MCPProxy/scripts/build-macos-tray.sh"
+    ],
+    "APT_BUCKET": [
+      "contrib/linux-repos/apt-publish.sh"
+    ],
+    "ARTIFACTS_DIR": [
+      "contrib/linux-repos/apt-publish.sh",
+      "contrib/linux-repos/publish.sh",
+      "contrib/linux-repos/rpm-publish.sh"
+    ],
+    "ActiveDays30d": [
+      "internal/telemetry/anonymity.go",
+      "vendor.old-20261023/internal/telemetry/anonymity.go"
+    ],
+    "ApplyConfig": [
+      "internal/server/e2e_test.go",
+      "internal/server/quarantine_config_apply_test.go",
+      "internal/server/toon_e2e_test.go"
+    ],
+    "BACKUP": [
+      "frontend/tests/unit/connect-modal-undo.spec.ts",
+      "frontend/tests/unit/onboarding-wizard-undo.spec.ts"
+    ],
+    "BASE": [
+      "specs/041-quarantine-invariants/verification/mcp-2101/banner.spec.ts",
+      "specs/055-frontend-major-upgrades/verification/after.spec.ts",
+      "specs/055-frontend-major-upgrades/verification/baseline.spec.ts",
+      "specs/055-frontend-major-upgrades/verification/qa/_helpers.ts",
+      "specs/060-settings-page/verification/instructions-prefill-persist.spec.ts",
+      "specs/060-settings-page/verification/settings.spec.ts",
+      "specs/075-macos-tcc-connect/verification/connect-tristate.spec.ts",
+      "specs/098-tools-preflight/verification/preflight-activity.spec.ts",
+      "specs/mcp-2199-block-button/verification/block-button.spec.ts",
+      "specs/mcp-2740-scan-ui-stuck/verification/scan-stuck.spec.ts",
+      "specs/oauth-signin-cta/verification/playwright-signin.spec.ts"
+    ],
+    "BASE_URL": [
+      "frontend/src/router/index.ts",
+      "specs/060-settings-page/verification/settings.spec.ts"
+    ],
+    "BASH_COMP_DEBUG_FILE": [
+      "vendor/github.com/spf13/cobra/bash_completions.go",
+      "vendor/github.com/spf13/cobra/bash_completionsV2.go"
+    ],
+    "BASH_REMATCH": [
+      "vendor/github.com/spf13/cobra/zsh_completions.go"
+    ],
+    "BASH_VERSION": [
+      "vendor/github.com/spf13/cobra/bash_completions.go"
+    ],
+    "BUNDLE_DIR": [
+      "vendor.old-20261023/native/macos/MCPProxy/scripts/build-macos-tray.sh"
+    ],
+    "BUNDLE_ID": [
+      "vendor.old-20261023/native/macos/MCPProxy/scripts/build-macos-tray.sh"
+    ],
+    "BatchSpanProcessorExportTimeout": [
+      "vendor/go.opentelemetry.io/otel/sdk/trace/batch_span_processor.go"
+    ],
+    "BatchSpanProcessorMaxExportBatchSize": [
+      "vendor/go.opentelemetry.io/otel/sdk/trace/batch_span_processor.go"
+    ],
+    "BatchSpanProcessorMaxQueueSize": [
+      "vendor/go.opentelemetry.io/otel/sdk/trace/batch_span_processor.go"
+    ],
+    "BatchSpanProcessorScheduleDelay": [
+      "vendor/go.opentelemetry.io/otel/sdk/trace/batch_span_processor.go"
+    ],
+    "Bra": [
+      "vendor/github.com/blevesearch/snowballstem/english/english_stemmer.go",
+      "vendor/github.com/blevesearch/snowballstem/env.go"
+    ],
+    "BuildFlags": [
+      "vendor/golang.org/x/tools/internal/imports/mod.go"
+    ],
+    "ByteIndexForHop": [
+      "vendor/github.com/blevesearch/snowballstem/english/english_stemmer.go"
+    ],
+    "CERT_IDENTITY": [
+      "vendor.old-20261023/native/macos/MCPProxy/scripts/build-macos-tray.sh"
+    ],
+    "CHIP": [
+      "frontend/tests/unit/home-token-savings-estimate.spec.ts"
+    ],
+    "CHIP_ESTIMATE": [
+      "frontend/tests/unit/home-token-savings-estimate.spec.ts"
+    ],
+    "CONTEXT7_API_KEY": [
+      "mcp_config.json"
+    ],
+    "COVERED_STMT": [
+      "tests/coverage_gate.sh"
+    ],
+    "CURRENT": [
+      "vendor/github.com/spf13/cobra/zsh_completions.go"
+    ],
+    "CallMCPTool": [
+      "internal/server/e2e_mcp_test.go"
+    ],
+    "Cleanup": [
+      "internal/server/e2e_binary_test.go",
+      "internal/server/e2e_content_forward_test.go",
+      "internal/server/e2e_iserror_activity_test.go",
+      "internal/server/e2e_mcp_test.go",
+      "internal/server/e2e_metrics_test.go",
+      "internal/server/e2e_sensitive_data_test.go",
+      "internal/server/e2e_test.go",
+      "internal/server/mcp_test.go",
+      "internal/server/profile_integration_test.go",
+      "internal/server/quarantine_config_apply_test.go",
+      "internal/server/toon_e2e_test.go"
+    ],
+    "ConnectClient": [
+      "internal/server/e2e_content_forward_test.go",
+      "internal/server/e2e_iserror_activity_test.go",
+      "internal/server/e2e_sensitive_data_test.go",
+      "internal/server/e2e_test.go",
+      "internal/server/mcp_test.go",
+      "internal/server/toon_e2e_test.go"
+    ],
+    "CreateMockImageServer": [
+      "internal/server/e2e_content_forward_test.go"
+    ],
+    "CreateMockIsErrorServer": [
+      "internal/server/e2e_iserror_activity_test.go"
+    ],
+    "CreateMockUpstreamServer": [
+      "internal/server/e2e_sensitive_data_test.go",
+      "internal/server/e2e_test.go",
+      "internal/server/mcp_test.go",
+      "internal/server/profile_integration_test.go",
+      "internal/server/quarantine_config_apply_test.go"
+    ],
+    "CreateProxyClient": [
+      "internal/server/e2e_content_forward_test.go",
+      "internal/server/e2e_iserror_activity_test.go",
+      "internal/server/e2e_sensitive_data_test.go",
+      "internal/server/e2e_test.go",
+      "internal/server/mcp_test.go",
+      "internal/server/profile_integration_test.go",
+      "internal/server/toon_e2e_test.go"
+    ],
+    "Current": [
+      "vendor/github.com/blevesearch/bleve/v2/analysis/lang/en/stemmer_en_snowball.go",
+      "vendor/github.com/blevesearch/snowballstem/env.go"
+    ],
+    "Cursor": [
+      "vendor/github.com/blevesearch/snowballstem/english/english_stemmer.go",
+      "vendor/github.com/blevesearch/snowballstem/env.go"
+    ],
+    "DEEP_SCAN_KEY": [
+      "frontend/tests/unit/settings-deep-scan-field.spec.ts"
+    ],
+    "DEV": [
+      "frontend/src/services/api.ts"
+    ],
+    "DIST_DIR": [
+      "vendor.old-20261023/native/macos/MCPProxy/scripts/build-macos-tray.sh"
+    ],
+    "DMG_ARCH": [
+      "vendor.old-20261023/native/macos/MCPProxy/scripts/build-macos-tray.sh"
+    ],
+    "DMG_NAME": [
+      "vendor.old-20261023/native/macos/MCPProxy/scripts/build-macos-tray.sh"
+    ],
+    "DMG_VOLNAME": [
+      "vendor.old-20261023/native/macos/MCPProxy/scripts/build-macos-tray.sh"
+    ],
+    "DRY_RUN": [
+      "contrib/linux-repos/apt-publish.sh",
+      "contrib/linux-repos/rpm-publish.sh"
+    ],
+    "DRY_RUN_FLAG": [
+      "contrib/linux-repos/publish.sh"
+    ],
+    "Data": [
+      "bench/live.go",
+      "cmd/release-gate/client.go",
+      "internal/httpapi/registry_resilience_test.go",
+      "vendor.old-20261023/cmd/release-gate/client.go"
+    ],
+    "DaysSinceInstall": [
+      "internal/telemetry/anonymity.go",
+      "vendor.old-20261023/internal/telemetry/anonymity.go"
+    ],
+    "Diagnostics": [
+      "internal/telemetry/anonymity.go",
+      "vendor.old-20261023/internal/telemetry/anonymity.go"
+    ],
+    "EnvMarkers": [
+      "internal/telemetry/anonymity.go",
+      "vendor.old-20261023/internal/telemetry/anonymity.go"
+    ],
+    "EqS": [
+      "vendor/github.com/blevesearch/snowballstem/english/english_stemmer.go"
+    ],
+    "EqSB": [
+      "vendor/github.com/blevesearch/snowballstem/english/english_stemmer.go"
+    ],
+    "Error": [
+      "bench/live.go",
+      "cmd/release-gate/client.go",
+      "vendor.old-20261023/cmd/release-gate/client.go"
+    ],
+    "FAILED": [
+      "tests/coverage_gate.sh"
+    ],
+    "FIXTURE_FAIL_FILE": [
+      "internal/server/testdata/preflight_fixture_server.js",
+      "vendor.old-20261023/internal/server/testdata/preflight_fixture_server.js"
+    ],
+    "FIXTURE_INIT_DELAY_MS": [
+      "internal/server/testdata/preflight_fixture_server.js",
+      "vendor.old-20261023/internal/server/testdata/preflight_fixture_server.js"
+    ],
+    "FIXTURE_TOOLS_FILE": [
+      "internal/server/testdata/preflight_fixture_server.js",
+      "vendor.old-20261023/internal/server/testdata/preflight_fixture_server.js"
+    ],
+    "FindAmong": [
+      "vendor/github.com/blevesearch/snowballstem/english/english_stemmer.go"
+    ],
+    "FindAmongB": [
+      "vendor/github.com/blevesearch/snowballstem/english/english_stemmer.go"
+    ],
+    "GATEWAY_MCP_CONFIG": [
+      "mcp_config.json"
+    ],
+    "GH_HOSTS": [
+      "bin/github-mcp.sh"
+    ],
+    "GITHUB_ENV": [
+      "contrib/linux-repos/import-key.sh"
+    ],
+    "GITHUB_TOKEN": [
+      "internal/configimport/testdata/claude_desktop.json",
+      "internal/configimport/testdata/codex.toml",
+      "internal/configimport/testdata/cursor.json",
+      "internal/configimport/testdata/gemini.json",
+      "internal/registries/inputs_test.go",
+      "internal/server/add_from_registry_test.go",
+      "internal/server/mcp_add_from_registry_test.go",
+      "internal/server/registry_add_e2e_test.go",
+      "vendor.old-20261023/internal/configimport/testdata/claude_desktop.json",
+      "vendor.old-20261023/internal/configimport/testdata/codex.toml",
+      "vendor.old-20261023/internal/configimport/testdata/cursor.json",
+      "vendor.old-20261023/internal/configimport/testdata/gemini.json"
+    ],
+    "GNUPGHOME": [
+      "contrib/linux-repos/import-key.sh",
+      "contrib/linux-repos/publish.sh",
+      "contrib/linux-repos/rpm-publish.sh"
+    ],
+    "GOARCH": [
+      "vendor/golang.org/x/sys/plan9/mkall.sh",
+      "vendor/golang.org/x/sys/unix/mkall.sh",
+      "vendor/golang.org/x/sys/unix/mkerrors.sh"
+    ],
+    "GOOS": [
+      "vendor/golang.org/x/sys/plan9/mkall.sh",
+      "vendor/golang.org/x/sys/unix/mkall.sh",
+      "vendor/golang.org/x/sys/unix/mkerrors.sh"
+    ],
+    "GOPATH": [
+      "vendor/github.com/swaggo/swag/types.go",
+      "vendor/github.com/swaggo/swag/v2/types.go"
+    ],
+    "GO_BIN_DIR": [
+      "vendor.old-20261023/native/macos/MCPProxy/scripts/build-macos-tray.sh"
+    ],
+    "GPG_KEY_ID": [
+      "contrib/linux-repos/apt-publish.sh",
+      "contrib/linux-repos/check-key-expiry.sh",
+      "contrib/linux-repos/import-key.sh",
+      "contrib/linux-repos/rpm-publish.sh"
+    ],
+    "GetBaseURL": [
+      "internal/server/e2e_binary_test.go",
+      "internal/server/e2e_metrics_test.go"
+    ],
+    "GetConfig": [
+      "internal/server/e2e_test.go",
+      "internal/server/quarantine_config_apply_test.go",
+      "internal/server/toon_e2e_test.go"
+    ],
+    "GetConfigPath": [
+      "internal/server/e2e_metrics_test.go"
+    ],
+    "GetHTTPClient": [
+      "internal/server/e2e_binary_test.go"
+    ],
+    "GetPort": [
+      "internal/server/e2e_metrics_test.go"
+    ],
+    "GetResolver": [
+      "vendor/golang.org/x/tools/internal/imports/fix.go",
+      "vendor/golang.org/x/tools/internal/imports/source_env.go"
+    ],
+    "GetServers": [
+      "internal/server/quarantine_config_apply_test.go"
+    ],
+    "GocmdRunner": [
+      "vendor/golang.org/x/tools/internal/imports/mod.go"
+    ],
+    "HOME": [
+      "bin/github-mcp.sh",
+      "contrib/linux-repos/rpm-publish.sh"
+    ],
+    "HYPRLAND_INSTANCE_SIGNATURE": [
+      "mcp_config.json"
+    ],
+    "InGrouping": [
+      "vendor/github.com/blevesearch/snowballstem/english/english_stemmer.go"
+    ],
+    "InGroupingB": [
+      "vendor/github.com/blevesearch/snowballstem/english/english_stemmer.go"
+    ],
+    "InitializeMCPSession": [
+      "internal/testutil/binary.go",
+      "vendor.old-20261023/internal/testutil/binary.go"
+    ],
+    "Insert": [
+      "vendor/github.com/blevesearch/snowballstem/english/english_stemmer.go"
+    ],
+    "KITTY_MCP_SOCKET": [
+      "mcp_config.json"
+    ],
+    "Ket": [
+      "vendor/github.com/blevesearch/snowballstem/english/english_stemmer.go",
+      "vendor/github.com/blevesearch/snowballstem/env.go"
+    ],
+    "LLAMACPP_HOST": [
+      "mcp_config.json"
+    ],
+    "LLAMACPP_PORT": [
+      "mcp_config.json"
+    ],
+    "LastErrorCode": [
+      "internal/telemetry/anonymity.go",
+      "vendor.old-20261023/internal/telemetry/anonymity.go"
+    ],
+    "Limit": [
+      "vendor/github.com/blevesearch/snowballstem/english/english_stemmer.go",
+      "vendor/github.com/blevesearch/snowballstem/env.go"
+    ],
+    "LimitBackward": [
+      "vendor/github.com/blevesearch/snowballstem/english/english_stemmer.go",
+      "vendor/github.com/blevesearch/snowballstem/env.go"
+    ],
+    "Logf": [
+      "vendor/golang.org/x/tools/internal/imports/fix.go",
+      "vendor/golang.org/x/tools/internal/imports/mod.go"
+    ],
+    "MCP_BASE": [
+      "specs/060-settings-page/verification/instructions-prefill-persist.spec.ts"
+    ],
+    "MCP_BG_CLEANUP_INTERVAL": [
+      "mcp_config.json"
+    ],
+    "MCP_BG_JOB_RETENTION": [
+      "mcp_config.json"
+    ],
+    "MCP_BG_JOB_TIMEOUT": [
+      "mcp_config.json"
+    ],
+    "MCP_BG_MAX_JOBS": [
+      "mcp_config.json"
+    ],
+    "MCP_BG_MAX_OUTPUT_SIZE": [
+      "mcp_config.json"
+    ],
+    "MCP_KEY": [
+      "specs/060-settings-page/verification/instructions-prefill-persist.spec.ts"
+    ],
+    "MCP_REPLAY": [
+      "docker/scanners/ramparts/entrypoint.sh"
+    ],
+    "MIN_MACOS": [
+      "vendor.old-20261023/native/macos/MCPProxy/scripts/build-macos-tray.sh"
+    ],
+    "MODEL_PATH": [
+      "mcp_config.json"
+    ],
+    "Message": [
+      "cmd/release-gate/client.go",
+      "vendor.old-20261023/cmd/release-gate/client.go"
+    ],
+    "ModFlag": [
+      "vendor/golang.org/x/tools/internal/imports/mod.go"
+    ],
+    "NODE_ENV": [
+      "vendor/github.com/evanw/esbuild/pkg/api/api_impl.go"
+    ],
+    "NOTARY_PROFILE": [
+      "vendor.old-20261023/native/macos/MCPProxy/scripts/build-macos-tray.sh"
+    ],
+    "NextChar": [
+      "vendor/github.com/blevesearch/snowballstem/english/english_stemmer.go",
+      "vendor/github.com/blevesearch/snowballstem/env.go"
+    ],
+    "OUT": [
+      "specs/041-quarantine-invariants/verification/mcp-2101/banner.spec.ts",
+      "specs/055-frontend-major-upgrades/verification/after.spec.ts",
+      "specs/055-frontend-major-upgrades/verification/baseline.spec.ts"
+    ],
+    "OutGrouping": [
+      "vendor/github.com/blevesearch/snowballstem/english/english_stemmer.go"
+    ],
+    "OutGroupingB": [
+      "vendor/github.com/blevesearch/snowballstem/english/english_stemmer.go"
+    ],
+    "PACKAGES_GPG_PASSPHRASE": [
+      "contrib/linux-repos/apt-publish.sh",
+      "contrib/linux-repos/import-key.sh",
+      "contrib/linux-repos/rpm-publish.sh"
+    ],
+    "PACKAGES_GPG_PRIVATE_KEY": [
+      "contrib/linux-repos/import-key.sh",
+      "contrib/linux-repos/publish.sh"
+    ],
+    "PATH": [
+      "mcp_config.json"
+    ],
+    "PD_TOOLS_DIR": [
+      "mcp_config.json"
+    ],
+    "PROFILE": [
+      "tests/coverage_gate.sh"
+    ],
+    "PROMETHEUS_URL": [
+      "mcp_config.json"
+    ],
+    "PROTOC_GEN_GO_ARGS": [
+      "vendor/google.golang.org/protobuf/runtime/protoimpl/version.go"
+    ],
+    "PROTO_FILES": [
+      "vendor/google.golang.org/protobuf/runtime/protoimpl/version.go"
+    ],
+    "PW_CHROMIUM": [
+      "specs/060-settings-page/verification/playwright.config.ts"
+    ],
+    "Preflight": [
+      "internal/telemetry/anonymity.go",
+      "vendor.old-20261023/internal/telemetry/anonymity.go"
+    ],
+    "PrevChar": [
+      "vendor/github.com/blevesearch/snowballstem/english/english_stemmer.go",
+      "vendor/github.com/blevesearch/snowballstem/env.go"
+    ],
+    "PreviousShutdown": [
+      "internal/telemetry/anonymity.go",
+      "vendor.old-20261023/internal/telemetry/anonymity.go"
+    ],
+    "REPORT_DIR": [
+      "docker/scanners/ramparts/entrypoint.sh"
+    ],
+    "REPO_ROOT": [
+      "vendor.old-20261023/native/macos/MCPProxy/scripts/build-macos-tray.sh"
+    ],
+    "RETAIN_N": [
+      "contrib/linux-repos/apt-publish.sh",
+      "contrib/linux-repos/rpm-publish.sh"
+    ],
+    "RPM_BUCKET": [
+      "contrib/linux-repos/rpm-publish.sh"
+    ],
+    "RSYNC_FLAGS": [
+      "mcp_config.json"
+    ],
+    "RSYNC_HOST": [
+      "mcp_config.json"
+    ],
+    "RSYNC_LOCAL_ROOT": [
+      "mcp_config.json"
+    ],
+    "RSYNC_REMOTE_ROOT": [
+      "mcp_config.json"
+    ],
+    "RSYNC_SSH_OPTS": [
+      "mcp_config.json"
+    ],
+    "ReplaceS": [
+      "vendor/github.com/blevesearch/snowballstem/env.go"
+    ],
+    "SCOUT_API_KEY": [
+      "mcp_config.json"
+    ],
+    "SCOUT_BASE_URL": [
+      "mcp_config.json"
+    ],
+    "SCOUT_MODEL": [
+      "mcp_config.json"
+    ],
+    "SERVER": [
+      "frontend/tests/unit/scan-report-force-approve-count.spec.ts",
+      "frontend/tests/unit/scan-report-location-link.spec.ts",
+      "frontend/tests/unit/scan-report-threat-groups.spec.ts",
+      "frontend/tests/unit/server-detail-flagged-tools.spec.ts",
+      "frontend/tests/unit/server-detail-incarnation-binding.spec.ts",
+      "frontend/tests/unit/server-detail-sticky-tool-count-stall.spec.ts",
+      "frontend/tests/unit/server-detail-tools-refresh.spec.ts",
+      "specs/041-quarantine-invariants/verification/mcp-2101/banner.spec.ts"
+    ],
+    "SHOT": [
+      "specs/050-global-tools-page/verification/tools.spec.ts",
+      "specs/060-settings-page/verification/settings.spec.ts",
+      "specs/mcp-2199-block-button/verification/block-button.spec.ts",
+      "specs/mcp-2740-scan-ui-stuck/verification/scan-stuck.spec.ts"
+    ],
+    "SHOTS": [
+      "specs/075-macos-tcc-connect/verification/connect-tristate.spec.ts",
+      "specs/oauth-signin-cta/verification/playwright-signin.spec.ts"
+    ],
+    "SHOT_DIR": [
+      "specs/055-frontend-major-upgrades/verification/qa/01-navigation.spec.ts",
+      "specs/055-frontend-major-upgrades/verification/qa/02-theme.spec.ts",
+      "specs/055-frontend-major-upgrades/verification/qa/03-add-server-modal.spec.ts",
+      "specs/055-frontend-major-upgrades/verification/qa/04-activity.spec.ts",
+      "specs/055-frontend-major-upgrades/verification/qa/05-settings-toggle.spec.ts",
+      "specs/055-frontend-major-upgrades/verification/qa/06-server-detail.spec.ts",
+      "specs/060-settings-page/verification/settings.spec.ts"
+    ],
+    "SHUFFLEDNS_BIN": [
+      "mcp_config.json"
+    ],
+    "SNYK_TOKEN": [
+      "docker/scanners/snyk/entrypoint.sh"
+    ],
+    "STATE": [
+      "specs/041-quarantine-invariants/verification/mcp-2101/banner.spec.ts"
+    ],
+    "STUB_RC": [
+      "docker/scanners/ramparts/entrypoint_test.sh"
+    ],
+    "SUSPENDED": [
+      "frontend/src/utils/signatureBundle.ts"
+    ],
+    "SWIFT_PROJECT_DIR": [
+      "vendor.old-20261023/native/macos/MCPProxy/scripts/build-macos-tray.sh"
+    ],
+    "SearchTools": [
+      "internal/server/quarantine_config_apply_test.go"
+    ],
+    "SkipPathInScan": [
+      "vendor/golang.org/x/tools/internal/imports/mod.go"
+    ],
+    "SliceDel": [
+      "vendor/github.com/blevesearch/snowballstem/english/english_stemmer.go"
+    ],
+    "SliceFrom": [
+      "vendor/github.com/blevesearch/snowballstem/english/english_stemmer.go",
+      "vendor/github.com/blevesearch/snowballstem/env.go"
+    ],
+    "SpanAttributeCount": [
+      "vendor/go.opentelemetry.io/otel/sdk/trace/span_limits.go"
+    ],
+    "SpanAttributeValueLength": [
+      "vendor/go.opentelemetry.io/otel/sdk/trace/span_limits.go"
+    ],
+    "SpanEventAttributeCount": [
+      "vendor/go.opentelemetry.io/otel/sdk/trace/span_limits.go"
+    ],
+    "SpanEventCount": [
+      "vendor/go.opentelemetry.io/otel/sdk/trace/span_limits.go"
+    ],
+    "SpanLinkAttributeCount": [
+      "vendor/go.opentelemetry.io/otel/sdk/trace/span_limits.go"
+    ],
+    "SpanLinkCount": [
+      "vendor/go.opentelemetry.io/otel/sdk/trace/span_limits.go"
+    ],
+    "Start": [
+      "internal/server/e2e_binary_test.go",
+      "internal/server/e2e_mcp_test.go",
+      "internal/server/e2e_metrics_test.go"
+    ],
+    "Success": [
+      "bench/live.go",
+      "cmd/release-gate/client.go",
+      "internal/httpapi/registry_resilience_test.go",
+      "vendor.old-20261023/cmd/release-gate/client.go"
+    ],
+    "TARGET": [
+      "vendor/go.opentelemetry.io/otel/verify_released_changelog.sh"
+    ],
+    "TEST_VAR": [
+      "internal/security/paths_test.go"
+    ],
+    "THRESHER_DIR": [
+      "tests/coverage_gate.sh"
+    ],
+    "THRESHOLD": [
+      "tests/coverage_gate.sh"
+    ],
+    "TMPDIR": [
+      "vendor.old-20261023/native/macos/MCPProxy/scripts/build-macos-tray.sh"
+    ],
+    "TOKEN": [
+      "frontend/tests/unit/use-secret-fields.spec.ts"
+    ],
+    "TOTAL_PCT": [
+      "tests/coverage_gate.sh"
+    ],
+    "TOTAL_STMT": [
+      "tests/coverage_gate.sh"
+    ],
+    "TPAScanner": [
+      "internal/telemetry/anonymity.go",
+      "vendor.old-20261023/internal/telemetry/anonymity.go"
+    ],
+    "TrustModeDistribution": [
+      "vendor.old-20261023/internal/telemetry/anonymity.go"
+    ],
+    "VAR": [
+      "frontend/src/types/api.ts",
+      "internal/registries/inputs.go",
+      "internal/registries/types.go",
+      "internal/secureenv/manager_windows.go",
+      "internal/security/paths_test.go",
+      "vendor.old-20261023/internal/registries/inputs.go",
+      "vendor.old-20261023/internal/registries/types.go",
+      "vendor.old-20261023/internal/secureenv/manager_windows.go"
+    ],
+    "VERSION": [
+      "contrib/linux-repos/smoke-test-debian.sh",
+      "contrib/linux-repos/smoke-test-fedora.sh",
+      "vendor.old-20261023/native/macos/MCPProxy/scripts/build-macos-tray.sh"
+    ],
+    "VERSION_NUM": [
+      "vendor.old-20261023/native/macos/MCPProxy/scripts/build-macos-tray.sh"
+    ],
+    "WEZTERM_UNIX_SOCKET": [
+      "mcp_config.json"
+    ],
+    "WORK_DIR": [
+      "vendor.old-20261023/native/macos/MCPProxy/scripts/build-macos-tray.sh"
+    ],
+    "WaitForEverythingServer": [
+      "internal/server/e2e_binary_test.go",
+      "internal/server/e2e_mcp_test.go"
+    ],
+    "WaitForReady": [
+      "internal/testutil/binary.go",
+      "vendor.old-20261023/internal/testutil/binary.go"
+    ],
+    "WebUIOpened": [
+      "internal/telemetry/anonymity.go",
+      "vendor.old-20261023/internal/telemetry/anonymity.go"
+    ],
+    "WizardConnectStep": [
+      "internal/telemetry/anonymity.go",
+      "vendor.old-20261023/internal/telemetry/anonymity.go"
+    ],
+    "WizardShown": [
+      "internal/telemetry/anonymity.go",
+      "vendor.old-20261023/internal/telemetry/anonymity.go"
+    ],
+    "WorkingDir": [
+      "vendor/golang.org/x/tools/internal/imports/mod.go"
+    ],
+    "XDG_RUNTIME_DIR": [
+      ".project_map.json",
+      "mcp_config.json"
+    ],
+    "ZSH_VERSION": [
+      "vendor/github.com/spf13/cobra/bash_completions.go"
+    ],
+    "action": [
+      "frontend/src/services/api.ts",
+      "frontend/tests/unit/access-explainer.spec.ts"
+    ],
+    "activityForRequest": [
+      "internal/server/preflight_e2e_test.go"
+    ],
+    "actor": [
+      "frontend/src/utils/activity.ts"
+    ],
+    "actual": [
+      "contrib/linux-repos/smoke-test-debian.sh",
+      "contrib/linux-repos/smoke-test-fedora.sh"
+    ],
+    "actual_fpr": [
+      "contrib/linux-repos/import-key.sh"
+    ],
+    "age": [
+      "frontend/src/utils/signatureBundle.ts"
+    ],
+    "apiURL": [
+      "internal/testutil/binary.go",
+      "vendor.old-20261023/internal/testutil/binary.go"
+    ],
+    "approvedUnblocked": [
+      "frontend/src/utils/reviewPresentation.ts"
+    ],
+    "arch": [
+      "contrib/linux-repos/apt-publish.sh",
+      "contrib/linux-repos/rpm-publish.sh"
+    ],
+    "assertCell": [
+      "internal/server/preflight_e2e_test.go"
+    ],
+    "awaitCell": [
+      "internal/server/preflight_e2e_test.go"
+    ],
+    "awaiting": [
+      "frontend/src/utils/onboardingServersStep.ts"
+    ],
+    "base": [
+      "frontend/src/utils/serverRoute.ts",
+      "frontend/src/utils/sessionLabel.ts"
+    ],
+    "baseURL": [
+      "internal/server/preflight_e2e_test.go",
+      "internal/server/profile_integration_test.go",
+      "internal/testutil/binary.go",
+      "vendor.old-20261023/internal/testutil/binary.go"
+    ],
+    "baseUrl": [
+      "frontend/tests/unit/activity.spec.ts"
+    ],
+    "binaryPath": [
+      "internal/testutil/binary.go",
+      "vendor.old-20261023/internal/testutil/binary.go"
+    ],
+    "blocked": [
+      "frontend/src/utils/reviewPresentation.ts"
+    ],
+    "blockers": [
+      "frontend/src/utils/reviewQueue.ts"
+    ],
+    "branch": [
+      "vendor/github.com/pelletier/go-toml/v2/ci.sh"
+    ],
+    "bsstats": [
+      "vendor/github.com/pelletier/go-toml/v2/ci.sh"
+    ],
+    "buildContext": [
+      "vendor/golang.org/x/tools/internal/imports/fix.go"
+    ],
+    "callSetProfile": [
+      "internal/server/profile_integration_test.go"
+    ],
+    "change": [
+      "frontend/src/utils/serverRoute.ts"
+    ],
+    "char": [
+      "vendor/github.com/spf13/cobra/bash_completionsV2.go"
+    ],
+    "checkOne": [
+      "internal/server/preflight_e2e_test.go"
+    ],
+    "cleanup": [
+      "internal/server/e2e_test.go",
+      "internal/testutil/binary.go",
+      "vendor.old-20261023/internal/testutil/binary.go"
+    ],
+    "clientAt": [
+      "internal/server/profile_integration_test.go"
+    ],
+    "clientId": [
+      "frontend/tests/unit/connect-modal-undo.spec.ts",
+      "frontend/tests/unit/onboarding-wizard-backup-path.spec.ts",
+      "frontend/tests/unit/onboarding-wizard-undo.spec.ts"
+    ],
+    "cmd": [
+      "internal/testutil/binary.go",
+      "vendor.old-20261023/internal/testutil/binary.go"
+    ],
+    "comp": [
+      "vendor/github.com/spf13/cobra/bash_completionsV2.go",
+      "vendor/github.com/spf13/cobra/zsh_completions.go"
+    ],
+    "configDir": [
+      "vendor/github.com/evanw/esbuild/internal/resolver/tsconfig_json.go"
+    ],
+    "configPath": [
+      "internal/testutil/binary.go",
+      "vendor.old-20261023/internal/testutil/binary.go"
+    ],
+    "content": [
+      "frontend/tests/unit/auth-provider-probe.spec.ts"
+    ],
+    "count": [
+      "frontend/src/utils/activity.ts",
+      "frontend/src/utils/onboardingServersStep.ts",
+      "frontend/src/utils/reviewPresentation.ts"
+    ],
+    "cov": [
+      "tests/coverage_gate.sh"
+    ],
+    "createAgentToken": [
+      "internal/server/preflight_e2e_test.go"
+    ],
+    "createPrivateFieldId": [
+      "vendor/github.com/dop251/goja/compiler.go"
+    ],
+    "createPrivateMethodId": [
+      "vendor/github.com/dop251/goja/compiler.go"
+    ],
+    "cur": [
+      "vendor/github.com/spf13/cobra/bash_completions.go",
+      "vendor/github.com/spf13/cobra/bash_completionsV2.go"
+    ],
+    "current": [
+      "vendor/github.com/blevesearch/snowballstem/env.go"
+    ],
+    "data_dir": [
+      "internal/config/config.go",
+      "vendor.old-20261023/internal/config/config.go"
+    ],
+    "datasource": [
+      "contrib/grafana/mcpproxy-dashboard.json"
+    ],
+    "days": [
+      "frontend/src/utils/credentials.ts",
+      "frontend/src/utils/datetime.ts"
+    ],
+    "days_left": [
+      "contrib/linux-repos/check-key-expiry.sh"
+    ],
+    "deb": [
+      "contrib/linux-repos/apt-publish.sh"
+    ],
+    "delta_pct": [
+      "vendor/github.com/pelletier/go-toml/v2/ci.sh"
+    ],
+    "desc": [
+      "vendor/github.com/spf13/cobra/bash_completionsV2.go"
+    ],
+    "dest": [
+      "scripts/stage_run.js"
+    ],
+    "destructives": [
+      "frontend/src/utils/profiles.ts"
+    ],
+    "detail": [
+      "frontend/src/utils/signatureBundle.ts"
+    ],
+    "development": [
+      "internal/security/paths.go",
+      "internal/security/patterns/files_test.go",
+      "vendor.old-20261023/internal/security/paths.go"
+    ],
+    "dir": [
+      "vendor/github.com/pelletier/go-toml/v2/ci.sh",
+      "vendor/github.com/spf13/cobra/bash_completions.go"
+    ],
+    "directive": [
+      "vendor/github.com/spf13/cobra/bash_completions.go",
+      "vendor/github.com/spf13/cobra/bash_completionsV2.go",
+      "vendor/github.com/spf13/cobra/zsh_completions.go"
+    ],
+    "emoji": [
+      "frontend/tests/unit/highlight-spans.spec.ts"
+    ],
+    "encoded": [
+      "frontend/src/services/api.ts"
+    ],
+    "ended": [
+      "frontend/tests/unit/credentials-review-r2.spec.ts",
+      "frontend/tests/unit/credentials-review-r3.spec.ts"
+    ],
+    "endpoint": [
+      "frontend/src/services/api.ts"
+    ],
+    "err": [
+      "internal/server/testdata/preflight_fixture_server.js",
+      "vendor.old-20261023/internal/server/testdata/preflight_fixture_server.js"
+    ],
+    "errorMsg": [
+      "frontend/src/services/api.ts"
+    ],
+    "example": [
+      "cmd/mcpproxy/credential_cmd_test.go"
+    ],
+    "expected": [
+      "frontend/tests/unit/server-card-quarantine-scan-headline.spec.ts"
+    ],
+    "expiry": [
+      "contrib/linux-repos/check-key-expiry.sh"
+    ],
+    "ext": [
+      "vendor/github.com/spf13/cobra/bash_completions.go"
+    ],
+    "extraQuery": [
+      "frontend/tests/unit/add-server-tab-url.spec.ts"
+    ],
+    "family": [
+      "frontend/tests/unit/profiles-enums-labels.spec.ts"
+    ],
+    "fields": [
+      "vendor/github.com/dop251/goja/compiler_expr.go"
+    ],
+    "file": [
+      "vendor/github.com/spf13/cobra/zsh_completions.go",
+      "vendor/go.uber.org/zap/checklicense.sh"
+    ],
+    "fileName": [
+      "scripts/stage_run.js"
+    ],
+    "filler": [
+      "frontend/tests/unit/highlight-spans.spec.ts",
+      "frontend/tests/unit/tool-description-highlight.spec.ts"
+    ],
+    "flag": [
+      "vendor/github.com/spf13/cobra/bash_completions.go"
+    ],
+    "flagPrefix": [
+      "vendor/github.com/spf13/cobra/zsh_completions.go"
+    ],
+    "flag_parsing_disabled": [
+      "vendor/github.com/spf13/cobra/bash_completions.go"
+    ],
+    "flagname": [
+      "vendor/github.com/spf13/cobra/bash_completions.go"
+    ],
+    "flagvalue": [
+      "vendor/github.com/spf13/cobra/bash_completions.go"
+    ],
+    "get": [
+      "vendor/github.com/charmbracelet/colorprofile/env.go"
+    ],
+    "getAPIBaseURL": [
+      "internal/server/e2e_sensitive_data_test.go"
+    ],
+    "globalMode": [
+      "frontend/src/utils/isolationState.ts"
+    ],
+    "goEnv": [
+      "vendor/golang.org/x/tools/internal/imports/fix.go",
+      "vendor/golang.org/x/tools/internal/imports/mod.go"
+    ],
+    "goarch": [
+      "vendor.old-20261023/native/macos/MCPProxy/scripts/build-macos-tray.sh"
+    ],
+    "gone": [
+      "frontend/tests/unit/header-layout.spec.ts"
+    ],
+    "has_completion_function": [
+      "vendor/github.com/spf13/cobra/bash_completions.go"
+    ],
+    "head": [
+      "frontend/src/utils/onboardingServersStep.ts"
+    ],
+    "head_diff": [
+      "vendor/github.com/pelletier/go-toml/v2/ci.sh"
+    ],
+    "head_out": [
+      "vendor/github.com/pelletier/go-toml/v2/ci.sh"
+    ],
+    "head_pct": [
+      "vendor/github.com/pelletier/go-toml/v2/ci.sh"
+    ],
+    "here": [
+      "contrib/linux-repos/apt-publish.sh",
+      "contrib/linux-repos/publish.sh",
+      "contrib/linux-repos/rpm-publish.sh"
+    ],
+    "hint": [
+      "frontend/src/utils/reviewPresentation.ts"
+    ],
+    "hours": [
+      "frontend/src/utils/credentials.ts",
+      "frontend/src/utils/datetime.ts"
+    ],
+    "index": [
+      "vendor/github.com/spf13/cobra/bash_completions.go"
+    ],
+    "init": [
+      "vendor/github.com/blevesearch/geo/geojson/geojson_shapes_impl.go"
+    ],
+    "initClient": [
+      "internal/server/profile_integration_test.go"
+    ],
+    "input": [
+      "frontend/src/utils/contrast.ts"
+    ],
+    "invites": [
+      "vendor/golang.org/x/text/internal/catmsg/catmsg.go",
+      "vendor/golang.org/x/text/message/catalog/catalog.go"
+    ],
+    "invokeGo": [
+      "vendor/golang.org/x/tools/internal/imports/mod.go"
+    ],
+    "isEverythingServerReady": [
+      "internal/testutil/binary.go",
+      "vendor.old-20261023/internal/testutil/binary.go"
+    ],
+    "isServerReady": [
+      "internal/testutil/binary.go",
+      "vendor.old-20261023/internal/testutil/binary.go"
+    ],
+    "justImported": [
+      "frontend/src/utils/onboardingServersStep.ts"
+    ],
+    "keyring": [
+      ".project_map.json",
+      "frontend/src/composables/useSecretFields.ts",
+      "frontend/src/services/api.ts",
+      "frontend/tests/unit/add-server-paste.spec.ts",
+      "frontend/tests/unit/modal-a11y.spec.ts",
+      "frontend/tests/unit/secret-toggle.spec.ts",
+      "frontend/tests/unit/secrets-add-cta.spec.ts",
+      "frontend/tests/unit/settings-scanners.spec.ts",
+      "frontend/tests/unit/use-secret-fields.spec.ts",
+      "internal/config/config.go",
+      "internal/httpapi/patch_server_test.go",
+      "internal/httpapi/redact_secrets_test.go",
+      "internal/httpapi/server.go",
+      "internal/oauth/logging.go",
+      "internal/oauth/logging_test.go",
+      "internal/oauth/redact_hardening_test.go",
+      "internal/runtime/event_bus_secrets_test.go",
+      "internal/runtime/runtime.go",
+      "internal/secret/keyring_provider.go",
+      "internal/secret/parser_test.go",
+      "internal/secret/resolver.go",
+      "internal/security/scanner/engine.go",
+      "internal/security/scanner/service.go",
+      "internal/upstream/core/client.go",
+      "oas/docs.go",
+      "vendor.old-20261023/internal/config/config.go",
+      "vendor.old-20261023/internal/config/server_edition_config.go",
+      "vendor.old-20261023/internal/httpapi/server.go",
+      "vendor.old-20261023/internal/oauth/logging.go",
+      "vendor.old-20261023/internal/oauth/redactview.go",
+      "vendor.old-20261023/internal/runtime/runtime.go",
+      "vendor.old-20261023/internal/secret/keyring_provider.go",
+      "vendor.old-20261023/internal/secret/resolver.go",
+      "vendor.old-20261023/internal/security/scanner/engine.go",
+      "vendor.old-20261023/internal/security/scanner/service.go",
+      "vendor.old-20261023/internal/security/scanner/types.go",
+      "vendor.old-20261023/internal/server/mcp_activity_args.go",
+      "vendor.old-20261023/internal/serveredition/auth/oauth_handler.go",
+      "vendor.old-20261023/internal/upstream/core/client.go",
+      "vendor.old-20261023/oas/docs.go"
+    ],
+    "killFailFile": [
+      "internal/server/preflight_e2e_test.go"
+    ],
+    "killFixtureProcess": [
+      "internal/server/preflight_e2e_test.go"
+    ],
+    "kind": [
+      "frontend/src/utils/secretRef.ts",
+      "frontend/tests/unit/activity-attribution.spec.ts",
+      "frontend/tests/unit/server-detail-incarnation-binding.spec.ts"
+    ],
+    "label": [
+      "frontend/src/utils/reviewPresentation.ts",
+      "frontend/tests/unit/profiles-unhide.spec.ts",
+      "specs/055-frontend-major-upgrades/verification/qa/_helpers.ts"
+    ],
+    "lastChar": [
+      "vendor/github.com/spf13/cobra/bash_completions.go",
+      "vendor/github.com/spf13/cobra/bash_completionsV2.go",
+      "vendor/github.com/spf13/cobra/zsh_completions.go"
+    ],
+    "lastLine": [
+      "vendor/github.com/spf13/cobra/zsh_completions.go"
+    ],
+    "lastParam": [
+      "vendor/github.com/spf13/cobra/bash_completions.go",
+      "vendor/github.com/spf13/cobra/bash_completionsV2.go",
+      "vendor/github.com/spf13/cobra/zsh_completions.go"
+    ],
+    "last_command": [
+      "vendor/github.com/spf13/cobra/bash_completions.go"
+    ],
+    "limit": [
+      "frontend/src/services/api.ts",
+      "scripts/list_runs.js"
+    ],
+    "line": [
+      "tests/coverage_gate.sh",
+      "vendor/github.com/spf13/cobra/zsh_completions.go"
+    ],
+    "list": [
+      "frontend/src/utils/reviewPresentation.ts"
+    ],
+    "loadedValue": [
+      "vendor.old-20261023/internal/config/process_overrides.go"
+    ],
+    "local": [
+      "internal/security/paths.go",
+      "internal/security/patterns/files_test.go",
+      "vendor.old-20261023/internal/security/paths.go"
+    ],
+    "logf": [
+      "vendor/golang.org/x/tools/internal/imports/fix.go",
+      "vendor/golang.org/x/tools/internal/imports/mod.go",
+      "vendor/golang.org/x/tools/internal/imports/source_env.go"
+    ],
+    "logger": [
+      "internal/server/e2e_content_forward_test.go",
+      "internal/server/e2e_iserror_activity_test.go",
+      "internal/server/e2e_test.go",
+      "internal/server/toon_e2e_test.go"
+    ],
+    "lookup": [
+      "vendor/github.com/charmbracelet/colorprofile/env.go"
+    ],
+    "matchFile": [
+      "vendor/golang.org/x/tools/internal/imports/fix.go",
+      "vendor/golang.org/x/tools/internal/imports/mod.go"
+    ],
+    "mcpClient": [
+      "internal/testutil/binary.go",
+      "vendor.old-20261023/internal/testutil/binary.go"
+    ],
+    "methods": [
+      "vendor/github.com/dop251/goja/compiler_expr.go"
+    ],
+    "mine": [
+      "frontend/src/utils/onboardingServersStep.ts"
+    ],
+    "mintPinnedToken": [
+      "internal/server/profile_integration_test.go"
+    ],
+    "minutes": [
+      "frontend/src/utils/credentials.ts",
+      "frontend/src/utils/datetime.ts",
+      "vendor/golang.org/x/text/internal/catmsg/catmsg.go",
+      "vendor/golang.org/x/text/message/catalog/catalog.go"
+    ],
+    "mock": [
+      "internal/secret/resolver_test.go",
+      "internal/upstream/core/client_secret_test.go"
+    ],
+    "mockServers": [
+      "internal/server/e2e_content_forward_test.go",
+      "internal/server/e2e_iserror_activity_test.go",
+      "internal/server/e2e_test.go",
+      "internal/server/toon_e2e_test.go"
+    ],
+    "mode": [
+      "frontend/tests/unit/mode-switcher.spec.ts",
+      "frontend/tests/unit/onboarding-wizard-verify-states.spec.ts",
+      "frontend/tests/unit/server-detail-auto-approve.spec.ts",
+      "frontend/tests/unit/trust-mode-selector.spec.ts"
+    ],
+    "name": [
+      "contrib/linux-repos/apt-publish.sh",
+      "contrib/linux-repos/rpm-publish.sh",
+      "frontend/src/stores/system.ts",
+      "frontend/src/utils/profiles.ts",
+      "frontend/src/utils/reviewPresentation.ts",
+      "frontend/tests/unit/auth-guard-hard-reload.spec.ts",
+      "frontend/tests/unit/clients-page.spec.ts",
+      "frontend/tests/unit/contrast.spec.ts",
+      "frontend/tests/unit/expected-incarnation-r2.spec.ts",
+      "frontend/tests/unit/home-attention.spec.ts",
+      "frontend/tests/unit/profiles-parity-matrix.spec.ts",
+      "frontend/tests/unit/review-route-keeps-selection.spec.ts",
+      "frontend/tests/unit/review-screen-default-selection.spec.ts",
+      "frontend/tests/unit/review-screen-stale-load.spec.ts",
+      "frontend/tests/unit/server-detail-route-change.spec.ts",
+      "frontend/tests/unit/spec109-parity-matrix.spec.ts",
+      "frontend/tests/unit/spec109-terminology.spec.ts",
+      "frontend/tests/unit/tool-description-no-v-html.spec.ts",
+      "frontend/tests/unit/tools-row-review-link.spec.ts",
+      "frontend/tests/unit/tools-view-hold-evidence.spec.ts",
+      "frontend/tests/unit/viewing-filter.spec.ts",
+      "frontend/tests/unit/z-index-scale.spec.ts",
+      "internal/jsruntime/modern_js_test.go",
+      "scripts/hello.js",
+      "specs/055-frontend-major-upgrades/verification/after.spec.ts",
+      "specs/055-frontend-major-upgrades/verification/baseline.spec.ts",
+      "specs/060-settings-page/verification/settings.spec.ts",
+      "vendor/golang.org/x/text/internal/catmsg/catmsg.go",
+      "vendor/golang.org/x/text/message/catalog/catalog.go"
+    ],
+    "new": [
+      "vendor/github.com/pelletier/go-toml/v2/ci.sh"
+    ],
+    "next_command": [
+      "vendor/github.com/spf13/cobra/bash_completions.go"
+    ],
+    "noun": [
+      "frontend/src/utils/reviewQueue.ts"
+    ],
+    "old": [
+      "vendor/github.com/pelletier/go-toml/v2/ci.sh"
+    ],
+    "operationType": [
+      "frontend/src/utils/activity.ts"
+    ],
+    "origin": [
+      "frontend/tests/unit/mcp-endpoint.spec.ts"
+    ],
+    "out": [
+      "vendor/github.com/pelletier/go-toml/v2/ci.sh",
+      "vendor/github.com/spf13/cobra/bash_completions.go",
+      "vendor/github.com/spf13/cobra/bash_completionsV2.go",
+      "vendor/github.com/spf13/cobra/zsh_completions.go"
+    ],
+    "output_dir": [
+      "vendor/github.com/pelletier/go-toml/v2/ci.sh"
+    ],
+    "page": [
+      "frontend/tests/unit/profiles-page.spec.ts",
+      "frontend/tests/unit/scope-query-108e-availability.spec.ts",
+      "frontend/tests/unit/scope-query.spec.ts"
+    ],
+    "params": [
+      "frontend/src/services/api.ts"
+    ],
+    "patchServerEnv": [
+      "internal/server/preflight_e2e_test.go"
+    ],
+    "path": [
+      "frontend/tests/unit/auth-guard-hard-reload.spec.ts",
+      "frontend/tests/unit/auth-provider-probe.spec.ts",
+      "frontend/tests/unit/sidebar-structure.spec.ts",
+      "specs/041-quarantine-invariants/verification/mcp-2101/banner.spec.ts",
+      "specs/055-frontend-major-upgrades/verification/after.spec.ts",
+      "specs/055-frontend-major-upgrades/verification/baseline.spec.ts"
+    ],
+    "pct": [
+      "tests/coverage_gate.sh"
+    ],
+    "pending": [
+      "frontend/src/utils/reviewPresentation.ts"
+    ],
+    "pkg": [
+      "tests/coverage_gate.sh"
+    ],
+    "port": [
+      "internal/server/preflight_e2e_test.go",
+      "internal/testutil/binary.go",
+      "vendor.old-20261023/internal/testutil/binary.go"
+    ],
+    "post": [
+      "internal/server/preflight_e2e_test.go"
+    ],
+    "prefix": [
+      "frontend/tests/unit/sidebar-structure.spec.ts",
+      "frontend/tests/unit/spec109-terminology.spec.ts"
+    ],
+    "preflightCall": [
+      "internal/server/preflight_e2e_test.go"
+    ],
+    "pretty": [
+      "frontend/src/utils/sessionLabel.ts"
+    ],
+    "prev": [
+      "vendor/github.com/spf13/cobra/bash_completions.go"
+    ],
+    "production": [
+      "internal/security/paths.go",
+      "internal/security/patterns/files_test.go",
+      "vendor.old-20261023/internal/security/paths.go"
+    ],
+    "profile": [
+      "frontend/src/utils/credentials.ts"
+    ],
+    "proxyAddr": [
+      "internal/server/e2e_test.go",
+      "internal/server/profile_integration_test.go"
+    ],
+    "proxyServer": [
+      "internal/server/e2e_content_forward_test.go",
+      "internal/server/e2e_iserror_activity_test.go",
+      "internal/server/e2e_sensitive_data_test.go",
+      "internal/server/e2e_test.go",
+      "internal/server/profile_integration_test.go",
+      "internal/server/quarantine_config_apply_test.go",
+      "internal/server/toon_e2e_test.go"
+    ],
+    "query": [
+      "frontend/src/services/api.ts",
+      "frontend/tests/unit/client-binding-controls.spec.ts",
+      "frontend/tests/unit/profile-policy-editor.spec.ts",
+      "frontend/tests/unit/server-detail-flagged-tools.spec.ts"
+    ],
+    "readiness": [
+      "frontend/src/utils/reviewPresentation.ts"
+    ],
+    "reason": [
+      "frontend/src/utils/activity.ts",
+      "frontend/src/utils/signatureBundle.ts",
+      "frontend/tests/unit/access-reason-label.spec.ts",
+      "frontend/tests/unit/tools-view-as.spec.ts"
+    ],
+    "reasons": [
+      "frontend/src/utils/activity.ts"
+    ],
+    "ref": [
+      "frontend/src/composables/useSecretFields.ts"
+    ],
+    "remaining": [
+      "frontend/src/utils/activity.ts"
+    ],
+    "remote": [
+      "contrib/linux-repos/rpm-publish.sh"
+    ],
+    "replace": [
+      "vendor/github.com/pelletier/go-toml/v2/ci.sh"
+    ],
+    "requestComp": [
+      "vendor/github.com/spf13/cobra/bash_completions.go",
+      "vendor/github.com/spf13/cobra/bash_completionsV2.go",
+      "vendor/github.com/spf13/cobra/zsh_completions.go"
+    ],
+    "rest": [
+      "frontend/src/utils/credentials.ts"
+    ],
+    "restartServer": [
+      "internal/server/preflight_e2e_test.go"
+    ],
+    "retrieveTools": [
+      "internal/server/profile_integration_test.go"
+    ],
+    "rewriteToolsFile": [
+      "internal/server/preflight_e2e_test.go"
+    ],
+    "route": [
+      "specs/055-frontend-major-upgrades/verification/qa/_helpers.ts"
+    ],
+    "row": [
+      "frontend/tests/unit/profiles-parity-matrix.spec.ts",
+      "frontend/tests/unit/spec109-parity-matrix.spec.ts"
+    ],
+    "rpm": [
+      "contrib/linux-repos/rpm-publish.sh"
+    ],
+    "runDir": [
+      "scripts/view_run.js"
+    ],
+    "runId": [
+      "scripts/stage_run.js",
+      "scripts/view_run.js"
+    ],
+    "sel": [
+      "frontend/tests/unit/profile-tool-table-availability.spec.ts"
+    ],
+    "selected": [
+      "frontend/src/utils/reviewPresentation.ts"
+    ],
+    "selector": [
+      "frontend/tests/unit/contrast.spec.ts"
+    ],
+    "sep": [
+      "specs/055-frontend-major-upgrades/verification/after.spec.ts",
+      "specs/055-frontend-major-upgrades/verification/baseline.spec.ts"
+    ],
+    "server": [
+      "frontend/src/utils/activity.ts",
+      "frontend/src/utils/profiles.ts",
+      "frontend/src/utils/secretRef.ts",
+      "frontend/src/utils/usageFormat.ts"
+    ],
+    "sha": [
+      "vendor/github.com/dop251/goja/.tc39_test262_checkout.sh"
+    ],
+    "source": [
+      "frontend/src/utils/signatureBundle.ts",
+      "frontend/tests/unit/add-server-catalog.spec.ts"
+    ],
+    "src": [
+      "scripts/stage_run.js"
+    ],
+    "start": [
+      "internal/server/preflight_e2e_test.go"
+    ],
+    "status": [
+      "frontend/tests/unit/activity-table-scanning.spec.ts",
+      "frontend/tests/unit/sc003-forbidden-renderings.spec.ts"
+    ],
+    "stmts": [
+      "tests/coverage_gate.sh"
+    ],
+    "subdir": [
+      "vendor/github.com/spf13/cobra/zsh_completions.go"
+    ],
+    "summary": [
+      "frontend/src/utils/activity.ts"
+    ],
+    "surface": [
+      "frontend/src/utils/activity.ts",
+      "frontend/tests/unit/contrast.spec.ts"
+    ],
+    "tab": [
+      "frontend/tests/unit/add-server-a11y.spec.ts",
+      "frontend/tests/unit/add-server-tab-url.spec.ts",
+      "frontend/tests/unit/security-tab-ungate.spec.ts",
+      "frontend/tests/unit/server-detail-auto-approve.spec.ts",
+      "frontend/tests/unit/server-detail-route-change.spec.ts"
+    ],
+    "tail": [
+      "frontend/src/services/api.ts",
+      "frontend/src/utils/onboardingServersStep.ts"
+    ],
+    "target": [
+      "frontend/src/composables/useScopeQuery.ts",
+      "vendor/github.com/pelletier/go-toml/v2/ci.sh"
+    ],
+    "targetDir": [
+      "scripts/stage_run.js"
+    ],
+    "target_diff": [
+      "vendor/github.com/pelletier/go-toml/v2/ci.sh"
+    ],
+    "target_out": [
+      "vendor/github.com/pelletier/go-toml/v2/ci.sh"
+    ],
+    "target_pct": [
+      "vendor/github.com/pelletier/go-toml/v2/ci.sh"
+    ],
+    "tempDir": [
+      "internal/server/quarantine_config_apply_test.go"
+    ],
+    "testServerConnection": [
+      "internal/server/e2e_test.go"
+    ],
+    "text": [
+      "frontend/src/services/api.ts",
+      "frontend/tests/unit/add-server-a11y.spec.ts"
+    ],
+    "their": [
+      "vendor/golang.org/x/text/internal/catmsg/catmsg.go",
+      "vendor/golang.org/x/text/message/catalog/catalog.go"
+    ],
+    "theme": [
+      "frontend/tests/unit/contrast.spec.ts",
+      "specs/055-frontend-major-upgrades/verification/qa/02-theme.spec.ts"
+    ],
+    "threshold": [
+      "frontend/src/utils/signatureBundle.ts"
+    ],
+    "time": [
+      "frontend/src/utils/sessionLabel.ts"
+    ],
+    "title": [
+      "frontend/src/router/index.ts"
+    ],
+    "tool": [
+      "frontend/src/utils/usageFormat.ts"
+    ],
+    "toolRecord": [
+      "internal/server/preflight_e2e_test.go"
+    ],
+    "tools": [
+      "frontend/src/utils/reviewPresentation.ts"
+    ],
+    "toolsFile": [
+      "internal/server/testdata/preflight_fixture_server.js",
+      "vendor.old-20261023/internal/server/testdata/preflight_fixture_server.js"
+    ],
+    "total": [
+      "contrib/linux-repos/apt-publish.sh",
+      "contrib/linux-repos/rpm-publish.sh",
+      "frontend/src/utils/reviewPresentation.ts"
+    ],
+    "totalStars": [
+      "internal/jsruntime/modern_js_test.go"
+    ],
+    "trigger": [
+      "frontend/tests/unit/review-screen-default-selection.spec.ts"
+    ],
+    "type": [
+      "frontend/src/utils/activity.ts",
+      "frontend/tests/unit/activity-type-labels.spec.ts",
+      "internal/oauth/logging.go",
+      "internal/secret/parser.go",
+      "vendor.old-20261023/internal/oauth/logging.go",
+      "vendor.old-20261023/internal/secret/parser.go"
+    ],
+    "typeName": [
+      "frontend/tests/unit/spec109-terminology.spec.ts"
+    ],
+    "unit": [
+      "frontend/src/utils/signatureBundle.ts"
+    ],
+    "url": [
+      "frontend/src/services/api.ts"
+    ],
+    "v1stats": [
+      "vendor/github.com/pelletier/go-toml/v2/ci.sh"
+    ],
+    "v2stats": [
+      "vendor/github.com/pelletier/go-toml/v2/ci.sh"
+    ],
+    "vault": [
+      "internal/oauth/redact_hardening_test.go"
+    ],
+    "verb": [
+      "frontend/src/utils/activity.ts"
+    ],
+    "verdict": [
+      "frontend/src/utils/activity.ts"
+    ],
+    "version": [
+      "frontend/src/utils/signatureBundle.ts"
+    ],
+    "waitForIndexedTools": [
+      "internal/server/preflight_e2e_test.go"
+    ],
+    "waitForReason": [
+      "internal/server/preflight_e2e_test.go"
+    ],
+    "waitForServerReady": [
+      "internal/server/e2e_test.go"
+    ],
+    "waitForToolIndexing": [
+      "internal/testutil/binary.go",
+      "vendor.old-20261023/internal/testutil/binary.go"
+    ],
+    "waitUntil": [
+      "internal/server/preflight_e2e_test.go"
+    ],
+    "what": [
+      "frontend/src/utils/activity.ts",
+      "frontend/src/utils/reviewPresentation.ts"
+    ],
+    "who": [
+      "frontend/src/utils/activity.ts"
+    ],
+    "why": [
+      "frontend/src/utils/signatureBundle.ts"
+    ],
+    "workdir": [
+      "contrib/linux-repos/apt-publish.sh",
+      "contrib/linux-repos/rpm-publish.sh"
+    ],
+    "workspace": [
+      "frontend/src/utils/sessionLabel.ts"
+    ],
+    "workspaceFolder": [
+      ".vscode/mcp.json"
+    ],
+    "writes": [
+      "frontend/src/utils/profiles.ts"
+    ]
+  }
+}

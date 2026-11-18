@@ -1,0 +1,40 @@
+{
+  "count": 5,
+  "hits": [
+    {
+      "file": "/home/toxic/pens/olympus/products/tau/packages/coding-agent/src/session/agent-session.ts",
+      "line": 441,
+      "snippet": "PrewalkCoordinator,",
+      "source": "ast",
+      "score": 1
+    },
+    {
+      "file": "/home/toxic/pens/olympus/products/tau/packages/coding-agent/src/session/agent-session.ts",
+      "line": 2280,
+      "snippet": "this.#prewalk = new PrewalkCoordinator(prewalkHost, {",
+      "source": "ast",
+      "score": 1
+    },
+    {
+      "file": "/home/toxic/pens/olympus/products/tau/packages/coding-agent/test/plan-autosave.test.ts",
+      "line": 11,
+      "snippet": "import { PrewalkCoordinator, type PrewalkCoordinatorHost } from \"tau/session/prewalk\";",
+      "source": "ast",
+      "score": 1
+    },
+    {
+      "file": "/home/toxic/pens/olympus/products/tau/packages/coding-agent/test/plan-autosave.test.ts",
+      "line": 194,
+      "snippet": "const coordinator = new PrewalkCoordinator(t.host, { planYolo: { target } satisfies PlanYolo });",
+      "source": "ast",
+      "score": 1
+    },
+    {
+      "file": "/home/toxic/pens/olympus/products/tau/packages/coding-agent/test/plan-autosave.test.ts",
+      "line": 223,
+      "snippet": "const coordinator = new PrewalkCoordinator(t.host, { planYolo: { target } satisfies PlanYolo });",
+      "source": "ast",
+      "score": 1
+    }
+  ]
+}

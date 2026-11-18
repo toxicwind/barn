@@ -1,0 +1,10 @@
+=== FINAL TREE STATUS ===
+
+--- BARN (clean paths only, thresher/gatehouse) ---
+ M thresher/README.md
+ M thresher/build.sh
+ M thresher/docs/delendai/proposals/ready/f00001-adopt-delendai-gatehouse.md
+
+--- VENDOR ---
+
+--- Pens (our paths only) ---

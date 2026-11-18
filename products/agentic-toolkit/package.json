@@ -1,0 +1,39 @@
+{
+  "name": "@toxicwind/agentic-toolkit",
+  "version": "1.0.0",
+  "description": "Reusable toolkit for tau/kappa Pens operations: provider audit, judge model fix, session logging",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "bun build src/index.ts --outdir dist --external yaml",
+    "test": "bun test",
+    "provider-audit": "bun run src/provider-audit.ts",
+    "fix-judge": "bun run src/fix-judge-model.ts",
+    "session-logger": "bun run src/session-logger.ts"
+  },
+  "dependencies": {
+    "yaml": "^2.5.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./provider-audit": {
+      "import": "./dist/provider-audit.js",
+      "types": "./dist/provider-audit.d.ts"
+    },
+    "./fix-judge-model": {
+      "import": "./dist/fix-judge-model.js",
+      "types": "./dist/fix-judge-model.d.ts"
+    },
+    "./session-logger": {
+      "import": "./dist/session-logger.js",
+      "types": "./dist/session-logger.d.ts"
+    }
+  }
+}

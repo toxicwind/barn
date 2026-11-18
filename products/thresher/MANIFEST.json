@@ -1,0 +1,81 @@
+{
+  "version": 2,
+  "generated": "2026-11-03T20:00:00.000Z",
+  "product": {
+    "name": "thresher",
+    "description": "MCP proxy gateway - federates tools, BM25 search, memory, browser, GitHub",
+    "repo": "https://github.com/toxicwind/thresher.git",
+    "branch": "main",
+    "tags": ["mcp", "gateway", "proxy", "tools"]
+  },
+  "pen": "barn",
+  "theme": "ops tooling",
+  "binaries": [
+    {
+      "name": "thresher",
+      "source": "/home/toxic/pens/barn/products/thresher/bin/thresher",
+      "target": "/home/toxic/.local/bin/thresher",
+      "description": "MCP proxy server binary",
+      "env": { "MCP_CONFIG": "/home/toxic/pens/barn/products/thresher/mcp_config.json" }
+    },
+    {
+      "name": "thresher-mcp-stdio",
+      "source": "/home/toxic/pens/barn/products/thresher/bin/thresher-mcp-stdio",
+      "target": "/home/toxic/.local/bin/thresher-mcp-stdio",
+      "description": "MCP stdio transport wrapper"
+    }
+  ],
+  "pitchfork": {
+    "daemonName": "thresher",
+    "run": "exec /home/toxic/.bun/bin/bun /home/toxic/pens/barn/products/thresher/src/main.ts",
+    "auto": ["start"],
+    "retry": true,
+    "port": 25127,
+    "health": {
+      "endpoint": "http://127.0.0.1:25127/health",
+      "interval": "30s",
+      "timeout": "5s",
+      "retries": 3
+    },
+    "depends": [],
+    "dir": "/home/toxic/pens/barn/products/thresher",
+    "mise": true,
+    "env": { "MCP_CONFIG": "/home/toxic/pens/barn/products/thresher/mcp_config.json" }
+  },
+  "health": {
+    "endpoint": "http://127.0.0.1:25127/health",
+    "interval": "30s",
+    "timeout": "5s",
+    "retries": 3
+  },
+  "ports": ["25127"],
+  "secrets": [
+    { "label": "MCP_PROXY_API_KEY", "attr": "MCP_PROXY_API_KEY", "required": false, "description": "Optional API key for MCP proxy auth" }
+  ],
+  "build": {
+    "command": "bun run build",
+    "testCommand": "bun test",
+    "lintCommand": "bunx oxlint .",
+    "outputDir": "dist"
+  },
+  "repo": {
+    "owner": "toxicwind",
+    "name": "thresher",
+    "defaultBranch": "main",
+    "private": false
+  },
+  "blackbird": {
+    "enabled": true,
+    "engine": "blackbird",
+    "fallback": "degraded"
+  },
+  "freeinference": {
+    "enabled": false,
+    "coordinator": "http://127.0.0.1:25250",
+    "models": []
+  },
+  "binVerify": {
+    "expectedLinks": ["thresher", "thresher-mcp-stdio"],
+    "allowMissing": []
+  }
+}

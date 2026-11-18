@@ -1,0 +1,463 @@
+package core
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"strings"
+	"time"
+
+	"github.com/mark3labs/mcp-go/mcp"
+	"go.uber.org/zap"
+)
+
+// initialize performs MCP initialization handshake
+func (c *Client) initialize(ctx context.Context) error {
+	initRequest := mcp.InitializeRequest{}
+	// Spec 058 FR-027: pinned to the newest LEGACY revision rather than
+	// mcp.LATEST_PROTOCOL_VERSION, which mcp-go v1.0.0 redefined to 2026-07-28.
+	// Sending the latest constant would have made the library upgrade alone
+	// switch every upstream hop to the new protocol era, where Ping is a no-op
+	// (so Spec-074 health probes stop proving liveness) and server-initiated
+	// requests are gone (so roots-based workspace discovery cannot work).
+	// Lifting this pin is a separate, separately verified change.
+	initRequest.Params.ProtocolVersion = mcp.LATEST_LEGACY_PROTOCOL_VERSION
+	initRequest.Params.ClientInfo = mcp.Implementation{
+		Name:    "mcpproxy-go",
+		Version: "1.0.0",
+	}
+	initRequest.Params.Capabilities = mcp.ClientCapabilities{}
+
+	// Log request for trace debugging - use main logger for CLI debug mode
+	if reqBytes, err := json.MarshalIndent(initRequest, "", "  "); err == nil {
+		c.logger.Debug("🔍 JSON-RPC INITIALIZE REQUEST",
+			zap.String("method", "initialize"),
+			zap.String("formatted_json", string(reqBytes)))
+	}
+
+	initStart := time.Now()
+	serverInfo, err := c.client.Initialize(ctx, initRequest)
+	if err != nil {
+		// Log initialization failure to server-specific log
+		if c.upstreamLogger != nil {
+			// #1158: the transport error quotes the configured URL,
+			// credentials and all, and this line is written to the per-server
+			// log FILE which `upstream_servers tail_log` hands to any MCP
+			// caller.
+			c.upstreamLogger.Error("MCP initialize JSON-RPC call failed",
+				logSafeErrorField(err))
+		}
+
+		// CRITICAL FIX: Additional cleanup for direct initialize() calls
+		// This handles cases where initialize() is called independently
+		if c.isDockerCommand {
+			// Spec 105 D8: name a container here only with evidence — see
+			// dockerContainerLogFields. c.containerName alone can be a
+			// generated name never observed from Docker.
+			fields := []zap.Field{zap.String("server", c.config.Name)}
+			fields = append(fields, dockerContainerLogFields(c.containerID, c.containerName, c.containerOwner)...)
+			fields = append(fields, logSafeErrorField(err))
+			c.logger.Debug("Direct initialization failed for Docker command - cleanup may be handled by caller", fields...)
+		}
+
+		// Surface the useful context that the raw "context deadline exceeded"
+		// swallows: how long we waited and whatever the child process wrote
+		// to stderr before dying. Non-timeout errors pass through unchanged.
+		if errors.Is(err, context.DeadlineExceeded) {
+			waited := time.Since(initStart).Round(100 * time.Millisecond)
+			stderrBlock := c.formatRecentStderr()
+			if stderrBlock != "" {
+				return &childOutputError{msg: fmt.Sprintf("server did not respond to MCP initialize within %s (subprocess may have crashed or printed to stderr instead of stdout); recent stderr:\n%s", waited, stderrBlock)}
+			}
+			return fmt.Errorf("server did not respond to MCP initialize within %s and produced no stderr output (check that the command starts an MCP server and not a help banner)", waited)
+		}
+
+		// STDIO subprocess exited before completing the handshake: mcp-go reports
+		// a closed transport / EOF on the pipe (not a typed exit error). Surface
+		// the captured stderr so the user sees the real, often self-serviceable
+		// cause (e.g. "Error: --brave-api-key is required") instead of a bare
+		// "transport closed" that the diagnostics layer marks UNKNOWN. Gated to
+		// stdio: initialize() is shared by HTTP/SSE transports, which have no
+		// local subprocess and must keep their generic diagnostics. (MCP-1093 /
+		// #599; stdio gate per Codex review on PR #606)
+		if shouldEnrichStdioPrematureExit(c.transportType, err) {
+			return enrichTransportClosedError(c.formatRecentStderr(), err)
+		}
+
+		return err
+	}
+
+	// Log response for trace debugging - use main logger for CLI debug mode
+	if respBytes, err := json.MarshalIndent(serverInfo, "", "  "); err == nil {
+		c.logger.Debug("🔍 JSON-RPC INITIALIZE RESPONSE",
+			zap.String("method", "initialize"),
+			zap.String("formatted_json", string(respBytes)))
+	}
+
+	// Spec 058 FR-027: the pin above controls what mcpproxy ASKS for; this
+	// checks what it got. mcp-go accepts a modern answer to a legacy request —
+	// initializeLegacy validates only mcp.IsValidProtocolVersion, which is true
+	// for 2026-07-28, and then applies it — so a server answering with the
+	// modern era would silently flip this hop to it, exactly the outcome the pin
+	// exists to prevent (Ping stops sending anything, server-initiated requests
+	// disappear).
+	//
+	// Rejecting restores the pre-bump contract rather than inventing one: under
+	// mcp-go v0.57.0, 2026-07-28 was absent from ValidProtocolVersions, so this
+	// same answer failed the handshake outright. A compliant server will not do
+	// this — it must answer with a version the client can speak — so this fires
+	// only for a genuinely misbehaving upstream.
+	if negotiated := serverInfo.ProtocolVersion; mcp.IsModernProtocol(negotiated) {
+		return fmt.Errorf("upstream answered MCP protocol version %s to a %s request; mcpproxy does not yet serve the 2026-07-28 era on the upstream hop (spec 058 FR-027)",
+			negotiated, initRequest.Params.ProtocolVersion)
+	}
+
+	c.serverInfo = serverInfo
+	c.logger.Info("MCP initialization successful",
+		zap.String("server_name", serverInfo.ServerInfo.Name),
+		zap.String("server_version", serverInfo.ServerInfo.Version))
+
+	// Log initialization success to server-specific log
+	if c.upstreamLogger != nil {
+		c.upstreamLogger.Info("MCP initialization completed successfully",
+			zap.String("server_name", serverInfo.ServerInfo.Name),
+			zap.String("server_version", serverInfo.ServerInfo.Version),
+			zap.String("protocol_version", serverInfo.ProtocolVersion))
+	}
+
+	return nil
+}
+
+// enrichTransportClosedError builds the actionable error for a stdio subprocess
+// that exited before completing the MCP initialize handshake, folding in the
+// captured stderr tail so the UI banner and per-server logs show the real,
+// often self-serviceable cause (e.g. a missing API key) instead of a bare
+// "transport closed". It wraps the original cause with %w so callers can still
+// errors.Is/As it. Pure (no receiver state) so the production enrichment path is
+// unit-testable. (MCP-1093 / #599)
+//
+// Note: the child exit code is intentionally NOT surfaced here. On this failure
+// path mcp-go has not reaped the process (no Wait), so ProcessState is unset and
+// any exit code would be unreliable; the captured stderr is the actionable
+// signal. Surfacing the exit code is a separate follow-up.
+// shouldEnrichStdioPrematureExit reports whether an initialize() failure should
+// be enriched as a stdio subprocess premature exit. The enrichment is stdio-
+// specific (it describes a local "server process" and its stderr); HTTP/SSE
+// transports share initialize() but have no subprocess, so a closed-transport
+// error there must keep its generic diagnostics. (Codex review on PR #606)
+func shouldEnrichStdioPrematureExit(transportType string, err error) bool {
+	return transportType == transportStdio && isTransportClosedErr(err)
+}
+
+func enrichTransportClosedError(stderrBlock string, cause error) error {
+	if stderrBlock != "" {
+		return &childOutputError{
+			msg:   fmt.Sprintf("server process exited before completing the MCP initialize handshake; recent stderr:\n%s: %v", stderrBlock, cause),
+			cause: cause,
+		}
+	}
+	return fmt.Errorf("server process exited before completing the MCP initialize handshake and produced no stderr output (transport closed before the handshake): %w", cause)
+}
+
+// childOutputError is a connect error whose text re-emits the child
+// process's own stderr (the recent-stderr buffer). It is the provenance the
+// per-server log needs: a record that renders such an error carries child
+// text and is stamped child_output=true (recordConnectionFailure), so the
+// attributed reader (internal/logs, D8 rules 1 and 3) treats it exactly like
+// the direct stderr record — on a `docker run` name collision that text
+// names another server's container. It unwraps to its cause so errors.Is /
+// errors.As keep working through the wrappers connectStdio and Connect add
+// (Spec 105 FR-007, codex round 3).
+type childOutputError struct {
+	msg   string
+	cause error
+}
+
+func (e *childOutputError) Error() string { return e.msg }
+func (e *childOutputError) Unwrap() error { return e.cause }
+
+// embedsChildOutput reports whether err, anywhere in its chain, re-emits the
+// child's stderr.
+func embedsChildOutput(err error) bool {
+	var target *childOutputError
+	return errors.As(err, &target)
+}
+
+// isTransportClosedErr reports whether an initialize() failure indicates the
+// child process went away mid-handshake. mcp-go surfaces a premature stdio
+// exit as a closed transport / EOF on the pipe rather than a typed exit error,
+// so we match those shapes to distinguish "the process died" from a genuine
+// malformed-handshake response. (MCP-1093 / #599)
+func isTransportClosedErr(err error) bool {
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+	lmsg := strings.ToLower(err.Error())
+	return strings.Contains(lmsg, "transport closed") ||
+		strings.Contains(lmsg, "broken pipe") ||
+		strings.Contains(lmsg, "file already closed") ||
+		strings.Contains(lmsg, "use of closed")
+}
+
+// registerNotificationHandler registers a handler for MCP notifications.
+// This should be called after client.Start() and initialize() succeed.
+// It handles notifications/tools/list_changed to trigger reactive tool discovery.
+func (c *Client) registerNotificationHandler() {
+	if c.client == nil {
+		c.logger.Debug("Skipping notification handler registration - client is nil",
+			zap.String("server", c.config.Name))
+		return
+	}
+
+	c.client.OnNotification(func(notification mcp.JSONRPCNotification) {
+		switch notification.Method {
+		case string(mcp.MethodNotificationToolsListChanged):
+			c.handleToolsListChangedNotification()
+		case string(mcp.MethodNotificationPromptsListChanged):
+			c.handlePromptsListChangedNotification()
+		default:
+			// Ignore all other notifications (logging, resources, progress, ...).
+		}
+	})
+
+	// Log capability status after registration
+	if c.serverInfo != nil && c.serverInfo.Capabilities.Tools != nil && c.serverInfo.Capabilities.Tools.ListChanged {
+		c.logger.Debug("Server supports tool change notifications - registered handler",
+			zap.String("server", c.config.Name))
+	} else {
+		c.logger.Debug("Server does not advertise tool change notifications support",
+			zap.String("server", c.config.Name))
+	}
+}
+
+// handleToolsListChangedNotification forwards a notifications/tools/list_changed
+// signal to the onToolsChanged callback. serverInfo and the callback are read
+// under the same RLock.
+func (c *Client) handleToolsListChangedNotification() {
+	c.logger.Info("Received tools/list_changed notification from upstream server",
+		zap.String("server", c.config.Name))
+
+	c.mu.RLock()
+	serverInfo := c.serverInfo
+	callback := c.onToolsChanged
+	c.mu.RUnlock()
+
+	if serverInfo != nil && serverInfo.Capabilities.Tools != nil && serverInfo.Capabilities.Tools.ListChanged {
+		c.logger.Debug("Server advertised tools.listChanged capability",
+			zap.String("server", c.config.Name))
+	} else {
+		c.logger.Warn("Received tools notification from server that did not advertise listChanged capability",
+			zap.String("server", c.config.Name))
+	}
+
+	if callback != nil {
+		callback(c.config.Name)
+	} else {
+		c.logger.Debug("No onToolsChanged callback set - notification ignored",
+			zap.String("server", c.config.Name))
+	}
+}
+
+// handlePromptsListChangedNotification mirrors handleToolsListChangedNotification
+// for notifications/prompts/list_changed (F13). It only forwards the signal; the
+// managed/manager/runtime layers debounce and re-aggregate.
+func (c *Client) handlePromptsListChangedNotification() {
+	c.logger.Info("Received prompts/list_changed notification from upstream server",
+		zap.String("server", c.config.Name))
+
+	c.mu.RLock()
+	serverInfo := c.serverInfo
+	callback := c.onPromptsChanged
+	c.mu.RUnlock()
+
+	if serverInfo != nil && serverInfo.Capabilities.Prompts != nil && serverInfo.Capabilities.Prompts.ListChanged {
+		c.logger.Debug("Server advertised prompts.listChanged capability",
+			zap.String("server", c.config.Name))
+	} else {
+		c.logger.Warn("Received prompts notification from server that did not advertise listChanged capability",
+			zap.String("server", c.config.Name))
+	}
+
+	if callback != nil {
+		callback(c.config.Name)
+	} else {
+		c.logger.Debug("No onPromptsChanged callback set - notification ignored",
+			zap.String("server", c.config.Name))
+	}
+}
+
+// Disconnect closes the connection
+func (c *Client) Disconnect() error {
+	return c.DisconnectWithContext(context.Background())
+}
+
+// DisconnectWithContext closes the connection with context timeout
+func (c *Client) DisconnectWithContext(_ context.Context) error {
+	// Step 1: Read state under lock, then release for I/O operations
+	c.mu.Lock()
+	wasConnected := c.connected
+	mcpClient := c.client
+	isDocker := c.isDockerCommand
+	containerID := c.containerID
+	containerName := c.containerName
+	containerOwner := c.containerOwner
+	pgid := c.processGroupID
+	processCmd := c.processCmd
+	serverName := c.config.Name
+	c.mu.Unlock()
+
+	c.logger.Info("Disconnecting from upstream MCP server",
+		zap.Bool("was_connected", wasConnected))
+
+	if c.upstreamLogger != nil {
+		c.upstreamLogger.Info("Disconnecting from server",
+			zap.Bool("was_connected", wasConnected))
+	}
+
+	// Step 2: Stop monitoring (these have their own locks)
+	c.StopStderrMonitoring()
+	c.StopProcessMonitoring()
+
+	// Step 3: For Docker containers, use Docker-specific cleanup
+	if isDocker {
+		c.logger.Debug("Disconnecting Docker command, attempting container cleanup",
+			zap.String("server", serverName),
+			zap.Bool("has_container_id", containerID != ""))
+
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), dockerCleanupTimeout)
+		defer cleanupCancel()
+
+		if containerID != "" {
+			// containerID is only ever set alongside containerOwner, once
+			// trackCidfileContainer or the name-recovery fallback verified
+			// ownership (Spec 105 D8) — safe to name here.
+			c.logger.Debug("Cleaning up Docker container by ID",
+				zap.String("server", serverName),
+				zap.String("container_id", containerID),
+				containerOwnerField(containerOwner))
+			c.killDockerContainerWithContext(cleanupCtx)
+		} else if containerName != "" {
+			// containerName alone (containerID empty here) is the GENERATED
+			// canonical name, never read back from Docker — not evidence a
+			// container by that name is ours (Spec 105 D8), so the record
+			// names the server only. killDockerContainerByNameWithContext
+			// still re-verifies ownership via ContainerMutator before it
+			// ever stops anything.
+			c.logger.Debug("Cleaning up Docker container by name",
+				zap.String("server", serverName))
+			c.killDockerContainerByNameWithContext(cleanupCtx, containerName)
+		} else {
+			c.logger.Debug("No container ID or name, using pattern-based cleanup",
+				zap.String("server", serverName))
+			c.killDockerContainerByCommandWithContext(cleanupCtx)
+		}
+	}
+
+	// Step 4: Try graceful close via MCP client FIRST
+	// This gives the subprocess a chance to exit cleanly via stdin/stdout close
+	gracefulCloseSucceeded := false
+	if mcpClient != nil {
+		c.logger.Debug("Attempting graceful MCP client close",
+			zap.String("server", serverName))
+
+		closeDone := make(chan struct{})
+		go func() {
+			mcpClient.Close()
+			close(closeDone)
+		}()
+
+		select {
+		case <-closeDone:
+			c.logger.Debug("MCP client closed gracefully",
+				zap.String("server", serverName))
+			gracefulCloseSucceeded = true
+		case <-time.After(mcpClientCloseTimeout):
+			c.logger.Warn("MCP client close timed out",
+				zap.String("server", serverName),
+				zap.Duration("timeout", mcpClientCloseTimeout))
+		}
+	}
+
+	// Step 5: Force kill process group only if graceful close failed
+	// For non-Docker stdio processes that didn't exit gracefully
+	if !gracefulCloseSucceeded && !isDocker && pgid > 0 {
+		c.logger.Info("Graceful close failed, force killing process group",
+			zap.String("server", serverName),
+			zap.Int("pgid", pgid))
+
+		if err := killProcessGroup(pgid, processCmd, c.logger, serverName); err != nil {
+			c.logger.Error("Failed to kill process group",
+				zap.String("server", serverName),
+				zap.Int("pgid", pgid),
+				zap.Error(err))
+		}
+
+		// Also try direct process kill as last resort
+		if processCmd != nil && processCmd.Process != nil {
+			if err := processCmd.Process.Kill(); err != nil {
+				c.logger.Debug("Direct process kill failed (may already be dead)",
+					zap.String("server", serverName),
+					zap.Error(err))
+			}
+		}
+	}
+
+	// Step 5b: Release the platform process-group resource regardless of
+	// how the close went. No-op on Unix. On Windows this terminates the
+	// Job Object (reaching grandchildren mcp-go's Close never touches —
+	// it only kills the immediate cmd.exe) and drops its registry entry;
+	// without it, a graceful close leaked the Job handle and left
+	// EOF-ignoring node.exe/python.exe trees alive until mcpproxy exited.
+	// processCmd (captured in Step 1) identifies OUR process, so a PID
+	// that Windows has already handed to a newer connection is left alone.
+	if !isDocker && pgid > 0 {
+		releaseProcessGroup(pgid, processCmd, c.logger, serverName)
+	}
+
+	// Step 6: Stop any locally-launched HTTP/SSE upstream. We do this
+	// AFTER closing the MCP client — the child should see the network
+	// transport go away first, giving it a clean shutdown signal before
+	// we send SIGTERM.
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	c.stopLauncher(stopCtx)
+	stopCancel()
+
+	// Step 7: Update state under lock
+	c.mu.Lock()
+	c.client = nil
+	c.serverInfo = nil
+	c.connected = false
+	c.authStrategy.Store("")
+	c.cachedTools = nil
+	c.processGroupID = 0
+	c.processCmd = nil
+	c.mu.Unlock()
+
+	// Step 8: release the per-server log sink (issue #1266). Every
+	// teardown path — RemoveServer, ShutdownAll, a reconnect — comes
+	// through here, and this is the last line this Disconnect writes to it.
+	// lumberjack reopens the file on the next write, so a server that
+	// reconnects logs on exactly as before; a server that is gone stops
+	// holding a file handle (and, on Windows, the file itself) for the life
+	// of the process.
+	c.closeUpstreamLog()
+
+	c.logger.Debug("Disconnect completed successfully",
+		zap.String("server", serverName))
+	return nil
+}
+
+// closeUpstreamLog syncs and closes the upstream log sink, if the logger has
+// one. Safe to call repeatedly: the sink reopens itself on the next write.
+func (c *Client) closeUpstreamLog() {
+	if c.upstreamLogger != nil {
+		_ = c.upstreamLogger.Sync()
+	}
+	if c.upstreamLogCloser != nil {
+		if err := c.upstreamLogCloser.Close(); err != nil {
+			c.logger.Debug("Failed to close upstream log sink", zap.Error(err))
+		}
+	}
+}

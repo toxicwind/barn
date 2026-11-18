@@ -1,0 +1,705 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/cli/output"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/cliclient"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/config"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/logs"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/secret"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/security/detect"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/storage"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/transport"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/upstream/managed"
+
+	"github.com/spf13/cobra"
+	"go.uber.org/zap"
+)
+
+// serverToolTarget holds a parsed server:tool pair.
+type serverToolTarget struct {
+	server string
+	tool   string
+}
+
+// parseServerTool splits an arg of the form "server:tool" on the first ':'.
+// The tool name itself may contain further colons.
+func parseServerTool(arg string) (server, tool string, err error) {
+	if arg == "" {
+		return "", "", fmt.Errorf("invalid target %q: must be in <server>:<tool> format", arg)
+	}
+	idx := strings.Index(arg, ":")
+	if idx < 0 {
+		return "", "", fmt.Errorf("invalid target %q: missing ':' separator (use <server>:<tool>)", arg)
+	}
+	server = arg[:idx]
+	tool = arg[idx+1:]
+	if server == "" {
+		return "", "", fmt.Errorf("invalid target %q: server name is empty", arg)
+	}
+	if tool == "" {
+		return "", "", fmt.Errorf("invalid target %q: tool name is empty", arg)
+	}
+	return server, tool, nil
+}
+
+// groupByServer groups targets by their server name.
+func groupByServer(targets []serverToolTarget) map[string][]string {
+	groups := make(map[string][]string)
+	for _, t := range targets {
+		groups[t.server] = append(groups[t.server], t.tool)
+	}
+	return groups
+}
+
+// applyGlobalToolFilters applies client-side filters to the global tool list.
+// statusFilter: "enabled" | "disabled" | "config-denied" | ""
+// riskFilter:   "read" | "write" | "destructive" | ""
+// approvalFilter: "approved" | "pending" | "changed" | ""
+func applyGlobalToolFilters(tools []map[string]interface{}, statusFilter, riskFilter, approvalFilter string) []map[string]interface{} {
+	if statusFilter == "" && riskFilter == "" && approvalFilter == "" {
+		return tools
+	}
+
+	out := make([]map[string]interface{}, 0, len(tools))
+	for _, t := range tools {
+		if statusFilter != "" {
+			disabled := getBoolField(t, "disabled")
+			configDenied := getBoolField(t, "config_denied")
+			isDisabled := disabled || configDenied
+			switch statusFilter {
+			case "enabled":
+				if isDisabled {
+					continue
+				}
+			case "disabled":
+				if !isDisabled {
+					continue
+				}
+			case "config-denied":
+				if !configDenied {
+					continue
+				}
+			}
+		}
+
+		if riskFilter != "" {
+			opType := ""
+			if ann, ok := t["annotations"].(map[string]interface{}); ok {
+				opType, _ = ann["operation_type"].(string)
+			}
+			if !strings.EqualFold(opType, riskFilter) {
+				continue
+			}
+		}
+
+		if approvalFilter != "" {
+			status := getStringField(t, "approval_status")
+			if !strings.EqualFold(status, approvalFilter) {
+				continue
+			}
+		}
+
+		out = append(out, t)
+	}
+	return out
+}
+
+func runToolsList(_ *cobra.Command, _ []string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	// Enable transport tracing if requested
+	if traceTransport {
+		transport.GlobalTraceEnabled = true
+		fmt.Fprintln(os.Stderr, "HTTP/SSE TRANSPORT TRACING ENABLED")
+		fmt.Fprintln(os.Stderr, "   All HTTP requests/responses and SSE frames will be logged")
+		fmt.Fprintln(os.Stderr)
+	}
+
+	// Load configuration
+	globalConfig, err := loadToolsConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load configuration: %w", err)
+	}
+
+	// Create logger
+	logger, err := logs.SetupCommandLogger(false, toolsLogLevel, false, "")
+	if err != nil {
+		return fmt.Errorf("failed to setup logger: %w", err)
+	}
+	defer func() { _ = logger.Sync() }()
+
+	// If no --server given → global list (requires daemon)
+	if serverName == "" {
+		return runToolsListGlobal(ctx, globalConfig, logger)
+	}
+
+	// --server given → server-scoped path (daemon or standalone)
+	if client, ok := newDaemonClient(globalConfig, logger.Sugar()); ok {
+		logger.Info("Detected running daemon, using client mode",
+			zap.String("server", serverName))
+		return runToolsListClientMode(ctx, client, serverName, logger)
+	}
+
+	// No daemon detected, use standalone mode
+	logger.Info("No daemon detected, using standalone mode",
+		zap.String("server", serverName))
+	return runToolsListStandalone(ctx, serverName, globalConfig, logger)
+}
+
+// runToolsListGlobal fetches all tools from the global endpoint via the daemon.
+func runToolsListGlobal(ctx context.Context, globalConfig *config.Config, logger *zap.Logger) error {
+	client, ok := newDaemonClient(globalConfig, logger.Sugar())
+	if !ok {
+		return fmt.Errorf("global tool list requires the daemon to be running.\n" +
+			"Start mcpproxy (mcpproxy serve) and try again, or use --server=<name> for a single-server debug listing")
+	}
+
+	pingCtx, pingCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer pingCancel()
+	if err := client.Ping(pingCtx); err != nil {
+		return fmt.Errorf("daemon is not responding: %w\n"+
+			"Start mcpproxy (mcpproxy serve) and try again", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "Using daemon mode\n\n")
+
+	tools, err := client.GetGlobalTools(ctx)
+	if err != nil {
+		return cliError("failed to get global tools from daemon", err)
+	}
+
+	// Apply client-side filters
+	tools = applyGlobalToolFilters(tools, toolsStatusFilter, toolsRiskFilter, toolsApprovalFilter)
+
+	return outputGlobalTools(tools)
+}
+
+// tpaSignatureRe matches a TPA signature id embedded in a deterministic check id
+// (e.g. "tpa.TPA-2026-0001.hidden_instruction" → "TPA-2026-0001").
+var tpaSignatureRe = regexp.MustCompile(`TPA-\d{4}-\d{4}`)
+
+// maxHeldSignalsShown is how many hold signals the HELD column renders before
+// collapsing the rest into a "+N" suffix.
+const maxHeldSignalsShown = 2
+
+// formatToolHold renders the scan-gate hold evidence for the HELD column
+// (spec 086 FR-018): the matched TPA signature ids when the bundle fired,
+// otherwise the raw check ids (e.g. "phrase.injection"). Returns "-" for tools
+// that are not held by the scan gate, so records predating the field render
+// exactly as before.
+func formatToolHold(t map[string]interface{}) string {
+	// Collect matched TPA signature ids and the remaining raw check ids
+	// separately, preserving producer order within each group. TPA ids are
+	// rendered first so the "+N" truncation never hides them — the scanner
+	// emits its heuristic checks (directive.imperative, capability.mismatch, …)
+	// ahead of the tpa.* checks, and FR-018 requires the operator-facing view
+	// to name the matched TPA-YYYY-NNNN id(s).
+	var tpaLabels, otherLabels []string
+	seen := make(map[string]bool)
+	for _, raw := range getArrayField(t, "held_signals") {
+		signal, ok := raw.(string)
+		if !ok || signal == "" {
+			continue
+		}
+		label := signal
+		isTPA := false
+		if m := tpaSignatureRe.FindString(signal); m != "" {
+			label = m
+			isTPA = true
+		}
+		if seen[label] {
+			continue
+		}
+		seen[label] = true
+		if isTPA {
+			tpaLabels = append(tpaLabels, label)
+		} else {
+			otherLabels = append(otherLabels, label)
+		}
+	}
+	labels := append(tpaLabels, otherLabels...)
+
+	if len(labels) == 0 {
+		// A hold with no signals means the scan itself could not be trusted
+		// (degraded coverage / missing bundle) — still worth naming.
+		if reason := getStringField(t, "held_reason"); reason != "" {
+			return reason
+		}
+		return "-"
+	}
+
+	shown := labels
+	suffix := ""
+	if len(labels) > maxHeldSignalsShown {
+		shown = labels[:maxHeldSignalsShown]
+		suffix = fmt.Sprintf(" +%d", len(labels)-maxHeldSignalsShown)
+	}
+	return strings.Join(shown, ",") + suffix
+}
+
+// sanitizeCell makes an upstream-controlled string safe to print in a terminal
+// table and truncates it to maxRunes (GH #938 finding 3).
+//
+// Two bugs it fixes: the server-scoped tool list printed a poisoned description
+// verbatim — ANSI escapes, bidi overrides and zero-width runes reached the tty
+// unfiltered — and the global list truncated with a BYTE slice, which can split
+// a multi-byte rune. detect.CapEvidence is the project-wide render-safe
+// contract: it ESCAPES (never drops) control/format runes so smuggled content
+// is revealed rather than hidden.
+func sanitizeCell(s string, maxRunes int) string {
+	escaped := detect.CapEvidence(s)
+	runes := []rune(escaped)
+	if maxRunes > 3 && len(runes) > maxRunes {
+		return string(runes[:maxRunes-3]) + "..."
+	}
+	return escaped
+}
+
+// maxToolDescriptionCell is the description column width shared by the global
+// and server-scoped tool tables.
+const maxToolDescriptionCell = 60
+
+// maxToolNameCell bounds the NAME column. Tool names are upstream-controlled
+// just like descriptions — an unbounded one can push every other column off
+// screen — so the same cap applies.
+const maxToolNameCell = 60
+
+// sanitizeName escapes an upstream-controlled tool name for terminal output.
+//
+// The description fix alone was bypassable: a server declaring a tool named
+// "\x1b[2J\x1b[1;1Happroved" writes ANSI straight to the operator's tty on
+// `mcpproxy tools list`, `tools list --server=<name>` and the no-daemon path —
+// the same trust boundary, the same attack. Names are upstream-controlled, so
+// they get the same render-safe treatment.
+func sanitizeName(s string) string {
+	return sanitizeCell(s, maxToolNameCell)
+}
+
+// serverToolRows builds the table for `mcpproxy tools list --server <name>`.
+//
+// GH #938 finding 3: the server-scoped view used to render only NAME and
+// DESCRIPTION, so a tool held by the trust_mode:scan gate was indistinguishable
+// from an approved one — the exact view an operator debugging ONE server opens.
+// It now carries the same APPROVAL/HELD state as the global view (the
+// per-server REST payload has always included those fields; only the renderer
+// dropped them) and escapes the description.
+func serverToolRows(tools []map[string]interface{}) (headers []string, rows [][]string) {
+	headers = []string{"NAME", "APPROVAL", "HELD", "DESCRIPTION"}
+	for _, t := range tools {
+		approval := getStringField(t, "approval_status")
+		if approval == "" {
+			approval = "-"
+		}
+		rows = append(rows, []string{
+			sanitizeName(getStringField(t, "name")),
+			approval,
+			formatToolHold(t),
+			sanitizeCell(getStringField(t, "description"), maxToolDescriptionCell),
+		})
+	}
+	return headers, rows
+}
+
+// globalToolRows builds the table for `mcpproxy tools list` (all servers).
+// Split out of outputGlobalTools so the rendering — in particular the escaping
+// of the two upstream-controlled columns, NAME and DESCRIPTION — is directly
+// testable.
+func globalToolRows(tools []map[string]interface{}) (headers []string, rows [][]string) {
+	headers = []string{"NAME", "SERVER", "STATE", "APPROVAL", "HELD", "USAGE", "LAST USED", "DESCRIPTION"}
+	for _, t := range tools {
+		name := sanitizeName(getStringField(t, "name"))
+		srv := getStringField(t, "server_name")
+		disabled := getBoolField(t, "disabled")
+		configDenied := getBoolField(t, "config_denied")
+
+		state := "enabled"
+		if configDenied {
+			state = "config-denied"
+		} else if disabled {
+			state = "disabled"
+		}
+
+		approval := getStringField(t, "approval_status")
+		if approval == "" {
+			approval = "-"
+		}
+
+		usage := fmt.Sprintf("%d", getIntField(t, "usage"))
+
+		lastUsed := "-"
+		if lu := getStringField(t, "last_used"); lu != "" {
+			lastUsed = lu
+		}
+
+		desc := sanitizeCell(getStringField(t, "description"), maxToolDescriptionCell)
+
+		rows = append(rows, []string{name, srv, state, approval, formatToolHold(t), usage, lastUsed, desc})
+	}
+	return headers, rows
+}
+
+// outputGlobalTools renders the global tool list with extended columns.
+func outputGlobalTools(tools []map[string]interface{}) error {
+	outputFormat := ResolveOutputFormat()
+	formatter, err := GetOutputFormatter()
+	if err != nil {
+		return output.NewStructuredError(output.ErrCodeInvalidOutputFormat, err.Error()).
+			WithGuidance("Use -o table, -o json, or -o yaml")
+	}
+
+	// JSON / YAML: emit the raw slice
+	if outputFormat == "json" || outputFormat == "yaml" {
+		result, fmtErr := formatter.Format(tools)
+		if fmtErr != nil {
+			return fmt.Errorf("failed to format output: %w", fmtErr)
+		}
+		fmt.Println(result)
+		return nil
+	}
+
+	headers, rows := globalToolRows(tools)
+
+	result, fmtErr := formatter.FormatTable(headers, rows)
+	if fmtErr != nil {
+		return fmt.Errorf("failed to format table: %w", fmtErr)
+	}
+	fmt.Print(result)
+	return nil
+}
+
+// runToolsSetEnabled implements the enable/disable subcommands.
+// It parses each arg as server:tool, groups by server, calls the per-tool
+// endpoint, prints per-target results, and exits non-zero if any failed.
+func runToolsSetEnabled(args []string, enabled bool) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Load config to find the data dir / socket path
+	globalConfig, err := loadToolsConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load configuration: %w", err)
+	}
+
+	logger, err := logs.SetupCommandLogger(false, "warn", false, "")
+	if err != nil {
+		return fmt.Errorf("failed to setup logger: %w", err)
+	}
+	defer func() { _ = logger.Sync() }()
+
+	client, ok := newDaemonClient(globalConfig, logger.Sugar())
+	if !ok {
+		return fmt.Errorf("enable/disable requires the daemon to be running.\n" +
+			"Start mcpproxy (mcpproxy serve) and try again")
+	}
+
+	pingCtx, pingCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer pingCancel()
+	if err := client.Ping(pingCtx); err != nil {
+		return fmt.Errorf("daemon is not responding: %w", err)
+	}
+
+	// Parse all targets; collect parse errors as per-target failures
+	type result struct {
+		arg string
+		err error
+	}
+	var validTargets []serverToolTarget
+	var results []result
+
+	for _, arg := range args {
+		srv, tool, parseErr := parseServerTool(arg)
+		if parseErr != nil {
+			results = append(results, result{arg: arg, err: parseErr})
+			continue
+		}
+		validTargets = append(validTargets, serverToolTarget{server: srv, tool: tool})
+	}
+
+	// Call per-tool endpoint for each valid target
+	action := "enabled"
+	if !enabled {
+		action = "disabled"
+	}
+
+	for _, target := range validTargets {
+		callErr := client.SetToolEnabled(ctx, target.server, target.tool, enabled)
+		results = append(results, result{arg: target.server + ":" + target.tool, err: callErr})
+	}
+
+	// Print per-target summary
+	anyFailed := false
+	for _, r := range results {
+		if r.err != nil {
+			anyFailed = true
+			fmt.Fprintf(os.Stderr, "FAILED  %s: %s\n", r.arg, r.err.Error())
+		} else {
+			fmt.Printf("OK      %s: %s\n", r.arg, action)
+		}
+	}
+
+	if anyFailed {
+		return fmt.Errorf("one or more targets failed (see above)")
+	}
+	return nil
+}
+
+// loadToolsConfig loads the MCP configuration file for tools command
+func loadToolsConfig() (*config.Config, error) {
+	var configFilePath string
+
+	if configPath != "" {
+		configFilePath = configPath
+	} else {
+		// Use default path
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get user home directory: %w", err)
+		}
+		configFilePath = filepath.Join(homeDir, ".mcpproxy", "mcp_config.json")
+	}
+
+	// Check if config file exists
+	if _, err := os.Stat(configFilePath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("configuration file not found at %s. Please run 'mcpproxy' daemon first to create the config", configFilePath)
+	}
+
+	// Load configuration using file-based loading
+	globalConfig, err := config.LoadFromFile(configFilePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load config from %s: %w", configFilePath, err)
+	}
+
+	// Respect global --data-dir flag
+	if dataDir != "" {
+		globalConfig.DataDir = dataDir
+	}
+
+	return globalConfig, nil
+}
+
+// getAvailableServerNames returns a list of available server names
+func getAvailableServerNames(globalConfig *config.Config) []string {
+	var names []string
+	for _, server := range globalConfig.Servers {
+		names = append(names, server.Name)
+	}
+	return names
+}
+
+// standaloneToolRows builds the no-daemon table. That path has no approval
+// records, so it keeps the two-column shape — but BOTH upstream-controlled
+// columns are sanitized (#938): a poisoned name or description must never reach
+// the terminal raw on ANY path.
+func standaloneToolRows(tools []*config.ToolMetadata) (headers []string, rows [][]string) {
+	headers = []string{"NAME", "DESCRIPTION"}
+	for _, tool := range tools {
+		if tool == nil {
+			continue
+		}
+		rows = append(rows, []string{
+			sanitizeName(tool.Name),
+			sanitizeCell(tool.Description, maxToolDescriptionCell),
+		})
+	}
+	return headers, rows
+}
+
+// outputToolsFromMetadata formats and displays tools from ToolMetadata (standalone mode) using unified formatters.
+func outputToolsFromMetadata(tools []*config.ToolMetadata, serverName string) error {
+	// Convert to map format for unified output
+	toolMaps := make([]map[string]interface{}, len(tools))
+	for i, tool := range tools {
+		toolMaps[i] = map[string]interface{}{
+			"name":        tool.Name,
+			"description": tool.Description,
+			"server":      serverName,
+			"full_name":   fmt.Sprintf("%s:%s", serverName, tool.Name),
+		}
+		// Include schema in debug/trace mode
+		if (toolsLogLevel == "debug" || toolsLogLevel == "trace") && tool.ParamsJSON != "" {
+			toolMaps[i]["schema"] = tool.ParamsJSON
+		}
+	}
+
+	outputFormat := ResolveOutputFormat()
+	formatter, err := GetOutputFormatter()
+	if err != nil {
+		return output.NewStructuredError(output.ErrCodeInvalidOutputFormat, err.Error()).
+			WithGuidance("Use -o table, -o json, or -o yaml")
+	}
+
+	// For JSON/YAML, format directly
+	if outputFormat == "json" || outputFormat == "yaml" {
+		result, fmtErr := formatter.Format(toolMaps)
+		if fmtErr != nil {
+			return fmt.Errorf("failed to format output: %w", fmtErr)
+		}
+		fmt.Println(result)
+		return nil
+	}
+
+	headers, rows := standaloneToolRows(tools)
+
+	result, fmtErr := formatter.FormatTable(headers, rows)
+	if fmtErr != nil {
+		return fmt.Errorf("failed to format table: %w", fmtErr)
+	}
+	fmt.Print(result)
+	return nil
+}
+
+// runToolsListClientMode executes tools list via the daemon HTTP API.
+func runToolsListClientMode(ctx context.Context, client *cliclient.Client, serverName string, logger *zap.Logger) error {
+	// Ping daemon to verify connectivity
+	pingCtx, pingCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer pingCancel()
+	if err := client.Ping(pingCtx); err != nil {
+		logger.Warn("Failed to ping daemon, falling back to standalone mode",
+			zap.Error(err))
+		// Fall back to standalone mode
+		cfg, err := loadToolsConfig()
+		if err != nil {
+			return fmt.Errorf("failed to load config for standalone mode: %w", err)
+		}
+		return runToolsListStandalone(ctx, serverName, cfg, logger)
+	}
+
+	fmt.Fprintf(os.Stderr, "Using daemon mode - fast execution\n\n")
+
+	// Fetch tools from daemon
+	tools, err := client.GetServerTools(ctx, serverName)
+	if err != nil {
+		// T027: Use cliError to include request_id in error output
+		return cliError("failed to get server tools from daemon", err)
+	}
+
+	// Output results
+	return outputTools(tools, logger)
+}
+
+// outputTools formats and displays tools based on output format using unified formatters.
+func outputTools(tools []map[string]interface{}, _ *zap.Logger) error {
+	outputFormat := ResolveOutputFormat()
+	formatter, err := GetOutputFormatter()
+	if err != nil {
+		return output.NewStructuredError(output.ErrCodeInvalidOutputFormat, err.Error()).
+			WithGuidance("Use -o table, -o json, or -o yaml")
+	}
+
+	// For JSON/YAML, format directly
+	if outputFormat == "json" || outputFormat == "yaml" {
+		result, fmtErr := formatter.Format(tools)
+		if fmtErr != nil {
+			return fmt.Errorf("failed to format output: %w", fmtErr)
+		}
+		fmt.Println(result)
+		return nil
+	}
+
+	// Table format: name + approval/hold state + escaped description (#938).
+	headers, rows := serverToolRows(tools)
+
+	result, fmtErr := formatter.FormatTable(headers, rows)
+	if fmtErr != nil {
+		return fmt.Errorf("failed to format table: %w", fmtErr)
+	}
+	fmt.Print(result)
+	return nil
+}
+
+// runToolsListStandalone executes tools list in standalone mode (original behavior).
+func runToolsListStandalone(ctx context.Context, serverName string, globalConfig *config.Config, logger *zap.Logger) error {
+	// Find server config
+	var serverConfig *config.ServerConfig
+	for _, server := range globalConfig.Servers {
+		if server.Name == serverName {
+			serverConfig = server
+			break
+		}
+	}
+	if serverConfig == nil {
+		return fmt.Errorf("server '%s' not found in configuration. Available servers: %v",
+			serverName, getAvailableServerNames(globalConfig))
+	}
+
+	// Human banner/progress goes to stderr so machine formats (-o json|yaml)
+	// keep stdout parseable (see docs/cli-output-formatting.md).
+	fmt.Fprintf(os.Stderr, "MCP Tools List - Server: %s\n", serverName)
+	fmt.Fprintf(os.Stderr, "Log Level: %s\n", toolsLogLevel)
+	fmt.Fprintf(os.Stderr, "Timeout: %v\n", timeout)
+	fmt.Fprintf(os.Stderr, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
+
+	// Create storage (optional, for OAuth persistence)
+	var db *storage.BoltDB
+	if globalConfig.DataDir != "" {
+		boltDB, err := storage.NewBoltDB(globalConfig.DataDir, logger.Sugar())
+		if err != nil {
+			logger.Warn("Failed to create storage, OAuth will use in-memory")
+		} else {
+			db = boltDB
+			defer db.Close()
+		}
+	}
+
+	// Create secret resolver
+	secretResolver := secret.NewResolver()
+
+	// Create log config for managed client
+	logConfig := &config.LogConfig{
+		Level:         toolsLogLevel,
+		EnableConsole: true,
+		EnableFile:    false,
+		JSONFormat:    false,
+	}
+
+	// Create managed client (same as serve mode!)
+	managedClient, err := managed.NewClient(serverName, serverConfig, logger, logConfig, globalConfig, db, secretResolver)
+	if err != nil {
+		return fmt.Errorf("failed to create managed client: %w", err)
+	}
+
+	// Connect to server
+	fmt.Fprintf(os.Stderr, "Connecting to server '%s'...\n", serverName)
+	if err := managedClient.Connect(ctx); err != nil {
+		return fmt.Errorf("failed to connect to server '%s': %w", serverName, err)
+	}
+
+	// Ensure cleanup on exit
+	defer func() {
+		fmt.Fprintf(os.Stderr, "Disconnecting from server...\n")
+		if disconnectErr := managedClient.Disconnect(); disconnectErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Failed to disconnect cleanly: %v\n", disconnectErr)
+		}
+	}()
+
+	// List tools
+	tools, err := managedClient.ListTools(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list tools: %w", err)
+	}
+
+	// Output results using unified formatter
+	if len(tools) == 0 {
+		outputFormat := ResolveOutputFormat()
+		if outputFormat == "table" {
+			fmt.Printf("No tools found on server '%s'\n", serverName)
+			fmt.Printf("This could indicate:\n")
+			fmt.Printf("   Server doesn't support tools\n")
+			fmt.Printf("   Server is not properly configured\n")
+			fmt.Printf("   Connection issues during tool discovery\n")
+			return nil
+		}
+		// For JSON/YAML, output empty array
+	}
+
+	return outputToolsFromMetadata(tools, serverName)
+}

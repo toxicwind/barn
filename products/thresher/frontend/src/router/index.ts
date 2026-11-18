@@ -1,0 +1,288 @@
+import { createRouter, createWebHistory, type NavigationGuard } from 'vue-router'
+import Home from '@/views/Home.vue'
+
+const router = createRouter({
+  history: createWebHistory(import.meta.env.BASE_URL),
+  routes: [
+    // Server edition auth routes
+    {
+      path: '/login',
+      name: 'login',
+      component: () => import('@/views/teams/Login.vue'),
+      meta: { title: 'Sign In', public: true },
+    },
+    // Existing routes (admin/personal)
+    //
+    // Spec 109 FR-051: `/` renders Home — the needs-attention list, the
+    // topology (formerly Dashboard.vue's "Overview" panel) and a usage
+    // summary strip. `/usage` is the full Usage page in its own right
+    // (Usage.vue, no longer wrapped by Dashboard's panel switcher).
+    // `/overview` redirects to `/` — Home replaces the standalone Overview
+    // panel. `Dashboard.vue` is retired.
+    {
+      path: '/',
+      name: 'home',
+      component: Home,
+      meta: {
+        title: 'Home',
+      },
+    },
+    {
+      path: '/usage',
+      name: 'usage',
+      component: () => import('@/views/Usage.vue'),
+      meta: {
+        title: 'Usage Analytics',
+      },
+    },
+    { path: '/clients', name: 'clients', component: () => import('@/views/Clients.vue'), meta: { title: 'Clients' } },
+    // Spec 108-i I4: two SIBLING top-level routes. The Spec 109-i gate on the
+    // sidebar item, the Add menu item and the palette action compares
+    // `route.path === '/profiles'` exactly, so the editor must not be nested
+    // under it.
+    { path: '/profiles', name: 'profiles', component: () => import('@/views/Profiles.vue'), meta: { title: 'Profiles' } },
+    { path: '/profiles/:name', name: 'profile-editor', component: () => import('@/views/ProfileEditor.vue'), props: true, meta: { title: 'Profile' } },
+    {
+      // Query and hash are kept explicitly (navigation-map.md "Redirects"),
+      // not left to vue-router's implicit carry-over for named redirects.
+      path: '/overview',
+      redirect: (to) => ({ path: '/', query: to.query, hash: to.hash }),
+    },
+    {
+      path: '/servers',
+      name: 'servers',
+      component: () => import('@/views/Servers.vue'),
+      meta: {
+        title: 'Servers',
+      },
+    },
+    {
+      path: '/servers/:serverName',
+      name: 'server-detail',
+      component: () => import('@/views/ServerDetail.vue'),
+      props: true,
+      meta: {
+        title: 'Server Details',
+      },
+    },
+    {
+      path: '/add-server',
+      name: 'add-server',
+      component: () => import('@/views/AddServer.vue'),
+      meta: {
+        title: 'Add Server',
+      },
+    },
+    // Spec 109 FR-062: adding a server now starts at /add-server (outside the
+    // /servers/:serverName path space — no server name, including "add", can
+    // be shadowed by it). /repositories redirects here on the Catalog tab,
+    // and catalog-source management moved to Settings → Catalog sources.
+    {
+      path: '/repositories',
+      redirect: (to) => ({ path: '/add-server', query: { ...to.query, tab: 'catalog' } }),
+    },
+    // `/search` used to be a third, sidebar-less search surface duplicating the
+    // header box and the Tools page (audit F20). Tools is the canonical one —
+    // it is in the sidebar, it lists what it searches, and it can act on the
+    // results — so the orphan route now folds into it, carrying `?q=` across so
+    // old links and bookmarks still land on their query.
+    {
+      path: '/search',
+      redirect: (to) => ({ path: '/tools', query: to.query, hash: to.hash }),
+    },
+    {
+      path: '/review/:server',
+      name: 'review-server',
+      component: () => import('@/views/Review.vue'),
+      props: true,
+      meta: { title: 'Review server' },
+    },
+    {
+      path: '/review',
+      name: 'review',
+      component: () => import('@/views/Review.vue'),
+      meta: { title: 'Review queue' },
+    },
+    {
+      path: '/settings',
+      name: 'settings',
+      component: () => import('@/views/Settings.vue'),
+      meta: {
+        // Spec 109 FR-056: named "Settings" everywhere (sidebar, route title,
+        // heading, document title) — "Configuration" was one more of the
+        // three names this page had accumulated (audit W5).
+        title: 'Settings',
+      },
+    },
+    {
+      path: '/feedback',
+      name: 'feedback',
+      component: () => import('@/views/Feedback.vue'),
+      meta: {
+        title: 'Send Feedback',
+      },
+    },
+    {
+      path: '/secrets',
+      name: 'secrets',
+      component: () => import('@/views/Secrets.vue'),
+      meta: {
+        title: 'Secrets',
+      },
+    },
+    {
+      // Spec 109-k/109-ux-navigation-consistency FR-070: Sessions is now one
+      // of Activity's views (Tool calls · Sessions · System events · All),
+      // not its own page — `/sessions` keeps working as a redirect so old
+      // links/bookmarks still land somewhere, but the query string (a deep
+      // link like `?session=<id>`) has to survive the hop, same as the
+      // `/review` redirect above.
+      path: '/sessions',
+      name: 'sessions',
+      redirect: (to) => ({ path: '/activity', query: { ...to.query, view: 'sessions' }, hash: to.hash }),
+    },
+    {
+      path: '/tools',
+      name: 'tools',
+      component: () => import('@/views/Tools.vue'),
+      meta: {
+        title: 'Tools',
+      },
+    },
+    {
+      path: '/activity',
+      name: 'activity',
+      component: () => import('@/views/Activity.vue'),
+      meta: {
+        title: 'Activity Log',
+      },
+    },
+    {
+      path: '/security',
+      redirect: (to) => ({ path: '/review', query: to.query, hash: to.hash }),
+    },
+    {
+      path: '/security/scans/:jobId',
+      name: 'scan-report',
+      component: () => import('@/views/ScanReport.vue'),
+      props: true,
+      meta: {
+        title: 'Scan Report',
+      },
+    },
+    { path: '/tokens', name: 'tokens', redirect: (to) => ({ path: '/clients', query: { ...to.query, tab: 'tokens' } }) },
+    // Server edition user routes
+    {
+      path: '/my/servers',
+      name: 'user-servers',
+      component: () => import('@/views/teams/UserServers.vue'),
+      meta: { title: 'My Servers', requiresAuth: true },
+    },
+    {
+      path: '/my/activity',
+      name: 'user-activity',
+      component: () => import('@/views/teams/UserActivity.vue'),
+      meta: { title: 'My Activity', requiresAuth: true },
+    },
+    {
+      path: '/my/diagnostics',
+      name: 'user-diagnostics',
+      component: () => import('@/views/teams/UserDiagnostics.vue'),
+      meta: { title: 'Diagnostics', requiresAuth: true },
+    },
+    {
+      path: '/my/tokens',
+      name: 'user-tokens',
+      component: () => import('@/views/teams/UserTokens.vue'),
+      meta: { title: 'Agent Tokens', requiresAuth: true },
+    },
+    // Server edition admin routes
+    {
+      path: '/admin/dashboard',
+      name: 'admin-dashboard',
+      component: () => import('@/views/teams/AdminDashboard.vue'),
+      meta: { title: 'Admin Dashboard', requiresAuth: true, requiresAdmin: true },
+    },
+    {
+      path: '/admin/users',
+      name: 'admin-users',
+      component: () => import('@/views/teams/AdminUsers.vue'),
+      meta: { title: 'Users', requiresAuth: true, requiresAdmin: true },
+    },
+    {
+      path: '/admin/servers',
+      name: 'admin-servers',
+      component: () => import('@/views/teams/AdminServers.vue'),
+      meta: { title: 'Servers', requiresAuth: true, requiresAdmin: true },
+    },
+    // 404 - keep at end
+    {
+      path: '/:pathMatch(.*)*',
+      name: 'not-found',
+      component: () => import('@/views/NotFound.vue'),
+      meta: {
+        title: 'Page Not Found',
+      },
+    },
+  ],
+})
+
+// Auth guard. Exported so tests can mount it on a memory-history router with
+// stub views and replay a hard reload (App.vue's mount-time checkAuth racing
+// the initial navigation) without importing every lazy view.
+export const authGuard: NavigationGuard = async (to) => {
+  const { useAuthStore } = await import('@/stores/auth')
+  const authStore = useAuthStore()
+
+  // Initialize auth state on first navigation. checkAuth() shares one
+  // in-flight probe, so if App.vue already started it this joins that run
+  // rather than issuing a second /status + /auth/me pair. Loop, not `if`: a
+  // `fresh` probe (reloadAfterAuth) queued behind the run we joined leaves
+  // `loading` true after our await, and the routing decision below must be
+  // made from the newest settled result, never the superseded one.
+  while (authStore.loading) {
+    await authStore.checkAuth()
+  }
+
+  // Skip auth checks for personal edition
+  if (!authStore.isTeamsEdition) {
+    // Don't show server routes in personal edition
+    if (to.path === '/login' || to.path.startsWith('/my/') || to.path.startsWith('/admin/')) {
+      return { name: 'home' }
+    }
+    // Update title for personal edition
+    const title = to.meta.title as string
+    if (title) {
+      document.title = `${title} - MCPProxy Control Panel`
+    }
+    return
+  }
+
+  // Public routes (login) - redirect to dashboard if already authenticated
+  if (to.meta.public) {
+    if (authStore.isAuthenticated) {
+      return { name: 'home' }
+    }
+    return
+  }
+
+  // Require authentication for server edition
+  if (!authStore.isAuthenticated) {
+    return { name: 'login', query: { redirect: to.fullPath } }
+  }
+
+  // Admin-only routes
+  if (to.meta.requiresAdmin && !authStore.isAdmin) {
+    return { name: 'home' }
+  }
+
+  // Update title
+  const title = to.meta.title as string
+  if (title) {
+    document.title = `${title} - MCPProxy Control Panel`
+  }
+}
+
+router.beforeEach(authGuard)
+
+export default router

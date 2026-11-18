@@ -1,0 +1,192 @@
+ M .two-sec/verdicts.jsonl
+ M bin/bash-2s-shim.sh
+ T bin/bash-4s-shim.sh
+ M bin/delend.test.ts
+ M bin/pitchfork
+ M bin/push-guard.sh
+ M config/dots/.profile
+ M config/tau/config.yml
+ M grafana/plugins/grafana-pyroscope-datasource/CHANGELOG.md
+ M grafana/plugins/grafana-pyroscope-datasource/MANIFEST.txt
+ M grafana/plugins/grafana-pyroscope-datasource/gpx_grafana-pyroscope-datasource_linux_amd64
+ M grafana/plugins/grafana-pyroscope-datasource/module.js
+ M grafana/plugins/grafana-pyroscope-datasource/plugin.json
+ M grafana/plugins/opentsdb/CHANGELOG.md
+ M grafana/plugins/opentsdb/MANIFEST.txt
+ M grafana/plugins/opentsdb/gpx_grafana-opentsdb-datasource_linux_amd64
+ M grafana/plugins/opentsdb/module.js
+ M grafana/plugins/opentsdb/plugin.json
+ M grafana/plugins/prometheus/CHANGELOG.md
+ M grafana/plugins/prometheus/MANIFEST.txt
+ M grafana/plugins/prometheus/go_plugin_build_manifest
+ M grafana/plugins/prometheus/gpx_grafana-prometheus-datasource_linux_amd64
+ M grafana/plugins/prometheus/module.js
+ M grafana/plugins/prometheus/module.js.map
+ M grafana/plugins/prometheus/plugin.json
+ M grafana/plugins/stackdriver/CHANGELOG.md
+ M grafana/plugins/stackdriver/MANIFEST.txt
+ M grafana/plugins/stackdriver/gpx_grafana_cloudmonitoring_datasource_linux_amd64
+ M grafana/plugins/stackdriver/module.js
+ M grafana/plugins/stackdriver/plugin.json
+ M grafana/plugins/tempo/860.js
+ M grafana/plugins/tempo/860.js.map
+ M grafana/plugins/tempo/CHANGELOG.md
+ M grafana/plugins/tempo/MANIFEST.txt
+ M grafana/plugins/tempo/gpx_grafana-tempo-datasource_linux_amd64
+ M grafana/plugins/tempo/module.js
+ M grafana/plugins/tempo/module.js.map
+ M grafana/plugins/tempo/plugin.json
+ M grafana/plugins/zipkin/CHANGELOG.md
+ M grafana/plugins/zipkin/MANIFEST.txt
+ M grafana/plugins/zipkin/gpx_grafana-zipkin-datasource_linux_amd64
+ M grafana/plugins/zipkin/module.js
+ M grafana/plugins/zipkin/plugin.json
+ M mise/conf.d/00-toolchain.toml
+ M pitchfork.d/agent-display.toml
+ M pitchfork.d/agent-viewer.toml
+ M pitchfork.d/awrawr-mcp.toml
+ M pitchfork.d/awrawr-ws-exec.toml
+ M pitchfork.d/bedrock-ui.toml
+ M pitchfork.d/beellama-fast.toml
+ M pitchfork.d/bench-radar.toml
+ M pitchfork.d/bidder-finch.toml
+ M pitchfork.d/bidder-forge.toml
+ M pitchfork.d/bidder-raccoon.toml
+ M pitchfork.d/bidder-scout.toml
+ M pitchfork.d/bidder-vesper.toml
+ M pitchfork.d/bidder-warden.toml
+ M pitchfork.d/boundless.toml
+ M pitchfork.d/browser-keeper.toml
+ M pitchfork.d/browserless.toml
+ M pitchfork.d/codebase-memory.toml
+ M pitchfork.d/coyote.toml
+ M pitchfork.d/cuttinggate.toml
+ M pitchfork.d/delendai-control-api.toml
+ M pitchfork.d/delendai-web.toml
+ M pitchfork.d/dnsmasq.toml
+ M pitchfork.d/doorbell-mcp.toml
+ M pitchfork.d/doorbell-oauth-edge.toml
+ M pitchfork.d/Pens-chat.toml
+ M pitchfork.d/Pens-reconcile-watch.toml
+ M pitchfork.d/feedlot.toml
+ M pitchfork.d/files.toml
+ M pitchfork.d/fleet-feed.toml
+ M pitchfork.d/fleet-ui.toml
+ M pitchfork.d/fleetd.toml
+ M pitchfork.d/forever-loop.toml
+ M pitchfork.d/forge-agent.toml
+ M pitchfork.d/forge.toml
+ M pitchfork.d/gatehouse.toml
+ M pitchfork.d/gibber-mcp.toml
+ M pitchfork.d/grafana.toml
+ M pitchfork.d/herd.toml
+ M pitchfork.d/hf-downloader.toml
+ M pitchfork.d/hindsight.toml
+ M pitchfork.d/hodos.toml
+ M pitchfork.d/kafka.toml
+ M pitchfork.d/kappa-acp.toml
+ M pitchfork.d/keeper-failover.toml
+ M pitchfork.d/keeper-floaty.toml
+ M pitchfork.d/keypool.toml
+ M pitchfork.d/kimi-audit-dash.toml
+ M pitchfork.d/kimi-auto-shim.toml
+ M pitchfork.d/kimi-code.toml
+ M pitchfork.d/kimiclaw-a.toml
+ M pitchfork.d/kimiclaw-b.toml
+ M pitchfork.d/kite-daemon.toml
+ M pitchfork.d/kitty-mcp.toml
+ M pitchfork.d/market-loop.toml
+ M pitchfork.d/market-watchdog.toml
+ M pitchfork.d/matter-server.toml
+ M pitchfork.d/mesh-hub.toml
+ M pitchfork.d/mesh-landing.toml
+ M pitchfork.d/model-guard.toml
+ M pitchfork.d/nativelink.toml
+ M pitchfork.d/nats-tail.toml
+ M pitchfork.d/nats.toml
+ M pitchfork.d/nginx.toml
+ M pitchfork.d/nim-kimi-sidecar.toml
+ M pitchfork.d/null-g-proxy.toml
+ M pitchfork.d/olympus.toml
+ M pitchfork.d/oracle-chat.toml
+ M pitchfork.d/oracle-core.toml
+ M pitchfork.d/oracle-market.toml
+ M pitchfork.d/paper-poller-watchdog.toml
+ M pitchfork.d/paper-poller.toml
+ M pitchfork.d/proc-watch-audit.toml
+ M pitchfork.d/prometheus.toml
+ M pitchfork.d/qdrant.toml
+ M pitchfork.d/ralph-dashboard.toml
+ M pitchfork.d/ranch-ui.toml
+ M pitchfork.d/range-ui.toml
+ M pitchfork.d/redis.toml
+ M pitchfork.d/refusal-watchdog.toml
+ M pitchfork.d/rig.toml
+ M pitchfork.d/rust-web.toml
+ M pitchfork.d/rustdesk-hbbr.toml
+ M pitchfork.d/rustdesk-hbbs.toml
+ M pitchfork.d/search-api.toml
+ M pitchfork.d/smithers-gateway.toml
+ M pitchfork.d/sorry-watchdog.toml
+ M pitchfork.d/squawk-feed.toml
+ M pitchfork.d/squawk-history.toml
+ M pitchfork.d/stash-guard.toml
+ M pitchfork.d/tailscale-keepalive.toml
+ M pitchfork.d/task-launch.toml
+ M pitchfork.d/tau-chute.toml
+ M pitchfork.d/tmp-reaper.toml
+ M pitchfork.d/toolcall-llm.toml
+ M pitchfork.d/vansrouter.toml
+ M pitchfork.d/windmill.toml
+ M pitchfork.d/yote.toml
+ M src/services/openfang.ts
+ M stack/services/herd.sh
+?? bin/audit-Pens.sh
+?? bin/bin-contract-audit.sh
+?? bin/chute-tau-fix.sh
+?? bin/corral-autodetect.sh
+?? bin/corral-diag.sh
+?? bin/delend-code-race-line
+?? bin/Pens-audit.sh
+?? bin/ffs-bun.ts
+?? bin/find-tau.sh
+?? bin/fork.sh
+?? bin/hardcore-tau-redo.sh
+?? bin/install-hook.sh
+?? bin/kappa-serve.sh
+?? bin/model-audit-max-final.sh
+?? bin/model-audit.sh
+?? bin/name-check.ts
+?? bin/name-fix.ts
+?? bin/nim-key-test.sh
+?? bin/nim-sweep-all.sh
+?? bin/nvidia-clairvoyant.sh
+?? bin/nvidia-db-wire.sh
+?? bin/nvidia-fix-final.sh
+?? bin/nvidia-model-sweep.sh
+?? bin/nvidia-shape-find.sh
+?? bin/nvidia-wire.sh
+?? bin/omniroute-secrets.sh
+?? bin/oracle-market-fix-payload-validation.sh
+?? bin/oracle-market-verify-fix.sh
+?? bin/ort-cuda-reinstall.sh
+?? bin/pitchfork-keepalive-lib.test.ts
+?? bin/pitchfork-keepalive-lib.ts
+?? bin/pitchfork-keepalive.ts
+?? bin/pitchfork-lib.test.ts
+?? bin/pitchfork-lib.ts
+?? bin/pitchfork-restart-lib.test.ts
+?? bin/pitchfork-restart-lib.ts
+?? bin/pitchfork-restart.ts
+?? bin/pitchfork.ts
+?? bin/pixel-adb-keepalive.sh
+?? bin/ranch-first-push.sh
+?? bin/restore-tau-launcher.sh
+?? bin/show.sh
+?? bin/tau-post-cleanup.sh
+?? bin/tau-start.sh
+?? bin/termstream.py
+?? bin/tunnel-monitor.sh
+?? bin/vansrouter-final-fix.sh
+?? bin/vansrouter-route-fix.sh
+?? ops/mbx-cache/

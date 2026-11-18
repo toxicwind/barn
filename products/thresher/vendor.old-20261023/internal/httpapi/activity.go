@@ -1,0 +1,1357 @@
+package httpapi
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/config"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/contracts"
+	internalRuntime "github.com/smart-mcp-proxy/mcpproxy-go/internal/runtime"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/security"
+	"github.com/smart-mcp-proxy/mcpproxy-go/internal/storage"
+)
+
+// parseActivityFilters extracts activity filter parameters from the request query string.
+func parseActivityFilters(r *http.Request) storage.ActivityFilter {
+	filter := storage.DefaultActivityFilter()
+	q := r.URL.Query()
+
+	// Type filter (Spec 024: supports comma-separated multiple types)
+	if typeStr := q.Get("type"); typeStr != "" {
+		filter.Types = strings.Split(typeStr, ",")
+	}
+
+	// Server filter
+	if server := q.Get("server"); server != "" {
+		filter.Server = server
+	}
+
+	// Tool filter
+	if tool := q.Get("tool"); tool != "" {
+		filter.Tool = tool
+	}
+
+	// Session filter
+	// Spec 082: filter by a unit of user work (one client, one project, across
+	// reconnects). This is what the UI's Session filter now sends.
+	if ws := q.Get("work_session_id"); ws != "" {
+		filter.WorkSessionID = ws
+	}
+	if sessionID := q.Get("session_id"); sessionID != "" {
+		filter.SessionID = sessionID
+	}
+
+	// Status filter
+	if status := q.Get("status"); status != "" {
+		filter.Status = status
+	}
+
+	// Time range filters
+	if startTimeStr := q.Get("start_time"); startTimeStr != "" {
+		if t, err := time.Parse(time.RFC3339, startTimeStr); err == nil {
+			filter.StartTime = t
+		}
+	}
+
+	if endTimeStr := q.Get("end_time"); endTimeStr != "" {
+		if t, err := time.Parse(time.RFC3339, endTimeStr); err == nil {
+			filter.EndTime = t
+		}
+	}
+
+	// Pagination
+	if limitStr := q.Get("limit"); limitStr != "" {
+		if limit, err := strconv.Atoi(limitStr); err == nil {
+			filter.Limit = limit
+		}
+	}
+
+	if offsetStr := q.Get("offset"); offsetStr != "" {
+		if offset, err := strconv.Atoi(offsetStr); err == nil {
+			filter.Offset = offset
+		}
+	}
+
+	// Intent type filter (Spec 018)
+	if intentType := q.Get("intent_type"); intentType != "" {
+		filter.IntentType = intentType
+	}
+
+	// Request ID filter (Spec 021)
+	if requestID := q.Get("request_id"); requestID != "" {
+		filter.RequestID = requestID
+	}
+
+	// Parent ID filter: the sub-calls one code_execution issued. Navigation is
+	// symmetric — parent→children is ?parent_id=<parent request_id>, and
+	// child→parent is ?request_id=<child parent_id>.
+	if parentID := q.Get("parent_id"); parentID != "" {
+		filter.ParentID = parentID
+	}
+
+	// Include call_tool_* internal tool calls (default: exclude the ones a
+	// tool_call record already covers — successful and concurrency-rejected).
+	// Set include_call_tool=true to show every internal tool call.
+	if q.Get("include_call_tool") == "true" {
+		filter.ExcludeCallToolSuccess = false
+	}
+
+	// Sensitive data detection filters (Spec 026)
+	if sensitiveDataStr := q.Get("sensitive_data"); sensitiveDataStr != "" {
+		sensitiveData := sensitiveDataStr == "true"
+		filter.SensitiveData = &sensitiveData
+	}
+
+	if detectionType := q.Get("detection_type"); detectionType != "" {
+		filter.DetectionType = detectionType
+	}
+
+	if severity := q.Get("severity"); severity != "" {
+		filter.Severity = severity
+	}
+
+	// Agent token identity filters (Spec 028)
+	if agent := q.Get("agent"); agent != "" {
+		filter.AgentName = agent
+	}
+	if authType := q.Get("auth_type"); authType != "" {
+		filter.AuthType = authType
+	}
+
+	filter.Validate()
+	return filter
+}
+
+// applyActivityScope stamps the caller's server entitlement onto a filter
+// (#1166 follow-up, G2).
+//
+// The activity log is the widest read door on the mux: it carries tool-call
+// ARGUMENTS and RESPONSES for every server, which is strictly more than the
+// enumeration the earlier round closed. The entitlement goes into
+// storage.ActivityFilter so ListActivities' `total` and StreamActivities' whole
+// pass see the same predicate the page does — a post-filter would shrink the
+// page while `total` kept counting the records it removed.
+//
+// It is applied AFTER parseActivityFilters on purpose: a caller-supplied
+// ?server= narrows within the entitlement, and can never widen past it, because
+// both live in the same Matches() call and the authorization term is evaluated
+// first.
+func applyActivityScope(ctx context.Context, filter *storage.ActivityFilter) {
+	if allowed, scoped := scopeAllowedServers(ctx); scoped {
+		filter.AllowedServers = allowed
+	}
+}
+
+// handleListActivity handles GET /api/v1/activity
+// @Summary List activity records
+// @Description Returns paginated list of activity records with optional filtering
+// @Tags Activity
+// @Accept json
+// @Produce json
+// @Param type query string false "Filter by activity type(s), comma-separated for multiple (Spec 024)" Enums(tool_call, policy_decision, quarantine_change, server_change, system_start, system_stop, internal_tool_call, config_change, preflight, prompt_get)
+// @Param server query string false "Filter by server name"
+// @Param tool query string false "Filter by tool name"
+// @Param session_id query string false "Filter by MCP transport session ID"
+// @Param work_session_id query string false "Filter by work session (one client, one project, across reconnects)"
+// @Param status query string false "Filter by status" Enums(success, error, blocked, rejected)
+// @Param intent_type query string false "Filter by intent operation type (Spec 018)" Enums(read, write, destructive)
+// @Param request_id query string false "Filter by HTTP request ID for log correlation (Spec 021)"
+// @Param parent_id query string false "Filter by parent call id — returns the sub-calls one code_execution issued"
+// @Param include_call_tool query bool false "Include successful call_tool_* internal tool calls (default: false, excluded to avoid duplicates)"
+// @Param sensitive_data query bool false "Filter by sensitive data detection (true=has detections, false=no detections)"
+// @Param detection_type query string false "Filter by specific detection type (e.g., 'aws_access_key', 'credit_card')"
+// @Param severity query string false "Filter by severity level" Enums(critical, high, medium, low)
+// @Param agent query string false "Filter by agent token name (Spec 028)"
+// @Param auth_type query string false "Filter by auth type (Spec 028)" Enums(admin, agent)
+// @Param start_time query string false "Filter activities after this time (RFC3339)"
+// @Param end_time query string false "Filter activities before this time (RFC3339)"
+// @Param limit query int false "Maximum records to return (1-100, default 50)"
+// @Param offset query int false "Pagination offset (default 0)"
+// @Param exclude_payloads query bool false "Omit arguments, response and metadata except a contextual whitelist (intent.reason, intent.operation_type, decision, reason, client_name, client_version) (default: false). For clients that render summary fields only; has_sensitive_data is still derived before metadata is dropped."
+// @Success 200 {object} contracts.APIResponse{data=contracts.ActivityListResponse}
+// @Failure 400 {object} contracts.APIResponse
+// @Failure 401 {object} contracts.APIResponse
+// @Failure 500 {object} contracts.APIResponse
+// @Security ApiKeyHeader
+// @Security ApiKeyQuery
+// @Router /api/v1/activity [get]
+func (s *Server) handleListActivity(w http.ResponseWriter, r *http.Request) {
+	filter := parseActivityFilters(r)
+	applyActivityScope(r.Context(), &filter)
+
+	activities, total, err := s.controller.ListActivities(filter)
+	if err != nil {
+		s.logger.Errorw("Failed to list activities", "error", err)
+		s.writeError(w, r, http.StatusInternalServerError, "Failed to list activities")
+		return
+	}
+
+	// Convert storage records to contract records.
+	//
+	// `exclude_payloads` is a projection, not a filter: it changes what is
+	// serialised, never which records match, so it is applied here rather than
+	// in the storage filter. Arguments, Response and Metadata are unbounded in
+	// practice (only Response is truncated, at 64KB), and a client that renders
+	// summary fields alone pays for them on every poll — measured against a real
+	// log, the newest 100 tool-call records are ~848KB whole and ~30KB projected.
+	// HasSensitiveData is derived by storageToContractActivity from Metadata
+	// BEFORE it is dropped, so the flag survives its source.
+	//
+	// Metadata is not dropped wholesale: a small whitelist of short contextual
+	// strings (why a call happened, whether policy blocked it, who called)
+	// survives, because the tray renders them and re-fetching each record in
+	// full to get an 80-character reason would undo the projection's point.
+	excludePayloads := r.URL.Query().Get("exclude_payloads") == "true"
+	contractActivities := make([]contracts.ActivityRecord, len(activities))
+	for i, a := range activities {
+		contractActivities[i] = storageToContractActivity(a)
+		s.maskActivityPayloads(&contractActivities[i])
+		if excludePayloads {
+			contractActivities[i].Arguments = nil
+			contractActivities[i].Response = ""
+			contractActivities[i].ResponseTruncated = false
+			contractActivities[i].Metadata = projectContextualMetadata(contractActivities[i].Metadata)
+		}
+	}
+
+	response := contracts.ActivityListResponse{
+		Activities: contractActivities,
+		Total:      total,
+		Limit:      filter.Limit,
+		Offset:     filter.Offset,
+	}
+
+	s.writeSuccess(w, response)
+}
+
+// handleGetActivityDetail handles GET /api/v1/activity/{id}
+// @Summary Get activity record details
+// @Description Returns full details for a single activity record
+// @Tags Activity
+// @Accept json
+// @Produce json
+// @Param id path string true "Activity record ID (ULID)"
+// @Success 200 {object} contracts.APIResponse{data=contracts.ActivityDetailResponse}
+// @Failure 404 {object} contracts.APIResponse
+// @Failure 401 {object} contracts.APIResponse
+// @Failure 500 {object} contracts.APIResponse
+// @Security ApiKeyHeader
+// @Security ApiKeyQuery
+// @Router /api/v1/activity/{id} [get]
+func (s *Server) handleGetActivityDetail(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if id == "" {
+		s.writeError(w, r, http.StatusBadRequest, "Activity ID is required")
+		return
+	}
+
+	activity, err := s.controller.GetActivity(id)
+	if err != nil {
+		s.logger.Errorw("Failed to get activity", "id", id, "error", err)
+		s.writeError(w, r, http.StatusInternalServerError, "Failed to get activity")
+		return
+	}
+
+	// #1166 follow-up (G2): a record the caller is not entitled to takes the
+	// SAME exit as one that does not exist — same status, same message. The
+	// oracle is status parity with an absent id, not "the body omits the server
+	// name": this route's 404 body carries no echo of the caller's input, so an
+	// absence assertion would pass vacuously.
+	if activity == nil || !canSeeServer(r.Context(), activity.ServerName) {
+		s.writeError(w, r, http.StatusNotFound, "Activity not found")
+		return
+	}
+
+	record := storageToContractActivity(activity)
+	s.maskActivityPayloads(&record)
+
+	response := contracts.ActivityDetailResponse{
+		Activity: record,
+	}
+
+	s.writeSuccess(w, response)
+}
+
+// maskActivityPayloads sanitises a record's request/response payloads before
+// they leave the process.
+//
+// Two separate problems, deliberately handled differently:
+//
+//   - Internal `_auth_*` arguments are MCPProxy's own plumbing, never something
+//     the caller sent, so they are dropped from EVERY record unconditionally.
+//   - A record the detector flagged carries the very credential the detection
+//     exists to warn about. The drawer that renders it is the surface most
+//     likely to end up in a screenshot or a screen-share, so the secret is
+//     replaced with a recognisable preview (`AKIA…****`) HERE, on the server:
+//     redacting in the client would leave the raw value on the wire and in the
+//     browser's network log, which is not a fix.
+//
+// Masking is scoped to flagged records so an unflagged payload costs nothing —
+// the detector already ran asynchronously when the call was recorded, and its
+// verdict is what `has_sensitive_data` reports.
+//
+// Full values remain reachable through the deliberate, separately-flagged
+// export path (`GET /api/v1/activity/export?include_bodies=true`), which is the
+// compliance/incident-response surface rather than a browsing one.
+func (s *Server) maskActivityPayloads(record *contracts.ActivityRecord) {
+	record.Arguments = security.StripInternalArgs(record.Arguments)
+
+	if !record.HasSensitiveData || s.sensitiveMasker == nil {
+		return
+	}
+
+	record.Arguments = s.sensitiveMasker.MaskArguments(record.Arguments)
+	if record.Response != "" {
+		masked, _ := s.sensitiveMasker.MaskText(record.Response)
+		record.Response = masked
+	}
+	// An upstream error commonly quotes the request or the response it choked
+	// on, so a failed call can carry the same credential the successful one
+	// would have — masking the body and not the error would just move the leak.
+	if record.ErrorMessage != "" {
+		masked, _ := s.sensitiveMasker.MaskText(record.ErrorMessage)
+		record.ErrorMessage = masked
+	}
+	// Metadata is not all machine-generated: `intent.reason` is prose the
+	// calling agent wrote, and an agent explaining itself ("rotating
+	// AKIA…") lands the same value in a field nobody was masking. The
+	// detection block itself is short identifiers no pattern matches, so the
+	// sweep passes over it untouched.
+	record.Metadata = s.sensitiveMasker.MaskArguments(record.Metadata)
+}
+
+// ActivityProjector returns the exact convert+mask composition core
+// GET /activity applies to a storage record before it reaches a caller
+// (Spec 107 T086, contracts/rest-endpoints.md §"user/activity"): the
+// server-edition GET /api/v1/user/activity door holds *storage.ActivityRecord
+// values and has no access to this package's unexported
+// storageToContractActivity/maskActivityPayloads, so this is the one exported
+// seam that lets it emit the same JSON shape and the same masking as the core
+// door for the same record.
+func (s *Server) ActivityProjector() func(*storage.ActivityRecord) contracts.ActivityRecord {
+	return func(record *storage.ActivityRecord) contracts.ActivityRecord {
+		contract := storageToContractActivity(record)
+		s.maskActivityPayloads(&contract)
+		return contract
+	}
+}
+
+// contextualMetadataKeys are the top-level metadata keys that survive the
+// `exclude_payloads` projection (contracts/api-deltas.md §1). Everything here is
+// a short string the tray glance shows verbatim; anything unbounded (arguments,
+// responses, toon renderings, detection payloads) is deliberately absent.
+var contextualMetadataKeys = []string{"decision", "reason", "client_name", "client_version"}
+
+// contextualIntentKeys are the keys kept inside `metadata.intent`. The rest of
+// the intent object (scores, raw classifier output) is not rendered anywhere.
+var contextualIntentKeys = []string{"reason", "operation_type"}
+
+// projectContextualMetadata narrows metadata to the contextual whitelist,
+// returning nil when nothing whitelisted is present so an all-dropped record
+// serialises as an absent object rather than an empty one.
+//
+// Only string values are kept. A whitelisted key is not a promise about its
+// value, and nothing stops a producer from putting a structured error under
+// `reason` — copying by key alone would carry that whole nested payload through
+// the one boundary callers are told payloads cannot cross.
+//
+// The result is always a fresh map: the input belongs to the storage layer (the
+// controller may hand back live records) and must not be edited in place.
+func projectContextualMetadata(metadata map[string]interface{}) map[string]interface{} {
+	if len(metadata) == 0 {
+		return nil
+	}
+
+	projected := make(map[string]interface{}, len(contextualMetadataKeys)+1)
+	for _, key := range contextualMetadataKeys {
+		if value, ok := metadata[key].(string); ok {
+			projected[key] = value
+		}
+	}
+
+	if intent, ok := metadata["intent"].(map[string]interface{}); ok {
+		projectedIntent := make(map[string]interface{}, len(contextualIntentKeys))
+		for _, key := range contextualIntentKeys {
+			if value, ok := intent[key].(string); ok {
+				projectedIntent[key] = value
+			}
+		}
+		if len(projectedIntent) > 0 {
+			projected["intent"] = projectedIntent
+		}
+	}
+
+	if len(projected) == 0 {
+		return nil
+	}
+	return projected
+}
+
+// storageToContractActivity converts a storage ActivityRecord to a contracts ActivityRecord.
+func storageToContractActivity(a *storage.ActivityRecord) contracts.ActivityRecord {
+	hasSensitiveData, detectionTypes, maxSeverity := extractSensitiveDataInfo(a)
+
+	return contracts.ActivityRecord{
+		ID:                a.ID,
+		Type:              contracts.ActivityType(a.Type),
+		Source:            contracts.ActivitySource(a.Source),
+		ServerName:        a.ServerName,
+		ToolName:          a.ToolName,
+		Arguments:         a.Arguments,
+		Response:          a.Response,
+		ResponseTruncated: a.ResponseTruncated,
+		Status:            a.Status,
+		ErrorMessage:      a.ErrorMessage,
+		DurationMs:        a.DurationMs,
+		Timestamp:         a.Timestamp,
+		SessionID:         a.SessionID,
+		WorkSessionID:     a.WorkSessionID,
+		RequestID:         a.RequestID,
+		ParentID:          a.ParentID,
+		Metadata:          a.Metadata,
+		// Sensitive data detection fields (Spec 026)
+		HasSensitiveData: hasSensitiveData,
+		DetectionTypes:   detectionTypes,
+		MaxSeverity:      maxSeverity,
+	}
+}
+
+// extractSensitiveDataInfo extracts sensitive data detection info from activity metadata.
+// Returns (hasSensitiveData bool, detectionTypes []string, maxSeverity string).
+func extractSensitiveDataInfo(a *storage.ActivityRecord) (bool, []string, string) {
+	if a.Metadata == nil {
+		return false, nil, ""
+	}
+
+	detection, ok := a.Metadata["sensitive_data_detection"].(map[string]interface{})
+	if !ok {
+		return false, nil, ""
+	}
+
+	detected, _ := detection["detected"].(bool)
+	if !detected {
+		return false, nil, ""
+	}
+
+	// Extract unique detection types
+	var detectionTypes []string
+	typeSet := make(map[string]struct{})
+
+	if detections, ok := detection["detections"].([]interface{}); ok {
+		for _, d := range detections {
+			if det, ok := d.(map[string]interface{}); ok {
+				if dtype, ok := det["type"].(string); ok {
+					if _, exists := typeSet[dtype]; !exists {
+						typeSet[dtype] = struct{}{}
+						detectionTypes = append(detectionTypes, dtype)
+					}
+				}
+			}
+		}
+	}
+
+	// Calculate max severity
+	maxSeverity := calculateMaxSeverity(detection)
+
+	return detected, detectionTypes, maxSeverity
+}
+
+// calculateMaxSeverity determines the highest severity from detection results.
+// Severity order: critical > high > medium > low
+func calculateMaxSeverity(detection map[string]interface{}) string {
+	severityOrder := map[string]int{
+		"critical": 4,
+		"high":     3,
+		"medium":   2,
+		"low":      1,
+	}
+
+	maxLevel := 0
+	maxSeverity := ""
+
+	if detections, ok := detection["detections"].([]interface{}); ok {
+		for _, d := range detections {
+			if det, ok := d.(map[string]interface{}); ok {
+				if sev, ok := det["severity"].(string); ok {
+					if level, exists := severityOrder[sev]; exists && level > maxLevel {
+						maxLevel = level
+						maxSeverity = sev
+					}
+				}
+			}
+		}
+	}
+
+	return maxSeverity
+}
+
+// storageToContractActivityForExport converts a storage ActivityRecord to a contracts ActivityRecord
+// with optional inclusion of request/response bodies for export.
+func storageToContractActivityForExport(a *storage.ActivityRecord, includeBodies bool) contracts.ActivityRecord {
+	hasSensitiveData, detectionTypes, maxSeverity := extractSensitiveDataInfo(a)
+
+	record := contracts.ActivityRecord{
+		ID:                a.ID,
+		Type:              contracts.ActivityType(a.Type),
+		Source:            contracts.ActivitySource(a.Source),
+		ServerName:        a.ServerName,
+		ToolName:          a.ToolName,
+		ResponseTruncated: a.ResponseTruncated,
+		Status:            a.Status,
+		ErrorMessage:      a.ErrorMessage,
+		DurationMs:        a.DurationMs,
+		Timestamp:         a.Timestamp,
+		SessionID:         a.SessionID,
+		WorkSessionID:     a.WorkSessionID,
+		RequestID:         a.RequestID,
+		ParentID:          a.ParentID,
+		Metadata:          a.Metadata,
+		// Pre-truncation byte lengths (Spec 069 A1). Copied unconditionally,
+		// NOT under includeBodies: they are sizes, not content, and the
+		// bodies-off export is exactly the case where they are the only cost
+		// signal left (spec 103). Gating them on the bodies flag would leave the
+		// default export with nothing to account a suppressed payload by.
+		RequestBytes:  a.RequestBytes,
+		ResponseBytes: a.ResponseBytes,
+		// Sensitive data detection fields (Spec 026)
+		HasSensitiveData: hasSensitiveData,
+		DetectionTypes:   detectionTypes,
+		MaxSeverity:      maxSeverity,
+	}
+
+	// Only include request/response bodies when explicitly requested
+	if includeBodies {
+		record.Arguments = a.Arguments
+		record.Response = a.Response
+	}
+
+	return record
+}
+
+// handleExportActivity handles GET /api/v1/activity/export
+// @Summary Export activity records
+// @Description Exports activity records in JSON Lines or CSV format for compliance
+// @Tags Activity
+// @Accept json
+// @Produce application/x-ndjson,text/csv
+// @Param format query string false "Export format: json (default) or csv"
+// @Param type query string false "Filter by activity type"
+// @Param server query string false "Filter by server name"
+// @Param tool query string false "Filter by tool name"
+// @Param session_id query string false "Filter by MCP transport session ID"
+// @Param work_session_id query string false "Filter by work session (one client, one project, across reconnects)"
+// @Param status query string false "Filter by status"
+// @Param request_id query string false "Filter by HTTP request ID for log correlation (Spec 021)"
+// @Param parent_id query string false "Filter by parent call id — exports the sub-calls one code_execution issued"
+// @Param start_time query string false "Filter activities after this time (RFC3339)"
+// @Param end_time query string false "Filter activities before this time (RFC3339)"
+// @Param limit query int false "Maximum records to export (1-50000, default 10000)"
+// @Param offset query int false "Pagination offset (default 0)"
+// @Success 200 {string} string "Streamed activity records"
+// @Failure 401 {object} contracts.APIResponse
+// @Failure 500 {object} contracts.APIResponse
+// @Security ApiKeyHeader
+// @Security ApiKeyQuery
+// @Router /api/v1/activity/export [get]
+func (s *Server) handleExportActivity(w http.ResponseWriter, r *http.Request) {
+	filter := parseActivityFilters(r)
+	applyActivityScope(r.Context(), &filter)
+
+	// Re-parse limit/offset from query for export — parseActivityFilters caps at 100 via Validate(),
+	// but export supports up to 50000. Re-read raw values and apply export-specific validation.
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		if limit, err := strconv.Atoi(limitStr); err == nil {
+			filter.Limit = limit
+		}
+	} else {
+		filter.Limit = 0 // Not specified — let ValidateForExport set the default (10000)
+	}
+	if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
+		if offset, err := strconv.Atoi(offsetStr); err == nil {
+			filter.Offset = offset
+		}
+	}
+	filter.ValidateForExport()
+
+	format := r.URL.Query().Get("format")
+	if format == "" {
+		format = "json"
+	}
+
+	// Check if request/response bodies should be included
+	includeBodies := r.URL.Query().Get("include_bodies") == "true"
+
+	// Validate format
+	if format != "json" && format != "csv" {
+		s.writeError(w, r, http.StatusBadRequest, "Invalid format. Use 'json' or 'csv'")
+		return
+	}
+
+	// Set appropriate content type and headers
+	filename := "activity-export"
+	if format == "csv" {
+		w.Header().Set("Content-Type", "text/csv")
+		filename += ".csv"
+	} else {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		filename += ".jsonl"
+	}
+	w.Header().Set("Content-Disposition", "attachment; filename=\""+filename+"\"")
+	w.Header().Set("Cache-Control", "no-cache")
+
+	// Stream activities
+	activityCh := s.controller.StreamActivities(filter)
+
+	// Write CSV header if format is CSV
+	if format == "csv" {
+		// parent_id is APPENDED, never inserted: existing CSV consumers index by
+		// column position, so a new column has to land after the last one.
+		csvHeader := "id,type,source,server_name,tool_name,status,error_message,duration_ms,timestamp,session_id,request_id,response_truncated,parent_id\n"
+		if _, err := w.Write([]byte(csvHeader)); err != nil {
+			s.logger.Errorw("Failed to write CSV header", "error", err)
+			return
+		}
+	}
+
+	// Flush headers
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+
+	count := 0
+	for activity := range activityCh {
+		var line string
+		if format == "csv" {
+			line = activityToCSVRow(activity)
+		} else {
+			// JSON Lines format - one JSON object per line
+			contractActivity := storageToContractActivityForExport(activity, includeBodies)
+			jsonBytes, err := json.Marshal(contractActivity)
+			if err != nil {
+				s.logger.Errorw("Failed to marshal activity for export", "error", err, "id", activity.ID)
+				continue
+			}
+			line = string(jsonBytes) + "\n"
+		}
+
+		if _, err := w.Write([]byte(line)); err != nil {
+			s.logger.Errorw("Failed to write activity export line", "error", err)
+			return
+		}
+
+		count++
+		// Flush periodically for streaming
+		if count%100 == 0 {
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		}
+	}
+
+	// Final flush
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+
+	s.logger.Infow("Activity export completed", "format", format, "count", count, "limit", filter.Limit, "offset", filter.Offset)
+}
+
+// activityToCSVRow converts an ActivityRecord to a CSV row string.
+func activityToCSVRow(a *storage.ActivityRecord) string {
+	// Escape CSV fields that might contain commas, quotes, or newlines
+	escapeCSV := func(s string) string {
+		if strings.ContainsAny(s, ",\"\n\r") {
+			return "\"" + strings.ReplaceAll(s, "\"", "\"\"") + "\""
+		}
+		return s
+	}
+
+	return strings.Join([]string{
+		escapeCSV(a.ID),
+		escapeCSV(string(a.Type)),
+		escapeCSV(string(a.Source)),
+		escapeCSV(a.ServerName),
+		escapeCSV(a.ToolName),
+		escapeCSV(a.Status),
+		escapeCSV(a.ErrorMessage),
+		strconv.FormatInt(a.DurationMs, 10),
+		a.Timestamp.Format(time.RFC3339),
+		escapeCSV(a.SessionID),
+		escapeCSV(a.RequestID),
+		strconv.FormatBool(a.ResponseTruncated),
+		escapeCSV(a.ParentID),
+	}, ",") + "\n"
+}
+
+// parsePeriodDuration converts a period string to a time.Duration.
+func parsePeriodDuration(period string) (time.Duration, error) {
+	switch period {
+	case "1h":
+		return time.Hour, nil
+	case "24h":
+		return 24 * time.Hour, nil
+	case "7d":
+		return 7 * 24 * time.Hour, nil
+	case "30d":
+		return 30 * 24 * time.Hour, nil
+	default:
+		return 0, fmt.Errorf("invalid period: %s", period)
+	}
+}
+
+// handleActivitySummary handles GET /api/v1/activity/summary
+// @Summary Get activity summary statistics
+// @Description Returns aggregated activity statistics for a time period
+// @Tags Activity
+// @Accept json
+// @Produce json
+// @Param period query string false "Time period: 1h, 24h (default), 7d, 30d"
+// @Param group_by query string false "Group by: server, tool (optional)"
+// @Success 200 {object} contracts.APIResponse{data=contracts.ActivitySummaryResponse}
+// @Failure 400 {object} contracts.APIResponse
+// @Failure 401 {object} contracts.APIResponse
+// @Failure 500 {object} contracts.APIResponse
+// @Security ApiKeyHeader
+// @Security ApiKeyQuery
+// @Router /api/v1/activity/summary [get]
+func (s *Server) handleActivitySummary(w http.ResponseWriter, r *http.Request) {
+	// Parse period parameter
+	period := r.URL.Query().Get("period")
+	if period == "" {
+		period = "24h"
+	}
+
+	duration, err := parsePeriodDuration(period)
+	if err != nil {
+		s.writeError(w, r, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Calculate time range
+	endTime := time.Now().UTC()
+	startTime := endTime.Add(-duration)
+
+	// Build filter for the time range.
+	//
+	// Limit stays 0 and the records are STREAMED rather than listed: this is a
+	// counting query over the whole period, and ListActivities runs
+	// ActivityFilter.Validate(), which coerces limit 0 to 50 and caps it at 100.
+	// The summary therefore used to describe the newest 50 records and label the
+	// answer "24h" — on a busy proxy the totals, the status split and the top
+	// server/tool lists were all computed from a few minutes of traffic.
+	// StreamActivities applies the same Matches() filter but treats limit 0 as
+	// "no limit", so the counters see every record in the window.
+	filter := storage.DefaultActivityFilter()
+	filter.StartTime = startTime
+	filter.EndTime = endTime
+	filter.Limit = 0
+	applyActivityScope(r.Context(), &filter)
+
+	// Calculate summary statistics
+	var totalCount, successCount, errorCount, blockedCount, rejectedCount, otherCount int
+	var callCount, callErrorCount int
+	serverCounts := make(map[string]int)
+	toolCounts := make(map[string]int)
+
+	// The stream holds a read transaction open until the channel is drained or
+	// closed, so this loop must always run to completion.
+	for a := range s.controller.StreamActivities(filter) {
+		totalCount++
+
+		// "How many rows" (totalCount) and "how many calls" (callCount) are
+		// different questions, and the Activity Log used to print the first
+		// under the second's label while the Usage tab printed the second —
+		// same instance, same window, different numbers (F1, #1046). One shared
+		// definition, in storage, settles it for both surfaces.
+		if counted, isError := storage.CountsAsCall(a); counted {
+			callCount++
+			if isError {
+				callErrorCount++
+			}
+		}
+
+		switch a.Status {
+		case storage.ActivityStatusSuccess:
+			successCount++
+		case storage.ActivityStatusError:
+			errorCount++
+		case storage.ActivityStatusBlocked:
+			blockedCount++
+		case storage.ActivityStatusRejected:
+			// Spec 093: shed by a concurrency limit — proxy backpressure, kept
+			// out of the error bucket so a saturated limiter does not read as an
+			// upstream outage.
+			rejectedCount++
+		default:
+			// Not a tool-call outcome at all: a quarantine change stores its
+			// action in Status ("approved"), a policy decision its verdict
+			// ("allow"). Counting them here — rather than letting them fall
+			// silently into the total only — is what makes the five tiles a
+			// partition of the denominator they sit under (F2, #1046).
+			otherCount++
+		}
+
+		// Count by server / by tool — UPSTREAM traffic only.
+		//
+		// Issue #1146 gave the management built-ins a target_server so the
+		// Activity Log could render a Server column and --server could filter
+		// on it. These two lists answer a different question ("which upstreams
+		// is this proxy talking to"), and they used to skip those rows only by
+		// the accident of an empty ServerName. Excluding them explicitly keeps
+		// a burst of config edits from reading as traffic to the server being
+		// configured, and keeps "github:upstream_servers" — a built-in no
+		// upstream owns — out of the top-tools list. The rows stay in
+		// totalCount: they are real activity, just not upstream traffic.
+		if storage.IsManagementBuiltin(a) {
+			continue
+		}
+
+		if a.ServerName != "" {
+			serverCounts[a.ServerName]++
+		}
+
+		if a.ServerName != "" && a.ToolName != "" {
+			key := a.ServerName + ":" + a.ToolName
+			toolCounts[key]++
+		}
+	}
+
+	// Build top servers list (top 5)
+	topServers := buildTopServers(serverCounts, 5)
+
+	// Build top tools list (top 5)
+	topTools := buildTopTools(toolCounts, 5)
+
+	response := contracts.ActivitySummaryResponse{
+		Period:         period,
+		TotalCount:     totalCount,
+		SuccessCount:   successCount,
+		ErrorCount:     errorCount,
+		BlockedCount:   blockedCount,
+		RejectedCount:  rejectedCount,
+		OtherCount:     otherCount,
+		CallCount:      callCount,
+		CallErrorCount: callErrorCount,
+		TopServers:     topServers,
+		TopTools:       topTools,
+		StartTime:      startTime.Format(time.RFC3339),
+		EndTime:        endTime.Format(time.RFC3339),
+	}
+
+	s.writeSuccess(w, response)
+}
+
+// buildTopServers returns top N servers by activity count.
+func buildTopServers(counts map[string]int, limit int) []contracts.ActivityTopServer {
+	// Convert map to slice for sorting
+	type serverCount struct {
+		name  string
+		count int
+	}
+	var servers []serverCount
+	for name, count := range counts {
+		servers = append(servers, serverCount{name, count})
+	}
+
+	// Sort by count descending
+	for i := 0; i < len(servers)-1; i++ {
+		for j := i + 1; j < len(servers); j++ {
+			if servers[j].count > servers[i].count {
+				servers[i], servers[j] = servers[j], servers[i]
+			}
+		}
+	}
+
+	// Take top N
+	if len(servers) > limit {
+		servers = servers[:limit]
+	}
+
+	result := make([]contracts.ActivityTopServer, len(servers))
+	for i, s := range servers {
+		result[i] = contracts.ActivityTopServer{
+			Name:  s.name,
+			Count: s.count,
+		}
+	}
+	return result
+}
+
+// buildTopTools returns top N tools by activity count.
+func buildTopTools(counts map[string]int, limit int) []contracts.ActivityTopTool {
+	// Convert map to slice for sorting
+	type toolCount struct {
+		key   string
+		count int
+	}
+	var tools []toolCount
+	for key, count := range counts {
+		tools = append(tools, toolCount{key, count})
+	}
+
+	// Sort by count descending
+	for i := 0; i < len(tools)-1; i++ {
+		for j := i + 1; j < len(tools); j++ {
+			if tools[j].count > tools[i].count {
+				tools[i], tools[j] = tools[j], tools[i]
+			}
+		}
+	}
+
+	// Take top N
+	if len(tools) > limit {
+		tools = tools[:limit]
+	}
+
+	result := make([]contracts.ActivityTopTool, len(tools))
+	for i, t := range tools {
+		// Split server:tool key
+		parts := strings.SplitN(t.key, ":", 2)
+		if len(parts) == 2 {
+			result[i] = contracts.ActivityTopTool{
+				Server: parts[0],
+				Tool:   parts[1],
+				Count:  t.count,
+			}
+		}
+	}
+	return result
+}
+
+// =============================================================================
+// Spec 069 A3 (MCP-750): GET /api/v1/activity/usage
+// =============================================================================
+
+const (
+	usageDefaultTop    = 20
+	usageDefaultSort   = "resp_bytes"
+	usageDefaultWindow = "24h"
+	usageTokenSource   = "bytes" // size-based proxy (FR-006); FR-010 → "estimated_tokens"
+)
+
+// usageParams holds the validated query parameters for the usage endpoint,
+// plus the caller's server entitlement (#1166 follow-up, G2).
+type usageParams struct {
+	window string // "24h" | "7d" | "all"
+	server string
+	tool   string
+	status string // "" | "success" | "error" | "blocked" | "rejected"
+	top    int
+	sort   string // "calls" | "resp_bytes" | "error_rate" | "p95"
+
+	// allowed is the scoped caller's server entitlement; scoped says whether
+	// one applies at all. They are separate because a token allowed NO servers
+	// produces an empty-but-non-nil slice that must hide everything, while an
+	// admin (or the no-AuthContext bootstrap passthrough) is unrestricted.
+	allowed []string
+	scoped  bool
+}
+
+// canSee reports whether this caller may see rows attributed to serverName.
+func (p usageParams) canSee(serverName string) bool {
+	if !p.scoped {
+		return true
+	}
+	if serverName == "" {
+		return false
+	}
+	for _, allowed := range p.allowed {
+		if allowed == "*" || allowed == serverName {
+			return true
+		}
+	}
+	return false
+}
+
+// cacheKey is a stable identity for the params, used by the short-TTL cache.
+//
+// The caller's entitlement is PART of that identity. handleActivityUsage caches
+// the built response for usage_cache_ttl in a process-wide map: without the
+// scope term the first agent token to ask would seed the entry the admin Web UI
+// (and every other tenant) then read for the rest of the TTL, and vice versa.
+// Two tokens with the same allowed-server set legitimately share an entry;
+// nothing else does.
+//
+// The encoding is LENGTH-PREFIXED, and that is a correctness property, not a
+// style choice (round 10, P6). Joining the terms with a bare separator is not
+// injective when the separator can appear inside a term: config validation
+// rejects only a colon in a server name, so a single server literally named
+// `a,b` produced the same key as the scope ["a","b"], and a `?server=` filter
+// value containing a pipe collided across fields the same way. A collision here
+// serves one tenant's cached response to another — the disclosure this whole
+// door exists to prevent, arriving through the cache instead of the query.
+func (p usageParams) cacheKey() string {
+	var b strings.Builder
+	write := func(part string) {
+		b.WriteString(strconv.Itoa(len(part)))
+		b.WriteByte(':')
+		b.WriteString(part)
+	}
+	for _, part := range []string{p.window, p.server, p.tool, p.status, p.sort, strconv.Itoa(p.top)} {
+		write(part)
+	}
+	if !p.scoped {
+		write("admin")
+		return b.String()
+	}
+	sorted := append([]string(nil), p.allowed...)
+	sort.Strings(sorted)
+	write("scoped")
+	write(strconv.Itoa(len(sorted)))
+	for _, name := range sorted {
+		write(name)
+	}
+	return b.String()
+}
+
+// windowStart returns the lower time bound for the window relative to now, plus
+// whether a bound applies (false for "all").
+func (p usageParams) windowStart(now time.Time) (time.Time, bool) {
+	switch p.window {
+	case "24h":
+		return now.Add(-24 * time.Hour), true
+	case "7d":
+		return now.Add(-7 * 24 * time.Hour), true
+	default: // "all"
+		return time.Time{}, false
+	}
+}
+
+// parseUsageParams validates the usage query string, returning a 400-style error
+// message for any bad enum / non-int top.
+func parseUsageParams(r *http.Request) (usageParams, error) {
+	q := r.URL.Query()
+	p := usageParams{
+		window: usageDefaultWindow,
+		server: q.Get("server"),
+		tool:   q.Get("tool"),
+		status: q.Get("status"),
+		top:    usageDefaultTop,
+		sort:   usageDefaultSort,
+	}
+	// Resolved HERE, not at the call site, so the entitlement cannot be
+	// forgotten by a future caller and — more importantly — so it is inside
+	// cacheKey() by construction.
+	p.allowed, p.scoped = scopeAllowedServers(r.Context())
+
+	if v := q.Get("window"); v != "" {
+		switch v {
+		case "24h", "7d", "all":
+			p.window = v
+		default:
+			return p, fmt.Errorf("invalid window %q (expected 24h, 7d, or all)", v)
+		}
+	}
+
+	if v := q.Get("sort"); v != "" {
+		switch v {
+		case "calls", "resp_bytes", "error_rate", "p95":
+			p.sort = v
+		default:
+			return p, fmt.Errorf("invalid sort %q (expected calls, resp_bytes, error_rate, or p95)", v)
+		}
+	}
+
+	if p.status != "" {
+		switch p.status {
+		// Spec 093: "rejected" (shed by a concurrency limit) is part of the
+		// activity status vocabulary, so the usage filter must accept it —
+		// usageMatchesStatus already knows how to answer it.
+		case "success", "error", "blocked", "rejected":
+		default:
+			return p, fmt.Errorf("invalid status %q (expected success, error, blocked, or rejected)", p.status)
+		}
+	}
+
+	if v := q.Get("top"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return p, fmt.Errorf("invalid top %q (expected a positive integer)", v)
+		}
+		p.top = n
+	}
+
+	return p, nil
+}
+
+// handleActivityUsage handles GET /api/v1/activity/usage
+// @Summary Get usage statistics aggregate
+// @Description Returns the actor-owned usage aggregate (per-tool rollup + timeline + tokens-saved headline) for the Web UI usage graphs (Spec 069). Served from an in-memory snapshot — never a per-request full-log scan. Per-tool metrics are lifetime-cumulative; `window` scopes the timeline and filters the tool list to tools active within the span.
+// @Tags Activity
+// @Accept json
+// @Produce json
+// @Param window query string false "Time window for timeline + tool-list membership" Enums(24h, 7d, all)
+// @Param server query string false "Filter to one server"
+// @Param tool query string false "Filter to one tool"
+// @Param status query string false "Filter to tools with activity of this status" Enums(success, error, blocked, rejected)
+// @Param top query int false "Top-N tools by sort key; remainder folded into 'other' (default 20)"
+// @Param sort query string false "Ranking key for the per-tool list" Enums(calls, resp_bytes, error_rate, p95)
+// @Success 200 {object} contracts.APIResponse{data=contracts.UsageAggregateResponse}
+// @Failure 400 {object} contracts.APIResponse
+// @Failure 401 {object} contracts.APIResponse
+// @Security ApiKeyHeader
+// @Security ApiKeyQuery
+// @Router /api/v1/activity/usage [get]
+func (s *Server) handleActivityUsage(w http.ResponseWriter, r *http.Request) {
+	params, err := parseUsageParams(r)
+	if err != nil {
+		s.writeError(w, r, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	ttl := s.usageCacheTTL()
+	key := params.cacheKey()
+	if cached := s.getUsageCache(key, ttl); cached != nil {
+		s.writeSuccess(w, cached)
+		return
+	}
+
+	snap := s.controller.UsageSnapshot()
+	tokens, _ := s.controller.GetTokenSavings()
+
+	resp := buildUsageResponse(snap, tokens, params, time.Now().UTC())
+	s.putUsageCache(key, resp, ttl)
+	s.writeSuccess(w, resp)
+}
+
+// usageCacheTTL reads the configured read-cache freshness bound (FR-005),
+// falling back to the default when config is unavailable. Read per request so
+// the value hot-reloads with config.
+func (s *Server) usageCacheTTL() time.Duration {
+	def := time.Duration(config.DefaultObservabilityConfig().UsageCacheTTL)
+	cfgIface := s.controller.GetCurrentConfig()
+	cfg, ok := cfgIface.(*config.Config)
+	if !ok || cfg == nil || cfg.Observability == nil {
+		return def
+	}
+	if d := time.Duration(cfg.Observability.UsageCacheTTL); d > 0 {
+		return d
+	}
+	return def
+}
+
+// buildUsageResponse projects the usage snapshot into the API contract, applying
+// window/filter/sort/top-N. It performs no I/O and never scans the activity log
+// (SC-005): the actor-owned snapshot is the incremental-precompute path (FR-005).
+func buildUsageResponse(snap *internalRuntime.UsageAggregate, tokens *contracts.ServerTokenMetrics, p usageParams, now time.Time) *contracts.UsageAggregateResponse {
+	resp := &contracts.UsageAggregateResponse{
+		Window:      p.window,
+		GeneratedAt: now,
+		TokenSource: usageTokenSource,
+		Tools:       make([]contracts.UsageToolStat, 0),
+		Timeline:    make([]contracts.UsageTimeBucket, 0),
+	}
+	// #1166 follow-up (G3): the tokens-saved headline and the timeline below are
+	// FLEET-WIDE aggregates. Neither can be re-derived per server — the token
+	// metrics are computed across the whole inventory, and snap.Timeline() is a
+	// set of global buckets with no per-server breakdown — so for a scoped
+	// caller they are dropped rather than reported wrongly. Same position
+	// recomputeServerStats already takes on the same struct (it drops
+	// TokenMetrics from GET /api/v1/servers instead of projecting it), so the
+	// three doors that touch contracts.ServerTokenMetrics agree.
+	if tokens != nil && !p.scoped {
+		resp.TokensSaved = tokens.SavedTokens
+		resp.TokensSavedPercentage = tokens.SavedTokensPercentage
+	}
+	if snap == nil {
+		return resp
+	}
+	if !snap.UpdatedAt.IsZero() {
+		if age := now.Sub(snap.UpdatedAt); age > 0 {
+			resp.FreshnessMs = age.Milliseconds()
+		}
+	}
+
+	start, bounded := p.windowStart(now)
+
+	// Per-tool rollup: filter by membership, project to contract rows.
+	rows := make([]contracts.UsageToolStat, 0, len(snap.Tools))
+	for _, tu := range snap.Tools {
+		// Entitlement first, so no query parameter below can widen past it.
+		// Each row names a server and a tool: without this a scoped token read
+		// the whole fleet's tool inventory plus its call volumes off a route
+		// with no gate at all.
+		if !p.canSee(tu.Server) {
+			continue
+		}
+		if p.server != "" && tu.Server != p.server {
+			continue
+		}
+		if p.tool != "" && tu.Tool != p.tool {
+			continue
+		}
+		if !usageMatchesStatus(tu, p.status) {
+			continue
+		}
+		if bounded && tu.LastUsed.Before(start) {
+			continue // tool idle for the whole window
+		}
+		rows = append(rows, usageToolStat(tu))
+	}
+
+	sortUsageRows(rows, p.sort)
+
+	// Round 10 (P7): the headline for a scoped caller is summed HERE, over the
+	// rows it may see, before the top-N fold discards the tail.
+	//
+	// The early return below skips the timeline loop, which is where an admin's
+	// TotalCalls / TotalErrors are accumulated — so a scoped caller used to be
+	// served `"total_calls":0` beside per-tool rows whose calls plainly summed
+	// to a non-zero number. The response contradicted itself, and a client with
+	// no way to know why reads a zero as "no traffic".
+	//
+	// The population differs from an admin's, and the field comment on
+	// contracts.UsageAggregateResponse says why it must: the timeline is
+	// window-bucketed and global, this sum is the lifetime-cumulative rollup of
+	// the tools active in the window. A scoped caller cannot be given the
+	// former (there is no per-server timeline to project) so it is given a
+	// number that agrees with the rest of ITS OWN response instead of one that
+	// contradicts it. Nothing new is disclosed: every addend is a row the same
+	// response already carries.
+	if p.scoped {
+		for i := range rows {
+			resp.TotalCalls += rows[i].Calls
+			resp.TotalErrors += rows[i].Errors
+		}
+	}
+
+	// Top-N + 'other' fold.
+	if len(rows) > p.top {
+		other := &contracts.UsageOtherBucket{}
+		for _, row := range rows[p.top:] {
+			other.ToolsFolded++
+			other.Calls += row.Calls
+			other.TotalRespBytes += row.TotalRespBytes
+		}
+		resp.Other = other
+		rows = rows[:p.top]
+	}
+	resp.Tools = rows
+
+	// Timeline: global buckets trimmed to the window span. Its sum is also the
+	// window's headline count — computed here, server-side, from the same bars
+	// the response carries, so the tiles and the histogram beneath them agree
+	// and so the Activity Log can print the same number (F1, #1046).
+	//
+	// GLOBAL is the operative word, and it is why a scoped caller gets none of
+	// it: the buckets aggregate every server's traffic with no per-server
+	// breakdown to project, so emitting them would hand a tenant the whole
+	// deployment's call and error volume over time. Empty timeline, zero totals
+	// — the same "cannot be re-derived, so not reported" rule as the tokens
+	// headline above.
+	if p.scoped {
+		return resp
+	}
+	for _, b := range snap.Timeline() {
+		if bounded && b.Start.Before(start) {
+			continue
+		}
+		resp.Timeline = append(resp.Timeline, contracts.UsageTimeBucket{
+			Start:          b.Start,
+			Calls:          b.Calls,
+			Errors:         b.Errors,
+			TotalRespBytes: b.RespBytesSum,
+		})
+		resp.TotalCalls += b.Calls
+		resp.TotalErrors += b.Errors
+	}
+
+	return resp
+}
+
+// usageMatchesStatus reports whether a tool has any activity of the requested
+// status. Status filters operate as membership filters on the cumulative
+// per-tool rollup (the aggregate does not retain per-status byte breakdowns).
+func usageMatchesStatus(tu *internalRuntime.ToolUsage, status string) bool {
+	switch status {
+	case "":
+		return true
+	case "error":
+		return tu.Errors > 0
+	case "blocked":
+		return tu.Blocked > 0
+	case "rejected":
+		return tu.Rejected > 0
+	case "success":
+		return tu.Calls-tu.Errors > 0
+	default:
+		return true
+	}
+}
+
+// usageToolStat projects a runtime ToolUsage into the API contract row.
+func usageToolStat(tu *internalRuntime.ToolUsage) contracts.UsageToolStat {
+	p50, p50Exceeds := tu.Percentile(0.50)
+	p95, p95Exceeds := tu.Percentile(0.95)
+	row := contracts.UsageToolStat{
+		Server:         tu.Server,
+		Tool:           tu.Tool,
+		Calls:          tu.Calls,
+		Errors:         tu.Errors,
+		ErrorRate:      tu.ErrorRate(),
+		Blocked:        tu.Blocked,
+		Rejected:       tu.Rejected,
+		TotalRespBytes: tu.RespBytesSum,
+		TotalReqBytes:  tu.ReqBytesSum,
+		SizedCalls:     tu.SizedRespCalls,
+		P50Ms:          p50,
+		P50Exceeds:     p50Exceeds,
+		P95Ms:          p95,
+		P95Exceeds:     p95Exceeds,
+		LastUsed:       tu.LastUsed,
+	}
+	if avg, ok := tu.AvgRespBytes(); ok {
+		row.AvgRespBytes = &avg
+	}
+	if avg, ok := tu.AvgReqBytes(); ok {
+		row.AvgReqBytes = &avg
+	}
+	return row
+}
+
+// sortUsageRows orders rows descending by the requested key, breaking ties by
+// server:tool for a deterministic response.
+func sortUsageRows(rows []contracts.UsageToolStat, key string) {
+	less := func(i, j int) bool {
+		a, b := rows[i], rows[j]
+		switch key {
+		case "calls":
+			if a.Calls != b.Calls {
+				return a.Calls > b.Calls
+			}
+		case "error_rate":
+			if a.ErrorRate != b.ErrorRate {
+				return a.ErrorRate > b.ErrorRate
+			}
+		case "p95":
+			if a.P95Ms != b.P95Ms {
+				return a.P95Ms > b.P95Ms
+			}
+			// Both sit on the last histogram bound, but one of them is only
+			// BOUNDED there and the other ran PAST it. "Sort by p95 latency"
+			// exists to surface the slowest tools, and top-N truncation means
+			// losing that tie-break can drop the genuinely slow one off the
+			// chart in favour of a tool that merely touched the ceiling.
+			if a.P95Exceeds != b.P95Exceeds {
+				return a.P95Exceeds
+			}
+		default: // resp_bytes
+			if a.TotalRespBytes != b.TotalRespBytes {
+				return a.TotalRespBytes > b.TotalRespBytes
+			}
+		}
+		if a.Server != b.Server {
+			return a.Server < b.Server
+		}
+		return a.Tool < b.Tool
+	}
+	sort.Slice(rows, less)
+}

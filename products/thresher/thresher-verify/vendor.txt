@@ -1,0 +1,9 @@
+=== 4.2.1: Vendor status ===
+=== 4.2.2: Vendor log ===
+29e8aa68 Pens(thresher): extended secrets + converters coverage
+fbd2c1d8 Pens(thresher): Pens-owned coverage tests + spec109 allowlist
+7861ef21 Pens(awrawr): fork onto upstream c82d515d — keep Nexus branding + unique fork files
+=== 4.2.3: Vendor branch ===
+Pens/awrawr
+=== 4.2.4: Vendor ls-remote fork ===
+29e8aa682eb8f64638bba8e9233c249ac712d1b8	refs/heads/Pens/awrawr

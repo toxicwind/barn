@@ -1,0 +1,190 @@
+# CLAUDE.md
+
+Guidance for Claude Code / AI agents working in this repo. **This file is loaded into every session and every Paperclip heartbeat — keep it lean.** It is orientation + behavior only; detailed reference lives in `docs/`.
+
+## Autonomous Operation Constraints
+
+### Must-Do (Defaults & Assumptions)
+- **Zero Interruption Policy**: If a decision is needed and no explicit instruction exists, make an informed, safe assumption based on idiomatic Go best practices and document it in the PR/commit. Do NOT ask for human clarification mid-task.
+- **Test-Driven Progress**: Write a failing Go test (`_test.go`) for every sub-task before implementing the feature.
+- **Graceful Fallbacks**: If an API or dependency lacks documentation, use mock interfaces or a simplified implementation rather than blocking the task.
+
+### Must-Nots
+- **Do NOT ask for plan approval**: Once a plan/spec is generated, begin execution immediately.
+- **Do NOT stop for code style choices**: Run `gofmt`/`goimports` and follow standard Go conventions.
+
+### Escalation Triggers (Stop Conditions)
+Only halt and ask a human IF:
+1. You need destructive data operations or to delete core proxy logic that cannot be mocked.
+2. A required environment variable is missing from `.env` and cannot be mocked for the task's scope.
+3. You are stuck in an error loop for the same `go test` failing after 5 consecutive attempts.
+4. **Cross-model review round cap — per PR:** when a PR is gated by a cross-model review, run at most **10 fix→re-review rounds on that PR**. If the reviewer has not returned a clean verdict after the 10th round, STOP and ask the human how to proceed (do not auto-run round 11). The counter is per-PR and resets for each new PR. (Verify each finding is genuine before fixing — reviewers do false-positive; a round only counts when you push a fix and re-review.) **The reviewer is `opencode` or `codex` CLI, whichever has quota** — maintainer directive 2026-09-19 (relaxes the 2026-08-14 opencode-only directive: opencode's Copilot quota (astra/sol) routinely runs out mid-batch, and `codex exec` has proven to be an equally effective fallback reviewer in practice — 2026-09-19's Spec 105/107 batch had codex catch real defects, including security bugs, across every PR it reviewed). Prefer `opencode` first per the ladder below; fall back to `codex exec "<brief>" < /dev/null` when opencode reports quota exhaustion (confirm the exhaustion, don't assume it) — either is an acceptable reviewer, and a round counts the same regardless of which one ran it. Reviewer model follows the ladder in **Model Routing** below: `opencode run --model github-copilot/gpt-5.6-terra --variant high "<brief>" < /dev/null` by default, Sol for risky diffs, Astra only when Sol misses (maintainer directive 2026-09-16, supersedes the 2026-09-06 Astra default); for the codex fallback, use `--model gpt-5.6-sol` for risky diffs to match. Always close stdin and wrap in `gtimeout`, and split the brief into small file-named chunks — both CLIs can exit 0 with no verdict when refused a read, so an empty result is not a clean one. The cap was raised from 5 to 10 on 2026-08-31 because round 5 on #1136 caught a real defect the first four missed.
+
+## Model Routing (quota discipline, decided 2026-09-16)
+
+Ladder, escalate only on evidence: **Haiku 4.5 → Sonnet 5 → Opus 5 → Fable 5.1** (Claude) · **Luna → Terra → Sol → Astra** (opencode `github-copilot/gpt-5.6-luna|terra|sol`, `gpt-6-astra`). Sonnet is the session default (`~/.claude/settings.json`); Opus is the on-demand senior architect/debugger. **Exception: Fable 5.1 is the direct default (not an escalation) for spec generation/review and research-report synthesis** — see table (maintainer directive 2026-09-18).
+
+| Task | Claude default | Escalate when | opencode |
+|---|---|---|---|
+| Implementation, known bugs, single-package refactors | Sonnet | Opus after 2 failed Sonnet attempts, or the change spans ≥3 packages / concurrency / lifecycle / transaction semantics | Terra medium → Sol |
+| Planning (speckit.plan, architecture, PR sequencing) | Opus, plan-only, then hand execution to Sonnet | Fable only for long-horizon migrations after Opus fails | Sol medium/high → Astra |
+| **Spec generation & spec/plan review** (speckit.specify/clarify/analyze), **research/report synthesis** (deep-research digestion, investigation write-ups) | **Fable 5.1** — default, no further escalation | Sonnet only for trivial mechanical edits to an already-written spec | Sol → Astra |
+| Day-to-day docs (README, guides, docs.mcpproxy.app) | Sonnet | Opus for RFC-grade trade-offs (compat, migration, failure semantics) | Terra → Sol |
+| Running tests/lint/build, CI-log triage, grep sweeps | Haiku subagent | Sonnet once the first causal failure needs code reading | Luna low → Terra |
+| Failure root-cause | Sonnet | Opus when ambiguous or cross-service | Terra → Sol |
+| Feature verification (`/run`, `/verify`, Playwright sweep, mcpproxy-qa, tray ui-test, browser) | Sonnet | Opus only for multi-layer causal checks | Terra medium → Sol |
+| Fresh-context QA / adversarial review | Sonnet subagent, read-only | Opus for concurrency/security/auth/transaction PRs | **Terra `--variant high`** → Sol high → Astra |
+| Mechanical edits, boilerplate, classification | Haiku | Sonnet | Luna |
+
+- `Agent`/`Workflow`: `model:'haiku'` for runner/triage/grep stages, `'sonnet'` for implement/review/verify, `'opus'` only for plan or hard-debug stages. Never fan out Opus subagents.
+- Session model: if the work is routine and the session runs on opus/fable, switch to sonnet (`set_session_model` in the desktop app; suggest `/model sonnet` in the CLI) and say so in one line; escalate the same way when a trigger above fires, naming the trigger. Once per session, no nagging.
+- Context: `/clear` between tickets, `/compact` past ~50% inside one; write logs to a file and pass the path; delegate read-heavy exploration to a Haiku/Sonnet subagent so only the summary lands in the main context.
+- Effort: lowest level that passes; never `max`/ultra. The review-round cap and chunked-brief rules above apply to every tier.
+
+## Project Overview
+
+MCPProxy is a Go desktop application that acts as a smart proxy for AI agents using the Model Context Protocol (MCP): intelligent tool discovery, massive token savings, and built-in security quarantine against malicious MCP servers.
+
+**Stack**: Go 1.26 (backend) · TypeScript 5.9 / Vue 3.5 (frontend) · Swift 5.9 (macOS tray). Storage: BBolt (`config.db`) + Bleve (search index). Avoid new dependencies without clear need.
+
+## Editions (Personal & Server)
+
+Built in two editions from one codebase via Go build tags:
+
+| Edition | Build | Binary | Distribution |
+|---------|-------|--------|--------------|
+| **Personal** (default) | `go build ./cmd/mcpproxy` | `mcpproxy` | macOS DMG, Windows installer, Linux tar.gz |
+| **Server** | `go build -tags server -o mcpproxy-server ./cmd/mcpproxy` | `mcpproxy-server` | Docker image (`ghcr.io`) only — no .deb / tar.gz |
+
+All server code is behind `//go:build server` in `internal/serveredition/`; the personal edition is unaffected. The binary self-identifies (`mcpproxy version`, `/api/v1/status` → `"edition"`). Server multi-user OAuth (Spec 024): see [docs/development/server-edition-multiuser-auth.md](docs/development/server-edition-multiuser-auth.md).
+
+> Every feature decision should ask: "Does this make the personal edition so good that developers tell their teammates about it?"
+
+## Architecture
+
+**Core + Tray split**: `mcpproxy` (headless HTTP API + MCP proxy) and `mcpproxy-tray` (GUI that manages the core). The tray is a UI controller — it holds no state; it reads/writes core config via REST + SSE. Tray↔core over a Unix socket (`~/.mcpproxy/mcpproxy.sock`) / named pipe on Windows; socket connections bypass the API key (OS-level auth), TCP requires it.
+
+| Directory | Purpose |
+|-----------|---------|
+| `cmd/mcpproxy/` | CLI entry point (Cobra) |
+| `cmd/mcpproxy-tray/` | System tray app (state machine) |
+| `internal/runtime/` | Lifecycle, event bus, background services |
+| `internal/server/` | HTTP server, MCP proxy |
+| `internal/httpapi/` | REST API (`/api/v1`) |
+| `internal/upstream/` | 3-layer client: core/managed/cli |
+| `internal/config/` | Configuration management |
+| `internal/index/` | Bleve BM25 search index |
+| `internal/storage/` | BBolt database |
+| `internal/oauth/` | OAuth 2.1 + PKCE |
+| `internal/security/` | Sensitive-data detection + quarantine |
+| `internal/serveredition/` | Server-only code (`//go:build server`) |
+| `native/macos/MCPProxy/` | Swift macOS tray app |
+
+See [docs/architecture.md](docs/architecture.md) and [docs/socket-communication.md](docs/socket-communication.md).
+
+## Development Commands
+
+```bash
+# Build
+go build -o mcpproxy ./cmd/mcpproxy                       # core (personal)
+go build -tags server -o mcpproxy-server ./cmd/mcpproxy   # core (server edition)
+make build                                                # frontend + backend
+make build-docker                                         # server Docker image
+
+# Test — ALWAYS run before committing
+./scripts/test-api-e2e.sh                                 # quick API E2E (required)
+go test -race ./internal/... -v                           # unit + race
+go test -tags server ./internal/serveredition/... -race   # server edition
+./scripts/run-all-tests.sh                                # full suite
+
+# Lint — CI uses golangci-lint v2 with .github/.golangci.yml, which is STRICTER
+# than the local scripts/run-linter.sh (v1.x) and catches things it misses.
+# CI runs it TWICE: bare, and with --build-tags server (server-edition code is
+# invisible to the bare run). Run both before pushing:
+/opt/homebrew/bin/golangci-lint run --config .github/.golangci.yml ./...
+/opt/homebrew/bin/golangci-lint run --config .github/.golangci.yml --build-tags server ./...
+# CI also race-tests internal/server, httpapi and storage under -tags server
+# with the unit-tests.yml -skip regex (bare `go test ./internal/server/...`
+# hangs to the timeout on the binary-spawning tests):
+go test -race -tags server -timeout 20m -skip "E2E|Binary|MCPProtocol|TestInfoEndpoint|TestGracefulShutdownNoPanic|TestSocketInfoEndpoint" ./internal/serveredition/... ./internal/config/... ./internal/oauth/... ./internal/server/... ./internal/httpapi/... ./internal/storage/...
+
+# Run
+./mcpproxy serve [--listen :8080] [--log-level=debug]     # core (localhost:8080)
+./mcpproxy-tray                                           # tray (auto-starts core)
+```
+
+**CLI management** — `mcpproxy upstream|tools|activity|token|telemetry|feedback|doctor|update …` (`update` is channel-aware: guidance for package-manager installs, verified self-update only on tarball). Output: `-o json|yaml`, `MCPPROXY_OUTPUT=json`, `--help-json` (machine-readable for agents). References: [docs/cli-management-commands.md](docs/cli-management-commands.md) · [docs/cli/activity-commands.md](docs/cli/activity-commands.md) · [docs/features/agent-tokens.md](docs/features/agent-tokens.md) · [docs/cli-output-formatting.md](docs/cli-output-formatting.md).
+
+**Verifying Web-UI changes** (Playwright sweep + HTML report) — required when touching `frontend/src/`: [docs/development/web-ui-verification.md](docs/development/web-ui-verification.md).
+
+## Configuration
+
+Default locations: Config `~/.mcpproxy/mcp_config.json` · Data `~/.mcpproxy/config.db` (BBolt) · Index `~/.mcpproxy/index.bleve/` · Logs `~/.mcpproxy/logs/`.
+
+```json
+{
+  "listen": "127.0.0.1:8080",
+  "api_key": "auto-generated-if-empty",
+  "require_mcp_auth": false,
+  "enable_socket": true,
+  "enable_web_ui": true,
+  "mcpServers": [
+    { "name": "github", "url": "https://api.github.com/mcp", "protocol": "http", "enabled": true },
+    { "name": "ast-grep", "command": "npx", "args": ["ast-grep-mcp"], "working_dir": "/path", "protocol": "stdio", "enabled": true }
+  ]
+}
+```
+
+Env vars: `MCPPROXY_LISTEN`, `MCPPROXY_API_KEY`, `MCPPROXY_DEBUG`, `MCPPROXY_TELEMETRY=false`, `HEADLESS`. Full reference: [docs/configuration.md](docs/configuration.md).
+
+## MCP Protocol
+
+**Built-in tools**: `retrieve_tools` (BM25 search across upstream tools; Spec 049 opt-in `include_disabled`; Spec 085 `detail` override + compact signatures under `tool_response_mode: compact`) · `describe_tool` (Spec 085: batch ≤5 ids → full schemas; Spec 102: also on the direct surface, `server:tool` or `server__tool` ids) · `call_tool_read|write|destructive` (Spec 018 intent variants; operation type inferred from the variant; Spec 085 pre-dispatch arg validation with self-healing `invalid_params` errors) · `code_execution` (sandboxed JS, on by default since v0.66.0) · `upstream_servers` (CRUD, Spec 049) · `quarantine_security` (Spec 032). **Tool format**: `<serverName>:<toolName>` (e.g. `github:create_issue`); the direct surface lists as `<serverName>__<toolName>` and accepts both.
+
+**REST API** base `/api/v1`, auth via `X-API-Key` header or `?apikey=`. MCP endpoints (`/mcp`) stay unprotected for client compatibility; the REST API always requires a key (auto-generated if absent). All responses carry `X-Request-Id` (correlate with `mcpproxy activity list --request-id <id>`). Live updates via SSE at `/events`. Full endpoint list: `oas/swagger.yaml` + [docs/api/rest-api.md](docs/api/rest-api.md).
+
+All server responses include a unified `health` field: `level` (healthy|degraded|unhealthy), `admin_state` (enabled|disabled|quarantined), plus `summary`/`detail`/`action`.
+
+**Connect payload (Spec 075)**: `GET /api/v1/connect` is content-read-free (stat-only; no macOS App-Data prompt) — each `ClientStatus` carries `access_state="unknown"`. `GET /api/v1/connect/{client}` resolves it on-demand to `accessible|absent|malformed|denied` (+ `remediation` when denied); a denied connect/disconnect returns `403` with remediation. See [docs/api/rest-api.md](docs/api/rest-api.md#connect-client-wizard).
+
+## Security Model
+
+- **Localhost-only by default** (`127.0.0.1:8080`); **API key always required** (auto-generated and persisted if not provided).
+- **Agent tokens**: scoped credentials for AI agents (`mcp_agt_` prefix, HMAC-SHA256 hashed). See [docs/features/agent-tokens.md](docs/features/agent-tokens.md).
+- **Quarantine**: new servers quarantined until approved; Tool Poisoning Attack (TPA) detection on descriptions. **Tool-level quarantine (Spec 032)**: SHA-256 hashes detect new ("pending") and changed ("changed", rug-pull) tools. Trusted (non-quarantined) servers auto-approve their current toolset as a baseline; post-baseline changes/additions are reviewed unless per-server `auto_approve_tool_changes:true` (MCP-2931, deprecates `skip_quarantine`). Config: `quarantine_enabled` (global), `auto_approve_tool_changes` (per-server). See [docs/features/security-quarantine.md](docs/features/security-quarantine.md).
+- **`require_mcp_auth`**: when enabled, `/mcp` rejects unauthenticated requests (default off, for back-compat).
+- **Sensitive-data detection** (`internal/security/`): scans tool args/responses for secrets (cloud creds, private keys, API tokens, DB strings, Luhn-validated cards, sensitive file paths, high-entropy strings). On by default; integrates with the activity log. Config under `sensitive_data_detection`. See [docs/features/sensitive-data-detection.md](docs/features/sensitive-data-detection.md).
+
+## Key Implementation Details
+
+- **Docker isolation**: runtime detection (uvx→Python, npx→Node), image selection, container lifecycle. [docs/docker-isolation.md](docs/docker-isolation.md)
+- **OAuth**: dynamic port allocation, RFC 8252 + PKCE, `internal/oauth/coordinator.go`, automatic token refresh. [docs/oauth-resource-autodetect.md](docs/oauth-resource-autodetect.md)
+- **Code execution**: sandboxed JavaScript (ES2020+) orchestrating multiple upstream tools in one request. [docs/code_execution/overview.md](docs/code_execution/overview.md)
+- **Connection management**: exponential backoff; state machine Disconnected → Connecting → Authenticating → Ready.
+- **Tool indexing**: full rebuild on server changes, hash-based change detection, background indexing.
+- **Tool-level quarantine (Spec 032)** key files: `internal/storage/models.go` & `bbolt.go`, `internal/runtime/tool_quarantine.go`, `internal/runtime/lifecycle.go` (`applyDifferentialToolUpdate`), `internal/server/mcp.go`, `internal/config/config.go`, `frontend/src/views/ServerDetail.vue`.
+- **Signal handling**: graceful shutdown, context cancellation, Docker cleanup, double-shutdown protection. **Before running the core, kill existing instances — it locks the DB.**
+
+## Debugging
+
+```bash
+mcpproxy doctor                           # quick diagnostics
+mcpproxy upstream list                    # server status
+mcpproxy upstream logs <name> --follow    # per-server logs
+tail -f ~/Library/Logs/mcpproxy/main.log  # main log (macOS; Linux: ~/.mcpproxy/logs/main.log)
+```
+
+**Exit codes**: 0 success · 1 general · 2 port conflict · 3 DB locked · 4 config · 5 permission.
+
+## Development Guidelines
+
+- File organization: `internal/` subdirectories, Go conventions. Tests: `*_test.go`; E2E in `internal/server/e2e_test.go`. E2E prereqs: Node.js, npm, jq, a built `mcpproxy` binary.
+- Error handling: structured logging (zap), context wrapping, graceful degradation.
+- Config changes: update both storage and file system; the file watcher hot-reloads.
+- **macOS tray dev** (build / replace / verify with `mcpproxy-ui-test`): [docs/development/macos-tray.md](docs/development/macos-tray.md).
+- **Windows installer**: [docs/github-actions-windows-wix-research.md](docs/github-actions-windows-wix-research.md). **Prerelease** (`next` branch + `v*-rc.*` tags, opt-in, off stable channels): [docs/prerelease-builds.md](docs/prerelease-builds.md).
+
+## Recent Changes
+- 105-agent-scope-hardening: Go 1.26, backend-only, existing deps only — mcp-go v1.0.0 (`WithToolFilter` re-runs at `tools/call`), bleve (`server_name` facet), bbolt, zap/lumberjack. **No new dependencies.**
+- 058-mcp-2026-upgrade: Added Go 1.25.5 (`go.mod` toolchain) + `mark3labs/mcp-go` v0.57.0 → **v1.0.0** (the only dependency change); existing `santhosh-tekuri/jsonschema/v6`, `zap`, Cobra, BBolt, Bleve. **No new dependencies.**
+- 103-token-bench: Go 1.25 (`bench/`) + existing only — tiktoken-go v0.1.8 (cl100k_base), the mcp-go transport already used by `bench/mcpcaller.go`. MCPMark is an external SHA-pinned tool invoked out of process, not a module dependency. **No new dependencies.**

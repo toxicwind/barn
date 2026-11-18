@@ -1,0 +1,2 @@
+module(name = "lookout", version = "0.0.0")
+# # TODO: add language bazel_dep + BUILD targets

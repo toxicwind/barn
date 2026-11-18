@@ -1,0 +1,48 @@
+#!/bin/sh
+# serve-guarded.sh — thresher boot guard (2026-10-30 impostor fix)
+# Problem: a stale thresher holding :25127 + the bolt config.db lock made every
+# pitchfork start spawn a doomed child (rc=3, "database is locked") while the
+# orphan kept serving — pitchfork flapped errored/running, gateway served stale
+# tool registries. Guard: kill stale holders of the db + port that match the
+# thresher binary path, then exec the server directly (tracked PID = socket owner).
+# Tailscale SNI listeners on :25127 are left alone (they don't hold the bolt lock).
+
+BIN_PATH="/home/toxic/pens/barn/products/thresher/bin/thresher"
+DB="/home/toxic/.mcpproxy/config.db"
+
+# 1) kill processes holding the bolt db (they're all thresher instances)
+holders=$(lsof -t "$DB" 2>/dev/null)
+for pid in $holders; do
+  exe=$(readlink "/proc/$pid/exe" 2>/dev/null)
+  case "$exe" in
+    "$BIN_PATH"*) kill -9 "$pid" 2>/dev/null && echo "guard: killed db holder $pid" ;;
+    *) echo "guard: skipped non-thresher db holder $pid ($exe)" ;;
+  esac
+done
+
+# 2) kill stale port listeners that are the thresher binary (not tailscaled)
+port_pids=$(ss -tlnp 2>/dev/null | sed -n 's/.*127\.0\.0\.1:25127.*pid=\([0-9]*\).*/\1/p')
+for pid in $port_pids; do
+  exe=$(readlink "/proc/$pid/exe" 2>/dev/null)
+  case "$exe" in
+    "$BIN_PATH"*) kill -9 "$pid" 2>/dev/null && echo "guard: killed port holder $pid" ;;
+    *) echo "guard: skipped non-thresher port holder $pid" ;;
+  esac
+done
+
+sleep_ms=0
+while [ -n "$(lsof -t "$DB" 2>/dev/null)" ]; do
+  sleep_ms=$((sleep_ms + 100))
+  [ "$sleep_ms" -gt 2000 ] && { echo "guard: db still locked, aborting"; exit 3; }
+  sleep 0.1
+done
+
+# Inject the kryptos keyring env so thresher AND every stdio server it spawns
+# (tau-mcp, etc.) inherit the router/upstream keys. Without this, tau-mcp gets
+# an empty RHODOCHROSITE_API_KEY and freeinference shows 0 models in the picker.
+# kryptos env emits shell-quoted KEY='value' — safe to eval. Never hardcode.
+if command -v kryptos >/dev/null 2>&1; then
+  eval "$(kryptos env 2>/dev/null || true)"
+fi
+
+exec "$BIN_PATH" serve --config=/home/toxic/pens/barn/ssot/thresher/mcp_config.json --listen=127.0.0.1:25127

@@ -1,0 +1,20 @@
+<svg version="1.2" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+	<defs>
+		<linearGradient id="g1" x2="1" gradientUnits="userSpaceOnUse" gradientTransform="matrix(0,504,-504,0,4,4)">
+			<stop offset="0" stop-color="#151515"/>
+			<stop offset="1" stop-color="#0a0a0a"/>
+		</linearGradient>
+		<linearGradient id="g2" x2="1" gradientUnits="userSpaceOnUse" gradientTransform="matrix(113.347,128.827,-132.646,116.707,212,183.586)">
+			<stop offset="0" stop-color="#ff8a50"/>
+			<stop offset="1" stop-color="#ff5722"/>
+		</linearGradient>
+	</defs>
+	<style>
+		.s0 { fill: url(#g1) } 
+		.s1 { fill: none;stroke: #57575d;stroke-linecap: round;stroke-width: 26 } 
+		.s2 { fill: url(#g2) } 
+	</style>
+	<path fill-rule="evenodd" class="s0" d="m124 4h264c66.27 0 120 53.73 120 120v264c0 66.27-53.73 120-120 120h-264c-66.27 0-120-53.73-120-120v-264c0-66.27 53.73-120 120-120z"/>
+	<path class="s1" d="m140 316q0-180 116-180 116 0 116 180"/>
+	<path class="s2" d="m212 192.5c0-7 7.2-11.1 13-7.7l96 55.7c5.8 3.4 5.8 11.6 0 15l-96 55.7c-5.8 3.4-13-0.7-13-7.7z"/>
+</svg>

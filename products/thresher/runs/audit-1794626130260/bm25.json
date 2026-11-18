@@ -1,0 +1,152 @@
+{
+  "count": 21,
+  "hits": [
+    {
+      "file": "/home/toxic/pens/olympus/products/tau/packages/coding-agent/src/config/settings.ts",
+      "line": 3584,
+      "snippet": "* disarm stray background saves on isolated instances too. WeakRefs never",
+      "source": "bm25",
+      "score": 0.2
+    },
+    {
+      "file": "/home/toxic/pens/olympus/products/tau/packages/coding-agent/src/config/settings.ts",
+      "line": 3652,
+      "snippet": "// Disarm every constructed instance's debounced saves — including isolated",
+      "source": "bm25",
+      "score": 0.2
+    },
+    {
+      "file": "/home/toxic/pens/olympus/products/tau/packages/coding-agent/src/lsp/mux/server.ts",
+      "line": 278,
+      "snippet": "this.#disarmMuxIdle();",
+      "source": "bm25",
+      "score": 0.2
+    },
+    {
+      "file": "/home/toxic/pens/olympus/products/tau/packages/coding-agent/src/lsp/mux/server.ts",
+      "line": 720,
+      "snippet": "#disarmMuxIdle(): void {",
+      "source": "bm25",
+      "score": 0.2
+    },
+    {
+      "file": "/home/toxic/pens/olympus/products/tau/packages/coding-agent/src/lsp/mux/server.ts",
+      "line": 726,
+      "snippet": "this.#disarmMuxIdle();",
+      "source": "bm25",
+      "score": 0.2
+    },
+    {
+      "file": "/home/toxic/pens/olympus/products/tau/packages/coding-agent/src/session/prewalk.ts",
+      "line": 153,
+      "snippet": "#disarmNoop(prewalk: Prewalk): void {",
+      "source": "bm25",
+      "score": 0.2
+    },
+    {
+      "file": "/home/toxic/pens/olympus/products/tau/packages/coding-agent/src/session/prewalk.ts",
+      "line": 168,
+      "snippet": "this.#disarmNoop(prewalk);",
+      "source": "bm25",
+      "score": 0.2
+    },
+    {
+      "file": "/home/toxic/pens/olympus/products/tau/packages/coding-agent/src/session/prewalk.ts",
+      "line": 216,
+      "snippet": "this.#disarmNoop(prewalk);",
+      "source": "bm25",
+      "score": 0.2
+    },
+    {
+      "file": "/home/toxic/pens/olympus/products/tau/packages/coding-agent/src/session/prewalk.ts",
+      "line": 253,
+      "snippet": "this.#disarmNoop(candidate);",
+      "source": "bm25",
+      "score": 0.2
+    },
+    {
+      "file": "/home/toxic/pens/olympus/products/tau/packages/coding-agent/src/session/prewalk.ts",
+      "line": 301,
+      "snippet": "this.#disarmNoop(active);",
+      "source": "bm25",
+      "score": 0.2
+    },
+    {
+      "file": "/home/toxic/pens/olympus/products/tau/packages/coding-agent/src/session/agent-session.ts",
+      "line": 2112,
+      "snippet": "disarmPrewalk(): void {",
+      "source": "bm25",
+      "score": 0.2
+    },
+    {
+      "file": "/home/toxic/pens/olympus/products/tau/packages/coding-agent/src/session/agent-session.ts",
+      "line": 2113,
+      "snippet": "this.#prewalk.disarm();",
+      "source": "bm25",
+      "score": 0.2
+    },
+    {
+      "file": "/home/toxic/pens/olympus/products/tau/packages/coding-agent/src/session/agent-session.ts",
+      "line": 3199,
+      "snippet": "this.#prewalk.disarm();",
+      "source": "bm25",
+      "score": 0.2
+    },
+    {
+      "file": "/home/toxic/pens/olympus/products/tau/packages/coding-agent/src/tools/browser/tern/tern-tab.ts",
+      "line": 1525,
+      "snippet": "// No chooser asked for the preset: disarm it before dropping the files instead.",
+      "source": "bm25",
+      "score": 0.2
+    },
+    {
+      "file": "/home/toxic/pens/olympus/products/tau/packages/coding-agent/src/tools/browser/tab-worker.ts",
+      "line": 1785,
+      "snippet": "* Disarms — hangs until the settled race drops it — the moment at least one element",
+      "source": "bm25",
+      "score": 0.2
+    },
+    {
+      "file": "/home/toxic/pens/olympus/products/tau/packages/coding-agent/src/ida/supervisor.ts",
+      "line": 294,
+      "snippet": "/** Arm the idle autosave (when dirty) and idle close (when enabled); any request disarms both. */",
+      "source": "bm25",
+      "score": 0.2
+    },
+    {
+      "file": "/home/toxic/pens/olympus/products/tau/packages/coding-agent/src/main.ts",
+      "line": 313,
+      "snippet": "function disarmStartupWatchdog(): void {",
+      "source": "bm25",
+      "score": 0.2
+    },
+    {
+      "file": "/home/toxic/pens/olympus/products/tau/packages/coding-agent/src/main.ts",
+      "line": 330,
+      "snippet": "disarmStartupWatchdog();",
+      "source": "bm25",
+      "score": 0.2
+    },
+    {
+      "file": "/home/toxic/pens/olympus/products/tau/packages/coding-agent/src/main.ts",
+      "line": 335,
+      "snippet": "disarmStartupWatchdog();",
+      "source": "bm25",
+      "score": 0.2
+    },
+    {
+      "file": "/home/toxic/pens/olympus/products/tau/packages/coding-agent/test/registry/agent-lifecycle.test.ts",
+      "line": 140,
+      "snippet": "it(\"running disarms the timer; returning to idle re-arms a fresh TTL\", async () => {",
+      "source": "bm25",
+      "score": 0.2
+    },
+    {
+      "file": "/home/toxic/pens/olympus/products/tau/packages/coding-agent/test/registry/agent-lifecycle.test.ts",
+      "line": 423,
+      "snippet": "// The disarmed timer must not fire a late park (which would double-dispose).",
+      "source": "bm25",
+      "score": 0.2
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+function e(e){let t={};return e&&(e.profile&&(t.profile=e.profile),e.client&&(t.client=e.client),e.token&&(t.token=e.token)),t}function t(e){return JSON.stringify([e.profile??``,e.client??``,e.token??``])}export{t as n,e as t};

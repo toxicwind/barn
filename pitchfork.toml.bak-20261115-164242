@@ -1,0 +1,84 @@
+# Restored 2026-11-09 from quarantine/mise-pitchfork/barn__pitchfork.toml (thresher only; additive).
+[daemons.thresher]
+run = "exec /home/toxic/pens/barn/products/thresher/bin/serve-guarded.sh"
+retry = true
+ready_http = "http://127.0.0.1:25127/health"
+dir = "/home/toxic/pens/barn/products/thresher"
+mise = false
+# No `port` field: pre-check binds 0.0.0.0 and false-conflicts with tailscaled SNI forwarder on :25127. ready_http only.
+
+# blackbird: barn product (github code search). api :25112, mcp :25113 (thresher upstream), web :25114.
+# Ports are passed as explicit env: no dependency on any ports.env path. ready_http only, no `port` field.
+[daemons.blackbird-api]
+run = "exec /home/toxic/.bun/bin/bun /home/toxic/pens/barn/products/blackbird/apps/api/src/server.ts"
+dir = "/home/toxic/pens/barn/products/blackbird"
+retry = true
+mise = false
+ready_http = "http://127.0.0.1:25112/api/health"
+env = { BLACKBIRD_API_PORT = "25112", BLACKBIRD_MCP_PORT = "25113", BLACKBIRD_WEB_PORT = "25114" }
+
+[daemons.blackbird-mcp]
+run = "exec /home/toxic/.bun/bin/bun /home/toxic/pens/barn/products/blackbird/apps/api/src/mcp/server.ts --mode http"
+dir = "/home/toxic/pens/barn/products/blackbird"
+retry = true
+mise = false
+ready_http = "http://127.0.0.1:25113/healthz"
+env = { BLACKBIRD_API_PORT = "25112", BLACKBIRD_MCP_PORT = "25113", BLACKBIRD_WEB_PORT = "25114" }
+
+[daemons.blackbird-web]
+run = "exec /home/toxic/.bun/bin/bun /home/toxic/pens/barn/products/blackbird/apps/web/build/index.js"
+dir = "/home/toxic/pens/barn/products/blackbird/apps/web"
+retry = true
+mise = false
+ready_http = "http://127.0.0.1:25114/"
+env = { BLACKBIRD_API_PORT = "25112", BLACKBIRD_MCP_PORT = "25113", BLACKBIRD_WEB_PORT = "25114", PORT = "25114" }
+
+# hindsight: tau memory backend (api :25117). Fresh launcher in barn; replaces the dead pens/hindsight entry.
+[daemons.hindsight]
+run = "exec /home/toxic/pens/barn/products/hindsight/serve.sh"
+dir = "/home/toxic/pens/barn/products/hindsight"
+retry = true
+mise = false
+ready_http = "http://127.0.0.1:25117/health"
+
+# buildbuddy: flux product (REAPI cache + unified build frontend/UI). HTTP app +
+# gRPC-over-HTTP on 25217; native gRPC (REAPI) on 25218. no `port` field
+# (pre-check would 0.0.0.0-conflict); ready_http on the app port.
+[daemons.buildbuddy]
+run = "exec /home/toxic/pens/flux/products/buildbuddy/bin/serve.sh"
+dir = "/home/toxic/pens/flux/products/buildbuddy"
+retry = true
+mise = false
+ready_http = "http://127.0.0.1:25217/"
+
+# nativelink: barn product (REAPI executor). CAS/AC gRPC-backed by buildbuddy
+# (:25218). frontend(scheduler/client) 25155, worker_api 25157 (ports SSOT).
+# no `port` field (pre-check 0.0.0.0 conflicts); ready_http on worker_api.
+[daemons.nativelink]
+run = "exec /home/toxic/pens/ranch/forge/ops/nativelink/run.sh"
+dir = "/home/toxic/pens/barn/products/nativelink"
+retry = true
+mise = false
+ready_http = "http://127.0.0.1:25157/health"
+env = { BUILDBUDDY_GRPC_PORT = "25218", NATIVELINK_FRONTEND_PORT = "25155", NATIVELINK_WORKER_PORT = "25157" }
+
+# tau-acp: Monotau native ACP daemon on :25111 (supersedes chute stdio spawner)
+[daemons.tau-acp]
+run = "exec /home/toxic/.bun/bin/bun /home/toxic/pens/olympus/products/tau/packages/coding-agent/src/cli.ts acp --port 25111"
+dir = "/home/toxic/pens/olympus/products/tau/packages/coding-agent"
+retry = true
+mise = false
+ready_port = 25111
+
+# freeinference-coordinator: system-wide 2-permit semaphore on :25250. ALL
+# freeinference traffic (mimetite, tau, keypool, bornite) MUST serialize through
+# this one wall or concurrent calls collide → recurring 429/`QUEUED` storms.
+# Previously built (v2.0.0) but never registered here, so it died on interrupt
+# and the storm returned every freeinference-heavy turn. Now durable.
+[daemons.freeinference-coordinator]
+run = "exec /home/toxic/.bun/bin/bun /home/toxic/pens/barn/products/freeinference-coordinator/src/coordinator.ts"
+dir = "/home/toxic/pens/barn/products/freeinference-coordinator"
+retry = true
+mise = false
+ready_http = "http://127.0.0.1:25250/health"
+port = 25250

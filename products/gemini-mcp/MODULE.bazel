@@ -1,0 +1,2 @@
+module(name = "gemini-mcp", version = "0.0.0")
+# # TODO: bazel_dep(name="rules_python") for py targets

@@ -1,0 +1,88 @@
+export * from './api'
+export type { ImportResponse, ImportSummary, ImportedServer, SkippedServer, FailedServer, AgentTokenInfo, CreateAgentTokenRequest, CreateAgentTokenResponse, ToolApproval, ConnectStatusResponse, ClientStatus, ConnectResult, SecurityScanSummary, SecurityScanStatus, SecurityScanFindingCounts, SecurityScanFinding, SecurityScanReport, ThreatType, ThreatLevel, Diagnostic, DiagnosticFixStep, DiagnosticFixStepType, DiagnosticSeverity, DiagnosticFixResponse, ReviewQueueResponse, ReviewQueueRow, ServerReviewResponse, ReviewTool } from './api'
+// Selectively export types from contracts.ts that don't conflict with api.ts
+export type {
+  UpdateInfo,
+  InfoResponse,
+  OAuthConfig,
+  IsolationConfig,
+  ServerStats,
+  LogEntry,
+  SystemStatus,
+  RuntimeStatus,
+  ToolCallRequest,
+  ToolCallResponse,
+  Event,
+  Ref,
+  GetServersResponse,
+  GetServerToolsResponse,
+  SearchToolsResponse,
+  GetServerLogsResponse,
+  ServerActionResponse,
+  QuarantinedServersResponse,
+  ServerAction,
+  ServerToggleRequest,
+  SearchRequest,
+  LogsRequest,
+  SSEEventType,
+  SSEEvent,
+  APIError,
+  APISuccess,
+  APIResult,
+  AttentionKind,
+  AttentionSubject,
+  AttentionFix,
+  AttentionItem,
+  AttentionResponse,
+} from './contracts'
+export {
+  AttentionKindAnonymousDeniedByBindingGuard,
+  AttentionKindClientHoldsAdminKey,
+  AttentionKindClientTokenNameConflict,
+  AttentionKindProfileMissing,
+  AttentionKindClientRotationPending,
+  AttentionKindClientCredentialExpiring,
+  AttentionKindSignInRequired,
+  AttentionKindMissingSecret,
+  AttentionKindConfigError,
+  AttentionKindServerError,
+  AttentionKindServerReview,
+  AttentionKindToolReview,
+  AttentionKindClientNeverSeen,
+} from './contracts'
+export { isAPIError, isAPISuccess } from './contracts'
+
+// UI types
+export interface Theme {
+  name: string
+  displayName: string
+  dark: boolean
+}
+
+export interface MenuItem {
+  name: string
+  path: string
+  icon?: string
+  external?: boolean
+}
+
+export interface Toast {
+  id: string
+  type: 'success' | 'error' | 'warning' | 'info'
+  title: string
+  message?: string
+  duration?: number
+  link?: { url: string; label: string }
+}
+
+// Component prop types
+export interface LoadingState {
+  loading: boolean
+  error?: string | null
+}
+
+export interface PaginationState {
+  page: number
+  limit: number
+  total: number
+}

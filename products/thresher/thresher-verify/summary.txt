@@ -1,0 +1,26 @@
+=== FINAL VERIFICATION ===
+
+--- 1. BARN ---
+Status clean (thresher/gatehouse): 0 changes
+HEAD: 33cfddd5 thresher: remove gatehouse/nexus string leftovers from forked content
+Thresher tracked: 3186 files
+Gatehouse tracked: 0 files
+Remote: 33cfddd5c8c70c39088325440543ccca5b64ada4	refs/heads/main
+
+--- 2. VENDOR ---
+Status clean: 0 changes
+Branch: Pens/awrawr
+HEAD: 29e8aa68 Pens(thresher): extended secrets + converters coverage
+Fork: 29e8aa682eb8f64638bba8e9233c249ac712d1b8	refs/heads/Pens/awrawr
+
+--- 3. Pens ---
+HEAD: 4445d9249f thresher: rename gatehouse daemon to thresher, serve script auth-quote fix, manifests + AGENTS
+Remote: 4445d9249f25d46050f822f49f751383c4126354	refs/heads/main
+Remaining modified paths (peer WIP): 142
+
+--- 4. GREEP RESULTS ---
+gatehouse occurrences: 0
+nexus occurrences: 0
+
+--- 5. HEALTH ---
+{"status":"ok"}

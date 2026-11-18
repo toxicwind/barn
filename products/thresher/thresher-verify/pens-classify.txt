@@ -1,0 +1,14 @@
+=== Files in our Pens commit 4445d9249f ===
+ AGENTS.md               | 473 ++++++++++++++----------------------------------
+ bin/bin-verify.sh       |  33 +++-
+ bin/manifest.yaml       |  39 ++++
+ pitchfork.toml          | 317 ++++++++++++++------------------
+ scripts/health-check.ts |   2 +-
+ 5 files changed, 341 insertions(+), 523 deletions(-)
+
+=== Our commit files ===
+AGENTS.md
+bin/bin-verify.sh
+bin/manifest.yaml
+pitchfork.toml
+scripts/health-check.ts

@@ -1,0 +1,2 @@
+module(name = "thresher", version = "0.0.0")
+# # TODO: bazel_dep(name="gazelle") / rules_go

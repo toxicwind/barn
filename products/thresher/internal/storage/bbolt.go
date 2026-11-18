@@ -1,0 +1,733 @@
+package storage
+
+import (
+	"bytes"
+	"encoding/binary"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"time"
+
+	"go.etcd.io/bbolt"
+	"go.etcd.io/bbolt/errors"
+	"go.uber.org/zap"
+)
+
+// DatabaseLockedError indicates that the database is locked by another process
+type DatabaseLockedError struct {
+	Path string
+	Err  error
+}
+
+func (e *DatabaseLockedError) Error() string {
+	return fmt.Sprintf("database %s is locked by another process", e.Path)
+}
+
+func (e *DatabaseLockedError) Unwrap() error {
+	return e.Err
+}
+
+// BoltDB wraps bolt database operations
+type BoltDB struct {
+	db     *bbolt.DB
+	logger *zap.SugaredLogger
+}
+
+// NewBoltDB creates a new BoltDB instance
+func NewBoltDB(dataDir string, logger *zap.SugaredLogger) (*BoltDB, error) {
+	dbPath := filepath.Join(dataDir, "config.db")
+
+	// Try to open with timeout, if it fails, immediately return database locked error
+	db, err := bbolt.Open(dbPath, 0644, &bbolt.Options{
+		Timeout: 10 * time.Second,
+	})
+	if err != nil {
+		logger.Warnf("Failed to open database on first attempt: %v", err)
+
+		// Check if it's a timeout or lock issue - return immediately without recovery attempts
+		if err == errors.ErrTimeout {
+			logger.Info("Database timeout detected, another mcpproxy instance may be running")
+			return nil, &DatabaseLockedError{
+				Path: dbPath,
+				Err:  err,
+			}
+		}
+
+		// For other errors, return wrapped error
+		return nil, fmt.Errorf("failed to open bolt database: %w", err)
+	}
+
+	boltDB := &BoltDB{
+		db:     db,
+		logger: logger,
+	}
+
+	// Initialize buckets and schema
+	if err := boltDB.initBuckets(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to initialize buckets: %w", err)
+	}
+
+	return boltDB, nil
+}
+
+// Close closes the database
+func (b *BoltDB) Close() error {
+	return b.db.Close()
+}
+
+// initBuckets creates required buckets and sets up schema
+func (b *BoltDB) initBuckets() error {
+	return b.db.Update(func(tx *bbolt.Tx) error {
+		// Create buckets
+		buckets := []string{
+			UpstreamsBucket,
+			ToolStatsBucket,
+			ToolHashBucket,
+			ToolApprovalBucket,
+			OAuthTokenBucket,
+			MetaBucket,
+			ActivityRecordsBucket,
+			ActivityStatsBucket,
+			ScannersBucket,
+			ScanJobsBucket,
+			ScanJobIndexBucket,
+			ScanReportsBucket,
+			IntegrityBaselinesBucket,
+			OnboardingBucket,
+			SessionsBucket,
+		}
+
+		for _, bucket := range buckets {
+			if _, err := tx.CreateBucketIfNotExists([]byte(bucket)); err != nil {
+				return fmt.Errorf("failed to create bucket %s: %w", bucket, err)
+			}
+		}
+
+		// Move MCP session records out of the shared "sessions" bucket, which the
+		// server edition also used for USER LOGIN sessions. Each side swept the
+		// bucket believing it owned every key, deleting the other's data.
+		// Idempotent; leaves auth sessions untouched, so nobody is logged out.
+		if err := migrateLegacySessions(tx); err != nil {
+			return fmt.Errorf("failed to migrate legacy sessions bucket: %w", err)
+		}
+
+		// Migration is a write path into the sessions bucket like any other, and
+		// it can move in an arbitrary number of records. Enforce the retention
+		// cap here so it is an invariant of an open database rather than
+		// something only CreateSession happens to maintain.
+		if err := enforceSessionRetentionOnOpen(tx, b.logger); err != nil {
+			return fmt.Errorf("failed to enforce session retention: %w", err)
+		}
+
+		// Backfill the scan-job index for databases created before MCP-2205.
+		// Idempotent: only runs when the index is empty but jobs exist.
+		if err := backfillScanJobIndex(tx); err != nil {
+			return fmt.Errorf("failed to backfill scan job index: %w", err)
+		}
+
+		// Set schema version only for new databases. Existing databases keep their
+		// stored version so migrations can observe and upgrade them.
+		metaBucket := tx.Bucket([]byte(MetaBucket))
+		if metaBucket.Get([]byte(SchemaVersionKey)) == nil {
+			versionBytes := make([]byte, 8)
+			binary.LittleEndian.PutUint64(versionBytes, CurrentSchemaVersion)
+			return metaBucket.Put([]byte(SchemaVersionKey), versionBytes)
+		}
+		return nil
+	})
+}
+
+// GetSchemaVersion returns the current schema version
+func (b *BoltDB) GetSchemaVersion() (uint64, error) {
+	var version uint64
+	err := b.db.View(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(MetaBucket))
+		if bucket == nil {
+			return fmt.Errorf("meta bucket not found")
+		}
+
+		versionBytes := bucket.Get([]byte(SchemaVersionKey))
+		if versionBytes == nil {
+			version = 0
+			return nil
+		}
+
+		version = binary.LittleEndian.Uint64(versionBytes)
+		return nil
+	})
+
+	return version, err
+}
+
+// SetSchemaVersion stores the current migration schema version.
+func (b *BoltDB) SetSchemaVersion(version uint64) error {
+	return b.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(MetaBucket))
+		if bucket == nil {
+			return fmt.Errorf("meta bucket not found")
+		}
+
+		versionBytes := make([]byte, 8)
+		binary.LittleEndian.PutUint64(versionBytes, version)
+		return bucket.Put([]byte(SchemaVersionKey), versionBytes)
+	})
+}
+
+// Upstream operations
+
+// SaveUpstream saves an upstream server record
+func (b *BoltDB) SaveUpstream(record *UpstreamRecord) error {
+	record.Updated = time.Now()
+
+	return b.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(UpstreamsBucket))
+		data, err := record.MarshalBinary()
+		if err != nil {
+			return err
+		}
+		return bucket.Put([]byte(record.ID), data)
+	})
+}
+
+// GetUpstream retrieves an upstream server record by ID
+func (b *BoltDB) GetUpstream(id string) (*UpstreamRecord, error) {
+	var record *UpstreamRecord
+
+	err := b.db.View(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(UpstreamsBucket))
+		data := bucket.Get([]byte(id))
+		if data == nil {
+			return ErrUpstreamNotFound
+		}
+
+		record = &UpstreamRecord{}
+		return record.UnmarshalBinary(data)
+	})
+
+	return record, err
+}
+
+// ListUpstreams returns all upstream server records
+func (b *BoltDB) ListUpstreams() ([]*UpstreamRecord, error) {
+	var records []*UpstreamRecord
+
+	err := b.db.View(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(UpstreamsBucket))
+		return bucket.ForEach(func(_, v []byte) error {
+			record := &UpstreamRecord{}
+			if err := record.UnmarshalBinary(v); err != nil {
+				return err
+			}
+			records = append(records, record)
+			return nil
+		})
+	})
+
+	return records, err
+}
+
+// DeleteUpstream deletes an upstream server record
+func (b *BoltDB) DeleteUpstream(id string) error {
+	return b.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(UpstreamsBucket))
+		return bucket.Delete([]byte(id))
+	})
+}
+
+// Tool statistics operations
+
+// IncrementToolStats increments the usage count for a tool
+func (b *BoltDB) IncrementToolStats(toolName string) error {
+	return b.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(ToolStatsBucket))
+
+		// Get existing record
+		var record ToolStatRecord
+		data := bucket.Get([]byte(toolName))
+		if data != nil {
+			if err := record.UnmarshalBinary(data); err != nil {
+				return err
+			}
+		} else {
+			record.ToolName = toolName
+		}
+
+		// Increment count and update timestamp
+		record.Count++
+		record.LastUsed = time.Now()
+
+		// Save back
+		newData, err := record.MarshalBinary()
+		if err != nil {
+			return err
+		}
+
+		return bucket.Put([]byte(toolName), newData)
+	})
+}
+
+// GetToolStats retrieves tool statistics
+func (b *BoltDB) GetToolStats(toolName string) (*ToolStatRecord, error) {
+	var record *ToolStatRecord
+
+	err := b.db.View(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(ToolStatsBucket))
+		data := bucket.Get([]byte(toolName))
+		if data == nil {
+			return fmt.Errorf("tool stats not found")
+		}
+
+		record = &ToolStatRecord{}
+		return record.UnmarshalBinary(data)
+	})
+
+	return record, err
+}
+
+// ListToolStats returns all tool statistics
+func (b *BoltDB) ListToolStats() ([]*ToolStatRecord, error) {
+	var records []*ToolStatRecord
+
+	err := b.db.View(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(ToolStatsBucket))
+		return bucket.ForEach(func(_, v []byte) error {
+			record := &ToolStatRecord{}
+			if err := record.UnmarshalBinary(v); err != nil {
+				return err
+			}
+			records = append(records, record)
+			return nil
+		})
+	})
+
+	return records, err
+}
+
+// Tool hash operations
+
+// SaveToolHash saves a tool hash for change detection
+func (b *BoltDB) SaveToolHash(toolName, hash string) error {
+	record := &ToolHashRecord{
+		ToolName: toolName,
+		Hash:     hash,
+		Updated:  time.Now(),
+	}
+
+	return b.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(ToolHashBucket))
+		data, err := record.MarshalBinary()
+		if err != nil {
+			return err
+		}
+		return bucket.Put([]byte(toolName), data)
+	})
+}
+
+// GetToolHash retrieves a tool hash
+func (b *BoltDB) GetToolHash(toolName string) (string, error) {
+	var hash string
+
+	err := b.db.View(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(ToolHashBucket))
+		data := bucket.Get([]byte(toolName))
+		if data == nil {
+			return fmt.Errorf("tool hash not found")
+		}
+
+		record := &ToolHashRecord{}
+		if err := record.UnmarshalBinary(data); err != nil {
+			return err
+		}
+
+		hash = record.Hash
+		return nil
+	})
+
+	return hash, err
+}
+
+// DeleteToolHash deletes a tool hash
+func (b *BoltDB) DeleteToolHash(toolName string) error {
+	return b.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(ToolHashBucket))
+		return bucket.Delete([]byte(toolName))
+	})
+}
+
+// Tool approval operations (tool-level quarantine)
+
+// SaveToolApproval saves a tool approval record
+func (b *BoltDB) SaveToolApproval(record *ToolApprovalRecord) error {
+	return b.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(ToolApprovalBucket))
+		data, err := record.MarshalBinary()
+		if err != nil {
+			return err
+		}
+		return bucket.Put([]byte(record.Key()), data)
+	})
+}
+
+// GetToolApproval retrieves a tool approval record by server and tool name.
+// Returns ErrToolApprovalNotFound (wrapped so callers can use errors.Is) when
+// no record exists. Any other error indicates a real read failure (decode
+// error, closed DB, etc.) and MUST NOT be treated as "missing" by callers.
+func (b *BoltDB) GetToolApproval(serverName, toolName string) (*ToolApprovalRecord, error) {
+	var record *ToolApprovalRecord
+
+	err := b.db.View(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(ToolApprovalBucket))
+		key := ToolApprovalKey(serverName, toolName)
+		data := bucket.Get([]byte(key))
+		if data == nil {
+			return fmt.Errorf("%w: %s", ErrToolApprovalNotFound, key)
+		}
+
+		record = &ToolApprovalRecord{}
+		return record.UnmarshalBinary(data)
+	})
+
+	return record, err
+}
+
+// ListToolApprovals returns all tool approval records for a server.
+// If serverName is empty, returns all records across all servers.
+func (b *BoltDB) ListToolApprovals(serverName string) ([]*ToolApprovalRecord, error) {
+	var records []*ToolApprovalRecord
+
+	prefix := ""
+	if serverName != "" {
+		prefix = serverName + ":"
+	}
+
+	err := b.db.View(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(ToolApprovalBucket))
+		return bucket.ForEach(func(k, v []byte) error {
+			if prefix != "" && !bytes.HasPrefix(k, []byte(prefix)) {
+				return nil
+			}
+
+			record := &ToolApprovalRecord{}
+			if err := record.UnmarshalBinary(v); err != nil {
+				return err
+			}
+			records = append(records, record)
+			return nil
+		})
+	})
+
+	return records, err
+}
+
+// DeleteToolApproval deletes a tool approval record
+func (b *BoltDB) DeleteToolApproval(serverName, toolName string) error {
+	return b.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(ToolApprovalBucket))
+		key := ToolApprovalKey(serverName, toolName)
+		return bucket.Delete([]byte(key))
+	})
+}
+
+// DeleteServerToolApprovals deletes all tool approval records for a server
+func (b *BoltDB) DeleteServerToolApprovals(serverName string) error {
+	prefix := serverName + ":"
+	return b.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(ToolApprovalBucket))
+		var keysToDelete [][]byte
+		err := bucket.ForEach(func(k, _ []byte) error {
+			if bytes.HasPrefix(k, []byte(prefix)) {
+				keysToDelete = append(keysToDelete, k)
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		for _, key := range keysToDelete {
+			if err := bucket.Delete(key); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// PruneToolApprovalsNotIn deletes tool-approval records whose ServerName is not
+// present in keep, returning the number removed. This GCs orphaned approvals
+// for servers that left the config without an explicit delete (e.g. the config
+// file was hand-edited, or an old migration). Records for configured servers —
+// including disabled ones — are kept so re-enabling a server doesn't re-trigger
+// quarantine of its previously-approved tools (MCP-1002).
+func (b *BoltDB) PruneToolApprovalsNotIn(keep map[string]bool) (int, error) {
+	removed := 0
+	err := b.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(ToolApprovalBucket))
+		if bucket == nil {
+			return nil
+		}
+		var keysToDelete [][]byte
+		scanErr := bucket.ForEach(func(k, v []byte) error {
+			var record ToolApprovalRecord
+			if err := json.Unmarshal(v, &record); err != nil {
+				// Unparseable record: leave it alone rather than risk dropping data.
+				return nil
+			}
+			if !keep[record.ServerName] {
+				keysToDelete = append(keysToDelete, append([]byte(nil), k...))
+			}
+			return nil
+		})
+		if scanErr != nil {
+			return scanErr
+		}
+		for _, key := range keysToDelete {
+			if err := bucket.Delete(key); err != nil {
+				return err
+			}
+			removed++
+		}
+		return nil
+	})
+	return removed, err
+}
+
+// Generic operations
+
+// Backup creates a backup of the database
+func (b *BoltDB) Backup(destPath string) error {
+	return b.db.View(func(tx *bbolt.Tx) error {
+		return tx.CopyFile(destPath, 0644)
+	})
+}
+
+// Stats returns database statistics
+func (b *BoltDB) Stats() (*bbolt.Stats, error) {
+	stats := b.db.Stats()
+	return &stats, nil
+}
+
+// copyFile copies a file from src to dst
+//
+//nolint:unused // Reserved for future backup functionality
+func copyFile(src, dst string) error {
+	sourceFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+
+	destFile, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer destFile.Close()
+
+	_, err = io.Copy(destFile, sourceFile)
+	return err
+}
+
+// removeFile safely removes a file
+//
+//nolint:unused // Reserved for future cleanup functionality
+func removeFile(path string) error {
+	return os.Remove(path)
+}
+
+// OAuth token operations
+
+// SaveOAuthToken saves an OAuth token record
+func (b *BoltDB) SaveOAuthToken(record *OAuthTokenRecord) error {
+	record.Updated = time.Now()
+
+	return b.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(OAuthTokenBucket))
+		data, err := record.MarshalBinary()
+		if err != nil {
+			return err
+		}
+		return bucket.Put([]byte(record.ServerName), data)
+	})
+}
+
+// GetOAuthToken retrieves an OAuth token record by server name
+func (b *BoltDB) GetOAuthToken(serverName string) (*OAuthTokenRecord, error) {
+	var record *OAuthTokenRecord
+
+	err := b.db.View(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(OAuthTokenBucket))
+		data := bucket.Get([]byte(serverName))
+		if data == nil {
+			return fmt.Errorf("oauth token not found")
+		}
+
+		record = &OAuthTokenRecord{}
+		return record.UnmarshalBinary(data)
+	})
+
+	return record, err
+}
+
+// DeleteOAuthToken deletes an OAuth token record
+func (b *BoltDB) DeleteOAuthToken(serverName string) error {
+	return b.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(OAuthTokenBucket))
+		return bucket.Delete([]byte(serverName))
+	})
+}
+
+// UpdateOAuthClientCredentials updates the client credentials (from DCR) and callback port on an existing token
+// This is called after successful Dynamic Client Registration to persist the obtained client_id/secret
+// and the callback port used for the redirect_uri (Spec 022: OAuth Redirect URI Port Persistence)
+func (b *BoltDB) UpdateOAuthClientCredentials(serverKey, clientID, clientSecret string, callbackPort int) error {
+	return b.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(OAuthTokenBucket))
+		data := bucket.Get([]byte(serverKey))
+
+		var record *OAuthTokenRecord
+		if data != nil {
+			// Update existing record
+			record = &OAuthTokenRecord{}
+			if err := record.UnmarshalBinary(data); err != nil {
+				return err
+			}
+			record.ClientID = clientID
+			record.ClientSecret = clientSecret
+			record.CallbackPort = callbackPort
+			record.Updated = time.Now()
+		} else {
+			// Create minimal record with just client credentials
+			// Full token will be saved later during OAuth completion
+			record = &OAuthTokenRecord{
+				ServerName:   serverKey,
+				ClientID:     clientID,
+				ClientSecret: clientSecret,
+				CallbackPort: callbackPort,
+				Created:      time.Now(),
+				Updated:      time.Now(),
+			}
+		}
+
+		newData, err := record.MarshalBinary()
+		if err != nil {
+			return err
+		}
+		return bucket.Put([]byte(serverKey), newData)
+	})
+}
+
+// GetOAuthClientCredentials retrieves the client credentials and callback port for token refresh
+// callbackPort returns 0 if not stored (legacy records or fresh records without DCR)
+func (b *BoltDB) GetOAuthClientCredentials(serverKey string) (clientID, clientSecret string, callbackPort int, err error) {
+	err = b.db.View(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(OAuthTokenBucket))
+		data := bucket.Get([]byte(serverKey))
+		if data == nil {
+			return nil // No credentials stored
+		}
+
+		record := &OAuthTokenRecord{}
+		if err := record.UnmarshalBinary(data); err != nil {
+			return err
+		}
+		clientID = record.ClientID
+		clientSecret = record.ClientSecret
+		callbackPort = record.CallbackPort
+		return nil
+	})
+	return
+}
+
+// ClearOAuthClientCredentials clears only the DCR-related fields (ClientID, ClientSecret, CallbackPort)
+// while preserving any existing token data. This is called when the callback port conflicts and
+// fresh DCR is required (Spec 022: OAuth Redirect URI Port Persistence)
+func (b *BoltDB) ClearOAuthClientCredentials(serverKey string) error {
+	return b.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(OAuthTokenBucket))
+		data := bucket.Get([]byte(serverKey))
+		if data == nil {
+			return nil // Nothing to clear
+		}
+
+		record := &OAuthTokenRecord{}
+		if err := record.UnmarshalBinary(data); err != nil {
+			return err
+		}
+
+		// Clear DCR-related fields
+		record.ClientID = ""
+		record.ClientSecret = ""
+		record.CallbackPort = 0
+		record.RedirectURI = ""
+		record.Updated = time.Now()
+
+		newData, err := record.MarshalBinary()
+		if err != nil {
+			return err
+		}
+		return bucket.Put([]byte(serverKey), newData)
+	})
+}
+
+// ListOAuthTokens returns all OAuth token records
+func (b *BoltDB) ListOAuthTokens() ([]*OAuthTokenRecord, error) {
+	var records []*OAuthTokenRecord
+
+	err := b.db.View(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(OAuthTokenBucket))
+		return bucket.ForEach(func(_, v []byte) error {
+			record := &OAuthTokenRecord{}
+			if err := record.UnmarshalBinary(v); err != nil {
+				return err
+			}
+			records = append(records, record)
+			return nil
+		})
+	})
+
+	return records, err
+}
+
+// Onboarding wizard operations (Spec 046)
+
+// GetOnboardingState returns the current onboarding state.
+// If no state has been recorded, returns a zero-value OnboardingState
+// (i.e. Engaged=false) with nil error.
+func (b *BoltDB) GetOnboardingState() (*OnboardingState, error) {
+	state := &OnboardingState{}
+
+	err := b.db.View(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(OnboardingBucket))
+		if bucket == nil {
+			return nil
+		}
+
+		data := bucket.Get([]byte(OnboardingStateKey))
+		if data == nil {
+			return nil
+		}
+
+		return json.Unmarshal(data, state)
+	})
+
+	return state, err
+}
+
+// SaveOnboardingState persists the wizard state.
+func (b *BoltDB) SaveOnboardingState(state *OnboardingState) error {
+	return b.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket([]byte(OnboardingBucket))
+		if bucket == nil {
+			return fmt.Errorf("onboarding bucket not found")
+		}
+
+		data, err := json.Marshal(state)
+		if err != nil {
+			return err
+		}
+
+		return bucket.Put([]byte(OnboardingStateKey), data)
+	})
+}

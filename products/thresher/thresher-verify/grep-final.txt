@@ -1,0 +1,25 @@
+=== FINAL GATEHOUSE GREP ===
+/home/toxic/pens/barn/thresher/README.md: gatehouse=0
+/home/toxic/pens/barn/thresher/AGENTS.md: gatehouse=0
+/home/toxic/pens/barn/thresher/build.sh: gatehouse=0
+/home/toxic/pens/barn/thresher/docs: gatehouse=0
+/home/toxic/pens/Pens/pitchfork.toml: gatehouse=0
+/home/toxic/pens/Pens/ranch/range/bin/thresher-serve.ts: gatehouse=0
+/home/toxic/pens/Pens/scripts/health-check.ts: gatehouse=0
+/home/toxic/pens/Pens/bin/manifest.yaml: gatehouse=0
+/home/toxic/pens/Pens/bin/bin-verify.sh: gatehouse=0
+/home/toxic/AGENTS.md: gatehouse=0
+/home/toxic/pens/Pens/AGENTS.md: gatehouse=0
+
+=== FINAL NEXUS GREP ===
+/home/toxic/pens/barn/thresher/README.md: nexus=0
+/home/toxic/pens/barn/thresher/AGENTS.md: nexus=0
+/home/toxic/pens/barn/thresher/build.sh: nexus=0
+/home/toxic/pens/barn/thresher/docs: nexus=0
+/home/toxic/pens/Pens/pitchfork.toml: nexus=0
+/home/toxic/pens/Pens/ranch/range/bin/thresher-serve.ts: nexus=0
+/home/toxic/pens/Pens/scripts/health-check.ts: nexus=0
+/home/toxic/pens/Pens/bin/manifest.yaml: nexus=0
+/home/toxic/pens/Pens/bin/bin-verify.sh: nexus=0
+/home/toxic/AGENTS.md: nexus=0
+/home/toxic/pens/Pens/AGENTS.md: nexus=0

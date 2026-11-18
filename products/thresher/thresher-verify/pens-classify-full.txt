@@ -1,0 +1,202 @@
+=== Pens STATUS CLASSIFICATION ===
+
+--- MODIFIED FILES ---
+.two-sec/verdicts.jsonl: PEER WIP / UNTRACKED
+bin/bash-2s-shim.sh: PEER WIP / UNTRACKED
+bin/delend.test.ts: PEER WIP / UNTRACKED
+bin/pitchfork: PEER WIP / UNTRACKED
+bin/push-guard.sh: PEER WIP / UNTRACKED
+config/dots/.profile: PEER WIP / UNTRACKED
+config/tau/config.yml: PEER WIP / UNTRACKED
+grafana/plugins/grafana-pyroscope-datasource/CHANGELOG.md: PEER WIP / UNTRACKED
+grafana/plugins/grafana-pyroscope-datasource/MANIFEST.txt: PEER WIP / UNTRACKED
+grafana/plugins/grafana-pyroscope-datasource/gpx_grafana-pyroscope-datasource_linux_amd64: PEER WIP / UNTRACKED
+grafana/plugins/grafana-pyroscope-datasource/module.js: PEER WIP / UNTRACKED
+grafana/plugins/grafana-pyroscope-datasource/plugin.json: PEER WIP / UNTRACKED
+grafana/plugins/opentsdb/CHANGELOG.md: PEER WIP / UNTRACKED
+grafana/plugins/opentsdb/MANIFEST.txt: PEER WIP / UNTRACKED
+grafana/plugins/opentsdb/gpx_grafana-opentsdb-datasource_linux_amd64: PEER WIP / UNTRACKED
+grafana/plugins/opentsdb/module.js: PEER WIP / UNTRACKED
+grafana/plugins/opentsdb/plugin.json: PEER WIP / UNTRACKED
+grafana/plugins/prometheus/CHANGELOG.md: PEER WIP / UNTRACKED
+grafana/plugins/prometheus/MANIFEST.txt: PEER WIP / UNTRACKED
+grafana/plugins/prometheus/go_plugin_build_manifest: PEER WIP / UNTRACKED
+grafana/plugins/prometheus/gpx_grafana-prometheus-datasource_linux_amd64: PEER WIP / UNTRACKED
+grafana/plugins/prometheus/module.js: PEER WIP / UNTRACKED
+grafana/plugins/prometheus/module.js.map: PEER WIP / UNTRACKED
+grafana/plugins/prometheus/plugin.json: PEER WIP / UNTRACKED
+grafana/plugins/stackdriver/CHANGELOG.md: PEER WIP / UNTRACKED
+grafana/plugins/stackdriver/MANIFEST.txt: PEER WIP / UNTRACKED
+grafana/plugins/stackdriver/gpx_grafana_cloudmonitoring_datasource_linux_amd64: PEER WIP / UNTRACKED
+grafana/plugins/stackdriver/module.js: PEER WIP / UNTRACKED
+grafana/plugins/stackdriver/plugin.json: PEER WIP / UNTRACKED
+grafana/plugins/tempo/860.js: PEER WIP / UNTRACKED
+grafana/plugins/tempo/860.js.map: PEER WIP / UNTRACKED
+grafana/plugins/tempo/CHANGELOG.md: PEER WIP / UNTRACKED
+grafana/plugins/tempo/MANIFEST.txt: PEER WIP / UNTRACKED
+grafana/plugins/tempo/gpx_grafana-tempo-datasource_linux_amd64: PEER WIP / UNTRACKED
+grafana/plugins/tempo/module.js: PEER WIP / UNTRACKED
+grafana/plugins/tempo/module.js.map: PEER WIP / UNTRACKED
+grafana/plugins/tempo/plugin.json: PEER WIP / UNTRACKED
+grafana/plugins/zipkin/CHANGELOG.md: PEER WIP / UNTRACKED
+grafana/plugins/zipkin/MANIFEST.txt: PEER WIP / UNTRACKED
+grafana/plugins/zipkin/gpx_grafana-zipkin-datasource_linux_amd64: PEER WIP / UNTRACKED
+grafana/plugins/zipkin/module.js: PEER WIP / UNTRACKED
+grafana/plugins/zipkin/plugin.json: PEER WIP / UNTRACKED
+mise/conf.d/00-toolchain.toml: PEER WIP / UNTRACKED
+pitchfork.d/agent-display.toml: PEER WIP / UNTRACKED
+pitchfork.d/agent-viewer.toml: PEER WIP / UNTRACKED
+pitchfork.d/awrawr-mcp.toml: PEER WIP / UNTRACKED
+pitchfork.d/awrawr-ws-exec.toml: PEER WIP / UNTRACKED
+pitchfork.d/bedrock-ui.toml: PEER WIP / UNTRACKED
+pitchfork.d/beellama-fast.toml: PEER WIP / UNTRACKED
+pitchfork.d/bench-radar.toml: PEER WIP / UNTRACKED
+pitchfork.d/bidder-finch.toml: PEER WIP / UNTRACKED
+pitchfork.d/bidder-forge.toml: PEER WIP / UNTRACKED
+pitchfork.d/bidder-raccoon.toml: PEER WIP / UNTRACKED
+pitchfork.d/bidder-scout.toml: PEER WIP / UNTRACKED
+pitchfork.d/bidder-vesper.toml: PEER WIP / UNTRACKED
+pitchfork.d/bidder-warden.toml: PEER WIP / UNTRACKED
+pitchfork.d/boundless.toml: PEER WIP / UNTRACKED
+pitchfork.d/browser-keeper.toml: PEER WIP / UNTRACKED
+pitchfork.d/browserless.toml: PEER WIP / UNTRACKED
+pitchfork.d/codebase-memory.toml: PEER WIP / UNTRACKED
+pitchfork.d/coyote.toml: PEER WIP / UNTRACKED
+pitchfork.d/cuttinggate.toml: PEER WIP / UNTRACKED
+pitchfork.d/delendai-control-api.toml: PEER WIP / UNTRACKED
+pitchfork.d/delendai-web.toml: PEER WIP / UNTRACKED
+pitchfork.d/dnsmasq.toml: PEER WIP / UNTRACKED
+pitchfork.d/doorbell-mcp.toml: PEER WIP / UNTRACKED
+pitchfork.d/doorbell-oauth-edge.toml: PEER WIP / UNTRACKED
+pitchfork.d/Pens-chat.toml: PEER WIP / UNTRACKED
+pitchfork.d/Pens-reconcile-watch.toml: PEER WIP / UNTRACKED
+pitchfork.d/feedlot.toml: PEER WIP / UNTRACKED
+pitchfork.d/files.toml: PEER WIP / UNTRACKED
+pitchfork.d/fleet-feed.toml: PEER WIP / UNTRACKED
+pitchfork.d/fleet-ui.toml: PEER WIP / UNTRACKED
+pitchfork.d/fleetd.toml: PEER WIP / UNTRACKED
+pitchfork.d/forever-loop.toml: PEER WIP / UNTRACKED
+pitchfork.d/forge-agent.toml: PEER WIP / UNTRACKED
+pitchfork.d/forge.toml: PEER WIP / UNTRACKED
+pitchfork.d/gatehouse.toml: PEER WIP / UNTRACKED
+pitchfork.d/gibber-mcp.toml: PEER WIP / UNTRACKED
+pitchfork.d/grafana.toml: PEER WIP / UNTRACKED
+pitchfork.d/herd.toml: PEER WIP / UNTRACKED
+pitchfork.d/hf-downloader.toml: PEER WIP / UNTRACKED
+pitchfork.d/hindsight.toml: PEER WIP / UNTRACKED
+pitchfork.d/hodos.toml: PEER WIP / UNTRACKED
+pitchfork.d/kafka.toml: PEER WIP / UNTRACKED
+pitchfork.d/kappa-acp.toml: PEER WIP / UNTRACKED
+pitchfork.d/keeper-failover.toml: PEER WIP / UNTRACKED
+pitchfork.d/keeper-floaty.toml: PEER WIP / UNTRACKED
+pitchfork.d/keypool.toml: PEER WIP / UNTRACKED
+pitchfork.d/kimi-audit-dash.toml: PEER WIP / UNTRACKED
+pitchfork.d/kimi-auto-shim.toml: PEER WIP / UNTRACKED
+pitchfork.d/kimi-code.toml: PEER WIP / UNTRACKED
+pitchfork.d/kimiclaw-a.toml: PEER WIP / UNTRACKED
+pitchfork.d/kimiclaw-b.toml: PEER WIP / UNTRACKED
+pitchfork.d/kite-daemon.toml: PEER WIP / UNTRACKED
+pitchfork.d/kitty-mcp.toml: PEER WIP / UNTRACKED
+pitchfork.d/market-loop.toml: PEER WIP / UNTRACKED
+pitchfork.d/market-watchdog.toml: PEER WIP / UNTRACKED
+pitchfork.d/matter-server.toml: PEER WIP / UNTRACKED
+pitchfork.d/mesh-hub.toml: PEER WIP / UNTRACKED
+pitchfork.d/mesh-landing.toml: PEER WIP / UNTRACKED
+pitchfork.d/model-guard.toml: PEER WIP / UNTRACKED
+pitchfork.d/nativelink.toml: PEER WIP / UNTRACKED
+pitchfork.d/nats-tail.toml: PEER WIP / UNTRACKED
+pitchfork.d/nats.toml: PEER WIP / UNTRACKED
+pitchfork.d/nginx.toml: PEER WIP / UNTRACKED
+pitchfork.d/nim-kimi-sidecar.toml: PEER WIP / UNTRACKED
+pitchfork.d/null-g-proxy.toml: PEER WIP / UNTRACKED
+pitchfork.d/olympus.toml: PEER WIP / UNTRACKED
+pitchfork.d/oracle-chat.toml: PEER WIP / UNTRACKED
+pitchfork.d/oracle-core.toml: PEER WIP / UNTRACKED
+pitchfork.d/oracle-market.toml: PEER WIP / UNTRACKED
+pitchfork.d/paper-poller-watchdog.toml: PEER WIP / UNTRACKED
+pitchfork.d/paper-poller.toml: PEER WIP / UNTRACKED
+pitchfork.d/proc-watch-audit.toml: PEER WIP / UNTRACKED
+pitchfork.d/prometheus.toml: PEER WIP / UNTRACKED
+pitchfork.d/qdrant.toml: PEER WIP / UNTRACKED
+pitchfork.d/ralph-dashboard.toml: PEER WIP / UNTRACKED
+pitchfork.d/ranch-ui.toml: PEER WIP / UNTRACKED
+pitchfork.d/range-ui.toml: PEER WIP / UNTRACKED
+pitchfork.d/redis.toml: PEER WIP / UNTRACKED
+pitchfork.d/refusal-watchdog.toml: PEER WIP / UNTRACKED
+pitchfork.d/rig.toml: PEER WIP / UNTRACKED
+pitchfork.d/rust-web.toml: PEER WIP / UNTRACKED
+pitchfork.d/rustdesk-hbbr.toml: PEER WIP / UNTRACKED
+pitchfork.d/rustdesk-hbbs.toml: PEER WIP / UNTRACKED
+pitchfork.d/search-api.toml: PEER WIP / UNTRACKED
+pitchfork.d/smithers-gateway.toml: PEER WIP / UNTRACKED
+pitchfork.d/sorry-watchdog.toml: PEER WIP / UNTRACKED
+pitchfork.d/squawk-feed.toml: PEER WIP / UNTRACKED
+pitchfork.d/squawk-history.toml: PEER WIP / UNTRACKED
+pitchfork.d/stash-guard.toml: PEER WIP / UNTRACKED
+pitchfork.d/tailscale-keepalive.toml: PEER WIP / UNTRACKED
+pitchfork.d/task-launch.toml: PEER WIP / UNTRACKED
+pitchfork.d/tau-chute.toml: PEER WIP / UNTRACKED
+pitchfork.d/tmp-reaper.toml: PEER WIP / UNTRACKED
+pitchfork.d/toolcall-llm.toml: PEER WIP / UNTRACKED
+pitchfork.d/vansrouter.toml: PEER WIP / UNTRACKED
+pitchfork.d/windmill.toml: PEER WIP / UNTRACKED
+pitchfork.d/yote.toml: PEER WIP / UNTRACKED
+src/services/openfang.ts: PEER WIP / UNTRACKED
+stack/services/herd.sh: PEER WIP / UNTRACKED
+
+--- UNTRACKED FILES ---
+bin/audit-Pens.sh: PEER WIP (untracked)
+bin/bin-contract-audit.sh: PEER WIP (untracked)
+bin/chute-tau-fix.sh: PEER WIP (untracked)
+bin/corral-autodetect.sh: PEER WIP (untracked)
+bin/corral-diag.sh: PEER WIP (untracked)
+bin/delend-code-race-line: PEER WIP (untracked)
+bin/Pens-audit.sh: PEER WIP (untracked)
+bin/ffs-bun.ts: PEER WIP (untracked)
+bin/find-tau.sh: PEER WIP (untracked)
+bin/fork.sh: PEER WIP (untracked)
+bin/hardcore-tau-redo.sh: PEER WIP (untracked)
+bin/install-hook.sh: PEER WIP (untracked)
+bin/kappa-serve.sh: PEER WIP (untracked)
+bin/model-audit-max-final.sh: PEER WIP (untracked)
+bin/model-audit.sh: PEER WIP (untracked)
+bin/name-check.ts: PEER WIP (untracked)
+bin/name-fix.ts: PEER WIP (untracked)
+bin/nim-key-test.sh: PEER WIP (untracked)
+bin/nim-sweep-all.sh: PEER WIP (untracked)
+bin/nvidia-clairvoyant.sh: PEER WIP (untracked)
+bin/nvidia-db-wire.sh: PEER WIP (untracked)
+bin/nvidia-fix-final.sh: PEER WIP (untracked)
+bin/nvidia-model-sweep.sh: PEER WIP (untracked)
+bin/nvidia-shape-find.sh: PEER WIP (untracked)
+bin/nvidia-wire.sh: PEER WIP (untracked)
+bin/omniroute-secrets.sh: PEER WIP (untracked)
+bin/oracle-market-fix-payload-validation.sh: PEER WIP (untracked)
+bin/oracle-market-verify-fix.sh: PEER WIP (untracked)
+bin/ort-cuda-reinstall.sh: PEER WIP (untracked)
+bin/pitchfork-keepalive-lib.test.ts: PEER WIP (untracked)
+bin/pitchfork-keepalive-lib.ts: PEER WIP (untracked)
+bin/pitchfork-keepalive.ts: PEER WIP (untracked)
+bin/pitchfork-lib.test.ts: PEER WIP (untracked)
+bin/pitchfork-lib.ts: PEER WIP (untracked)
+bin/pitchfork-restart-lib.test.ts: PEER WIP (untracked)
+bin/pitchfork-restart-lib.ts: PEER WIP (untracked)
+bin/pitchfork-restart.ts: PEER WIP (untracked)
+bin/pitchfork.ts: PEER WIP (untracked)
+bin/pixel-adb-keepalive.sh: PEER WIP (untracked)
+bin/ranch-first-push.sh: PEER WIP (untracked)
+bin/restore-tau-launcher.sh: PEER WIP (untracked)
+bin/show.sh: PEER WIP (untracked)
+bin/tau-post-cleanup.sh: PEER WIP (untracked)
+bin/tau-start.sh: PEER WIP (untracked)
+bin/termstream.py: PEER WIP (untracked)
+bin/tunnel-monitor.sh: PEER WIP (untracked)
+bin/vansrouter-final-fix.sh: PEER WIP (untracked)
+bin/vansrouter-route-fix.sh: PEER WIP (untracked)
+ops/mbx-cache/: PEER WIP (untracked)
+=== 4.3.2: Pens log --oneline -3 ===
+4445d9249f thresher: rename gatehouse daemon to thresher, serve script auth-quote fix, manifests + AGENTS
+a00278e696 chore(Pens): restore delend plugin shims to working state (path pens/barn)
+fc3d7e411b feat(Pens): consent-gated delendai plugin suite through gatehouse
+=== 4.3.3: Pens ls-remote origin main ===
+4445d9249f25d46050f822f49f751383c4126354	refs/heads/main

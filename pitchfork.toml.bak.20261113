@@ -1,0 +1,42 @@
+# Restored 2026-11-09 from quarantine/mise-pitchfork/barn__pitchfork.toml (thresher only; additive).
+[daemons.thresher]
+run = "exec /home/toxic/pens/barn/products/thresher/bin/serve-guarded.sh"
+retry = true
+ready_http = "http://127.0.0.1:25127/health"
+dir = "/home/toxic/pens/barn/products/thresher"
+mise = false
+# No `port` field: pre-check binds 0.0.0.0 and false-conflicts with tailscaled SNI forwarder on :25127. ready_http only.
+
+# blackbird: barn product (github code search). api :25112, mcp :25113 (thresher upstream), web :25114.
+# Ports are passed as explicit env: no dependency on any ports.env path. ready_http only, no `port` field.
+[daemons.blackbird-api]
+run = "exec /home/toxic/.bun/bin/bun /home/toxic/pens/barn/products/blackbird/apps/api/src/server.ts"
+dir = "/home/toxic/pens/barn/products/blackbird"
+retry = true
+mise = false
+ready_http = "http://127.0.0.1:25112/api/health"
+env = { BLACKBIRD_API_PORT = "25112", BLACKBIRD_MCP_PORT = "25113", BLACKBIRD_WEB_PORT = "25114" }
+
+[daemons.blackbird-mcp]
+run = "exec /home/toxic/.bun/bin/bun /home/toxic/pens/barn/products/blackbird/apps/api/src/mcp/server.ts --mode http"
+dir = "/home/toxic/pens/barn/products/blackbird"
+retry = true
+mise = false
+ready_http = "http://127.0.0.1:25113/healthz"
+env = { BLACKBIRD_API_PORT = "25112", BLACKBIRD_MCP_PORT = "25113", BLACKBIRD_WEB_PORT = "25114" }
+
+[daemons.blackbird-web]
+run = "exec /home/toxic/.bun/bin/bun /home/toxic/pens/barn/products/blackbird/apps/web/build/index.js"
+dir = "/home/toxic/pens/barn/products/blackbird/apps/web"
+retry = true
+mise = false
+ready_http = "http://127.0.0.1:25114/"
+env = { BLACKBIRD_API_PORT = "25112", BLACKBIRD_MCP_PORT = "25113", BLACKBIRD_WEB_PORT = "25114", PORT = "25114" }
+
+# hindsight: tau memory backend (api :25117). Fresh launcher in barn; replaces the dead pens/hindsight entry.
+[daemons.hindsight]
+run = "exec /home/toxic/pens/barn/products/hindsight/serve.sh"
+dir = "/home/toxic/pens/barn/products/hindsight"
+retry = true
+mise = false
+ready_http = "http://127.0.0.1:25117/health"

@@ -1,0 +1,17 @@
+{
+  "count": 1,
+  "hits": [
+    {
+      "file": "/home/toxic/pens/olympus/products/tau/packages/coding-agent/src/session/agent-session.ts",
+      "line": 2284,
+      "snippet": "suppressAutoPrewalk: config.suppressAutoPrewalk,",
+      "source": "lsp",
+      "score": 0.9,
+      "context": [
+        "planYolo: config.planYolo,",
+        "suppressAutoPrewalk: config.suppressAutoPrewalk,",
+        "});"
+      ]
+    }
+  ]
+}
